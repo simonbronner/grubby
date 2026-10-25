@@ -1,6 +1,27 @@
 package github
 
-import "time"
+import (
+	"strings"
+	"time"
+)
+
+// NormalizeRepoName normalizes a repository identifier by stripping any URL prefixes,
+// owner/organization prefix (e.g. "org/repo" -> "repo"), trailing .git, and whitespace.
+func NormalizeRepoName(raw string) string {
+	s := strings.TrimSpace(raw)
+	s = strings.TrimPrefix(s, "https://github.com/")
+	s = strings.TrimPrefix(s, "http://github.com/")
+	s = strings.TrimPrefix(s, "git@github.com:")
+	s = strings.TrimSuffix(s, ".git")
+	s = strings.TrimSuffix(s, "/")
+	if idx := strings.LastIndex(s, "/"); idx != -1 {
+		s = s[idx+1:]
+	}
+	if s == "" {
+		return "unknown"
+	}
+	return strings.TrimSpace(s)
+}
 
 type Repository struct {
 	Name          string    `json:"name"`

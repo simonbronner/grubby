@@ -354,7 +354,7 @@ query($login: String!) {
           name
           target {
             ... on Commit {
-              history(first: 5) {
+              history(first: 20) {
                 nodes {
                   oid
                   message
@@ -450,7 +450,7 @@ query($login: String!) {
           name
           target {
             ... on Commit {
-              history(first: 5) {
+              history(first: 20) {
                 nodes {
                   oid
                   message
@@ -524,11 +524,12 @@ query($login: String!) {
 				if len(msg) > 60 {
 					msg = msg[:57] + "..."
 				}
+				normRepo := NormalizeRepoName(node.Name)
 				commitEvents = append(commitEvents, SquadEvent{
 					Actor:     actor,
 					Action:    "Committed",
-					Repo:      node.Name,
-					Target:    fmt.Sprintf("%s:%s", node.Name, defBranch),
+					Repo:      normRepo,
+					Target:    fmt.Sprintf("%s:%s", normRepo, defBranch),
 					Details:   msg,
 					Timestamp: cNode.CommittedDate,
 				})
@@ -1010,7 +1011,7 @@ func (c *Client) FetchSquadActivity(ctx context.Context, members []string, commi
 
 	for _, member := range members {
 		// Use /users/{member}/events which returns both public and private events for authenticated user/collaborators
-		url := fmt.Sprintf("https://api.github.com/users/%s/events?per_page=30", member)
+		url := fmt.Sprintf("https://api.github.com/users/%s/events?per_page=100", member)
 		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 		if err != nil {
 			continue
@@ -1041,7 +1042,8 @@ func (c *Client) FetchSquadActivity(ctx context.Context, members []string, commi
 			for _, ev := range rawEvents {
 				action := ""
 				details := ""
-				target := ev.Repo.Name
+				repoName := NormalizeRepoName(ev.Repo.Name)
+				target := repoName
 
 				switch ev.Type {
 				case "PushEvent":
@@ -1054,7 +1056,7 @@ func (c *Client) FetchSquadActivity(ctx context.Context, members []string, commi
 					_ = json.Unmarshal(ev.Payload, &p)
 					branch := strings.TrimPrefix(p.Ref, "refs/heads/")
 					if branch != "" {
-						target = fmt.Sprintf("%s:%s", ev.Repo.Name, branch)
+						target = fmt.Sprintf("%s:%s", repoName, branch)
 					}
 					if len(p.Commits) > 0 {
 						action = fmt.Sprintf("Pushed %d commit", len(p.Commits))
@@ -1091,11 +1093,16 @@ func (c *Client) FetchSquadActivity(ctx context.Context, members []string, commi
 						PullRequest struct {
 							Number int    `json:"number"`
 							Title  string `json:"title"`
+							Merged bool   `json:"merged"`
 						} `json:"pull_request"`
 					}
 					_ = json.Unmarshal(ev.Payload, &p)
-					action = fmt.Sprintf("PR %s", p.Action)
-					target = fmt.Sprintf("%s#%d", ev.Repo.Name, p.PullRequest.Number)
+					if p.Action == "closed" && p.PullRequest.Merged {
+						action = "PR merged"
+					} else {
+						action = fmt.Sprintf("PR %s", p.Action)
+					}
+					target = fmt.Sprintf("%s#%d", repoName, p.PullRequest.Number)
 					details = p.PullRequest.Title
 				case "PullRequestReviewEvent":
 					var p struct {
@@ -1110,7 +1117,7 @@ func (c *Client) FetchSquadActivity(ctx context.Context, members []string, commi
 					}
 					_ = json.Unmarshal(ev.Payload, &p)
 					action = fmt.Sprintf("Review %s", strings.ToLower(p.Review.State))
-					target = fmt.Sprintf("%s#%d", ev.Repo.Name, p.PullRequest.Number)
+					target = fmt.Sprintf("%s#%d", repoName, p.PullRequest.Number)
 					details = p.PullRequest.Title
 				case "IssueCommentEvent":
 					action = "Commented"
@@ -1124,7 +1131,7 @@ func (c *Client) FetchSquadActivity(ctx context.Context, members []string, commi
 					}
 					_ = json.Unmarshal(ev.Payload, &p)
 					if p.Issue.Number > 0 {
-						target = fmt.Sprintf("%s#%d", ev.Repo.Name, p.Issue.Number)
+						target = fmt.Sprintf("%s#%d", repoName, p.Issue.Number)
 					}
 					details = strings.Split(p.Comment.Body, "\n")[0]
 				default:
@@ -1138,7 +1145,7 @@ func (c *Client) FetchSquadActivity(ctx context.Context, members []string, commi
 				events = append(events, SquadEvent{
 					Actor:     member,
 					Action:    action,
-					Repo:      ev.Repo.Name,
+					Repo:      repoName,
 					Target:    target,
 					Details:   details,
 					Timestamp: ev.CreatedAt,
@@ -1152,7 +1159,7 @@ func (c *Client) FetchSquadActivity(ctx context.Context, members []string, commi
 	var deduplicated []SquadEvent
 	seen := make(map[string]bool)
 	for _, ev := range events {
-		key := fmt.Sprintf("%s|%s|%s|%d", ev.Actor, ev.Repo, ev.Details, ev.Timestamp.Unix())
+		key := fmt.Sprintf("%s|%s|%s|%d", ev.Actor, NormalizeRepoName(ev.Repo), ev.Details, ev.Timestamp.Unix())
 		if !seen[key] {
 			seen[key] = true
 			deduplicated = append(deduplicated, ev)

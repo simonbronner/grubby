@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -365,7 +366,7 @@ func TestSquadAvatarPlacements_ExactRowAlignmentAndBounds(t *testing.T) {
 		"u6": []byte("bytes6"),
 	}
 	m.SquadCursor = 4 // Scrolled down
-	m.Height = 30     // visiblePanes = 4
+	m.Height = 35     // visiblePanes = 4
 
 	scrolledView := m.View()
 	scrolledLines := strings.Split(scrolledView, "\n")
@@ -382,5 +383,172 @@ func TestSquadAvatarPlacements_ExactRowAlignmentAndBounds(t *testing.T) {
 		if !strings.Contains(targetLine, "@"+p.Login) {
 			t.Errorf("scrolled: expected line %d to contain @%s, but got: %q", p.Row, p.Login, targetLine)
 		}
+	}
+}
+
+func TestSquadDashboard_RepoNameNormalization(t *testing.T) {
+	now := time.Now()
+	cfg := &config.Config{
+		ActiveSquad: "core",
+		Squads: []config.SquadConfig{
+			{
+				Name:    "core",
+				Members: []string{"alice", "bob"},
+			},
+		},
+	}
+
+	m := Model{
+		Config: cfg,
+		Width:  120,
+		Height: 35,
+		Repos: []github.Repository{
+			{Name: "payment-api"},
+		},
+		SquadEvents: []github.SquadEvent{
+			// Same repo "payment-api" represented with org prefix, bare name, and url/git
+			{Actor: "alice", Action: "Committed", Repo: "acmeco/payment-api", Timestamp: now.Add(-1 * time.Hour)},
+			{Actor: "bob", Action: "Pushed 1 commit", Repo: "payment-api", Timestamp: now.Add(-2 * time.Hour)},
+			{Actor: "alice", Action: "PR merged", Repo: "git@github.com:acmeco/payment-api.git", Timestamp: now.Add(-3 * time.Hour)},
+		},
+	}
+
+	dashboard := m.computeSquadDashboard()
+
+	// Should consolidate into exactly 1 active repository
+	if len(dashboard.ActiveRepos) != 1 {
+		t.Fatalf("expected 1 consolidated active repo, got %d: %+v", len(dashboard.ActiveRepos), dashboard.ActiveRepos)
+	}
+
+	r := dashboard.ActiveRepos[0]
+	if r.RepoName != "payment-api" {
+		t.Errorf("expected repo name 'payment-api', got %q", r.RepoName)
+	}
+	if r.TotalActions != 3 {
+		t.Errorf("expected 3 total actions, got %d", r.TotalActions)
+	}
+	if r.Commits != 1 || r.Pushes != 1 || r.Merges != 1 {
+		t.Errorf("unexpected breakdown: commits=%d, pushes=%d, merges=%d", r.Commits, r.Pushes, r.Merges)
+	}
+	if len(r.Contributors) != 2 {
+		t.Errorf("expected 2 unique contributors, got %d (%v)", len(r.Contributors), r.Contributors)
+	}
+}
+
+func TestSquadDashboard_Top10ActiveReposAndZeroExclusion(t *testing.T) {
+	now := time.Now()
+	cfg := &config.Config{
+		ActiveSquad: "core",
+		Squads: []config.SquadConfig{
+			{
+				Name:    "core",
+				Members: []string{"dev1"},
+			},
+		},
+	}
+
+	// Create 12 active repos and 1 inactive repo
+	var events []github.SquadEvent
+	for i := 1; i <= 12; i++ {
+		repoName := fmt.Sprintf("service-%02d", i)
+		// Give service-01 12 actions down to service-12 with 1 action
+		for action := 0; action < (13 - i); action++ {
+			events = append(events, github.SquadEvent{
+				Actor:     "dev1",
+				Action:    "Committed",
+				Repo:      repoName,
+				Timestamp: now.Add(time.Duration(-action) * time.Hour),
+			})
+		}
+	}
+
+	m := Model{
+		Config:      cfg,
+		Width:       140,
+		Height:      50,
+		SquadEvents: events,
+	}
+
+	dashboard := m.computeSquadDashboard()
+
+	// All 12 repos had actions > 0, so all 12 are in ActiveRepos
+	if len(dashboard.ActiveRepos) != 12 {
+		t.Fatalf("expected 12 active repos, got %d", len(dashboard.ActiveRepos))
+	}
+
+	// Render the view and check top 10 display
+	rendered := m.renderSquadView()
+
+	// Ranks #1 through #10 should be in the rendered output
+	for i := 1; i <= 10; i++ {
+		rankStr := fmt.Sprintf("#%-2d ", i)
+		if !strings.Contains(rendered, rankStr) {
+			t.Errorf("expected rendered output to contain rank %q", rankStr)
+		}
+	}
+
+	// Rank #11 and #12 should NOT be in the rendered output because of displayLimit = 10
+	if strings.Contains(rendered, "#11") {
+		t.Errorf("expected rendered output not to contain rank #11")
+	}
+	if strings.Contains(rendered, "#12") {
+		t.Errorf("expected rendered output not to contain rank #12")
+	}
+}
+
+func TestSquadDashboard_ContributorContributions14DaysAllRepos(t *testing.T) {
+	now := time.Now()
+	cfg := &config.Config{
+		ActiveSquad: "core",
+		Squads: []config.SquadConfig{
+			{
+				Name:    "core",
+				Members: []string{"alice"},
+			},
+		},
+	}
+
+	// Alice contributes to 15 different repos in 14 days
+	var events []github.SquadEvent
+	for i := 1; i <= 15; i++ {
+		events = append(events, github.SquadEvent{
+			Actor:     "alice",
+			Action:    "Committed",
+			Repo:      fmt.Sprintf("repo-%02d", i),
+			Timestamp: now.Add(time.Duration(-i*12) * time.Hour), // within 14 days
+		})
+	}
+	// And 1 event older than 14 days
+	events = append(events, github.SquadEvent{
+		Actor:     "alice",
+		Action:    "Committed",
+		Repo:      "ancient-repo",
+		Timestamp: now.Add(-15 * 24 * time.Hour),
+	})
+
+	m := Model{
+		Config:      cfg,
+		Width:       140,
+		Height:      50,
+		SquadEvents: events,
+	}
+
+	dashboard := m.computeSquadDashboard()
+	if len(dashboard.MemberContributions) != 1 {
+		t.Fatalf("expected 1 member contribution, got %d", len(dashboard.MemberContributions))
+	}
+
+	alice := dashboard.MemberContributions[0]
+	// Should include all 15 events in 14 days across all 15 repos
+	if alice.TotalActions != 15 {
+		t.Errorf("expected 15 total actions for Alice across all repos, got %d", alice.TotalActions)
+	}
+	if alice.Commits != 15 {
+		t.Errorf("expected 15 commits for Alice, got %d", alice.Commits)
+	}
+
+	// Top repos should have up to 3 entries
+	if len(alice.TopRepos) != 3 {
+		t.Errorf("expected 3 top repos, got %d: %v", len(alice.TopRepos), alice.TopRepos)
 	}
 }

@@ -110,9 +110,12 @@ func (m Model) computeSquadDashboard() SquadDashboardData {
 			continue
 		}
 
-		repoName := ev.Repo
-		if repoName == "" {
-			repoName = "unknown"
+		repoName := github.NormalizeRepoName(ev.Repo)
+		for _, r := range m.Repos {
+			if strings.EqualFold(r.Name, repoName) {
+				repoName = r.Name
+				break
+			}
 		}
 
 		if repoMap[repoName] == nil {
@@ -189,8 +192,11 @@ func (m Model) computeSquadDashboard() SquadDashboardData {
 
 	// Finalize Active Repos
 	var activeRepos []RepoActivitySummary
-	for repoName, summary := range repoMap {
-		for contrib := range repoContribMap[repoName] {
+	for _, summary := range repoMap {
+		if summary.TotalActions == 0 {
+			continue
+		}
+		for contrib := range repoContribMap[summary.RepoName] {
 			summary.Contributors = append(summary.Contributors, contrib)
 		}
 		sort.Strings(summary.Contributors)
@@ -405,8 +411,8 @@ func (m Model) renderSquadDashboardView() (string, []AvatarPlacement) {
 	if len(dashboard.ActiveRepos) == 0 {
 		sections = append(sections, lipgloss.NewStyle().Foreground(MutedColor).Render("     No repository activity recorded for squad members in the last 14 days."))
 	} else {
-		// Render top 5 active repos table
-		displayLimit := 5
+		// Render top 10 active repos table
+		displayLimit := 10
 		if len(dashboard.ActiveRepos) < displayLimit {
 			displayLimit = len(dashboard.ActiveRepos)
 		}
@@ -424,7 +430,7 @@ func (m Model) renderSquadDashboardView() (string, []AvatarPlacement) {
 
 		tableHead := lipgloss.JoinHorizontal(
 			lipgloss.Top,
-			"     ",
+			"      ",
 			TableHeaderStyle.Render(repoStyle.Render("REPOSITORY")),
 			TableHeaderStyle.Render(statStyle.Render("COMMITS")),
 			TableHeaderStyle.Render(statStyle.Render("PUSHES")),
@@ -437,7 +443,7 @@ func (m Model) renderSquadDashboardView() (string, []AvatarPlacement) {
 
 		for i := 0; i < displayLimit; i++ {
 			r := dashboard.ActiveRepos[i]
-			rank := fmt.Sprintf("#%d  ", i+1)
+			rank := fmt.Sprintf("#%-2d ", i+1)
 
 			repoText := r.RepoName
 			if len(repoText) > repoColW-2 {
@@ -484,8 +490,14 @@ func (m Model) renderSquadDashboardView() (string, []AvatarPlacement) {
 
 	currentRow := topBarLines + preMemberLines + 1
 
-	visiblePanes := 4
-	if m.Height > 34 {
+	// Dynamically calculate visiblePanes based on remaining terminal height
+	// Each member pane is 5 lines (4 lines text + 1 line bottom padding).
+	remainingHeight := m.Height - currentRow - 1
+	visiblePanes := remainingHeight / 5
+	if visiblePanes < 2 {
+		visiblePanes = 2
+	}
+	if visiblePanes > 6 {
 		visiblePanes = 6
 	}
 

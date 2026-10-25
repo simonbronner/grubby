@@ -249,3 +249,27 @@ func TestLiveFetchUserProfiles(t *testing.T) {
 		t.Errorf("expected simonbronner in profiles, got %+v", profs)
 	}
 }
+
+func TestNormalizeRepoName(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"grubby", "grubby"},
+		{"simonbronner/grubby", "grubby"},
+		{"org/repo.git", "repo"},
+		{"https://github.com/org/repo", "repo"},
+		{"https://github.com/org/repo.git", "repo"},
+		{"git@github.com:org/repo.git", "repo"},
+		{"org/nested/repo", "repo"},
+		{"", "unknown"},
+		{"  org/repo  ", "repo"},
+	}
+
+	for _, tc := range tests {
+		actual := NormalizeRepoName(tc.input)
+		if actual != tc.expected {
+			t.Errorf("NormalizeRepoName(%q) = %q; expected %q", tc.input, actual, tc.expected)
+		}
+	}
+}
