@@ -104,6 +104,7 @@ Press `?` at any time inside Grubby to display the contextual keybindings overla
 | `g` | Open **Manage Groups Modal** (Space to toggle, `+` to add new group) |
 | `c` | Clone repository to `~/workspaces/{repo}` |
 | `e` | Open local repository in `$EDITOR` |
+| `t` | Open repository in a new shell (iTerm2 on macOS) |
 | `o` | Open repository in web browser |
 | `u` | Safe fast-forward clean `behind` repository |
 

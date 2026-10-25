@@ -55,5 +55,6 @@ type SecurityAlertSummary struct {
 	Medium      int       `json:"medium"`
 	Low         int       `json:"low"`
 	Total       int       `json:"total"`
+	Packages    []string  `json:"packages"`
 	LastScanned time.Time `json:"last_scanned"`
 }

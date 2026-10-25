@@ -8,6 +8,15 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+var (
+	squadColCursor  = lipgloss.NewStyle().Width(3)
+	squadColTime    = lipgloss.NewStyle().Width(12)
+	squadColActor   = lipgloss.NewStyle().Width(16)
+	squadColAction  = lipgloss.NewStyle().Width(18)
+	squadColTarget  = lipgloss.NewStyle().Width(28)
+	squadColDetails = lipgloss.NewStyle().Width(45)
+)
+
 func (m Model) handleSquadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
@@ -32,7 +41,6 @@ func (m Model) handleSquadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Remove selected member if on squad list
 		activeSquad := m.Config.GetActiveSquad()
 		if activeSquad != nil && len(activeSquad.Members) > 0 {
-			// Remove the last member or open removal dialog
 			lastMember := activeSquad.Members[len(activeSquad.Members)-1]
 			_ = m.Config.RemoveMemberFromSquad(activeSquad.Name, lastMember)
 			return m, func() tea.Msg { return StatusToastMsg("Removed " + lastMember + " from " + activeSquad.Name) }
@@ -67,12 +75,18 @@ func (m Model) renderSquadView() string {
 		MetaBarStyle.Render(fmt.Sprintf("  (Members: %s)", membersList)) + "\n"
 
 	if len(m.SquadEvents) == 0 {
-		return banner + "\n  No recent public activity recorded for squad members.\n  Press 'a' to add members to this squad, or 's' to switch squads.\n"
+		return banner + "\n  No recent activity recorded for squad members.\n  Press 'a' to add members to this squad, or 's' to switch squads.\n"
 	}
 
-	header := fmt.Sprintf("  %-12s %-14s %-16s %-25s %s",
-		"TIME", "ACTOR", "ACTION", "TARGET", "DETAILS")
-	renderedHeader := TableHeaderStyle.Render(header)
+	headerRow := lipgloss.JoinHorizontal(lipgloss.Top,
+		squadColCursor.Render(""),
+		squadColTime.Render("TIME"),
+		squadColActor.Render("ACTOR"),
+		squadColAction.Render("ACTION"),
+		squadColTarget.Render("TARGET"),
+		squadColDetails.Render("DETAILS"),
+	)
+	renderedHeader := TableHeaderStyle.Render(headerRow)
 
 	var rows []string
 	rows = append(rows, banner, renderedHeader)
@@ -101,22 +115,28 @@ func (m Model) renderSquadView() string {
 		}
 
 		target := ev.Target
-		if len(target) > 23 {
-			target = target[:20] + "..."
+		if len(target) > 26 {
+			target = target[:24] + "…"
 		}
 
 		details := ev.Details
-		if len(details) > 40 {
-			details = details[:37] + "..."
+		if len(details) > 42 {
+			details = details[:39] + "..."
 		}
 
-		rowContent := fmt.Sprintf("%s%-10s %-14s %-16s %-25s %s",
-			prefix, timeAgo, ev.Actor, ev.Action, target, details)
+		rowCells := lipgloss.JoinHorizontal(lipgloss.Top,
+			squadColCursor.Render(prefix),
+			squadColTime.Render(timeAgo),
+			squadColActor.Render(ev.Actor),
+			squadColAction.Render(ev.Action),
+			squadColTarget.Render(target),
+			squadColDetails.Render(details),
+		)
 
 		if i == m.SquadCursor {
-			rows = append(rows, SelectedRowStyle.Render(rowContent))
+			rows = append(rows, SelectedRowStyle.Render(rowCells))
 		} else {
-			rows = append(rows, NormalRowStyle.Render(rowContent))
+			rows = append(rows, NormalRowStyle.Render(rowCells))
 		}
 	}
 

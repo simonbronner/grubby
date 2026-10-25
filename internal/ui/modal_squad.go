@@ -201,6 +201,7 @@ Repositories Tab (1):
   [g]                 Manage Groups (assign / create groups)
   [c]                 Clone repo to ~/workspaces/
   [e]                 Open in $EDITOR (Neovim/VS Code)
+  [t]                 Open in shell (iTerm2 on macOS)
   [o]                 Open repo in GitHub browser
   [u]                 Fast-forward clean behind repo
 

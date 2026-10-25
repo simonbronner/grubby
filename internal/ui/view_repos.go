@@ -7,9 +7,21 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
+	"grubby/internal/config"
 	"grubby/internal/git"
 	"grubby/internal/github"
+)
+
+var (
+	repoColCursor = lipgloss.NewStyle().Width(3)
+	repoColName   = lipgloss.NewStyle().Width(24)
+	repoColGroup  = lipgloss.NewStyle().Width(18)
+	repoColGit    = lipgloss.NewStyle().Width(18)
+	repoColBranch = lipgloss.NewStyle().Width(14)
+	repoColLast   = lipgloss.NewStyle().Width(16)
+	repoColPath   = lipgloss.NewStyle().Width(34)
 )
 
 func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -50,6 +62,22 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, func() tea.Msg { return StatusToastMsg("Repo is not cloned yet! Press 'c' to clone.") }
 			}
 		}
+	case "t":
+		// Open repo in a new shell (iTerm2 on macOS)
+		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
+			repo := m.Repos[m.RepoCursor]
+			st := m.GitStatuses[repo.Name]
+			if st.IsCloned {
+				err := OpenInShell(st.LocalPath)
+				if err != nil {
+					return m, func() tea.Msg { return StatusToastMsg("Failed to open shell: " + err.Error()) }
+				}
+				collapsed := config.CollapseHome(st.LocalPath)
+				return m, func() tea.Msg { return StatusToastMsg("Opened iTerm at " + collapsed) }
+			} else {
+				return m, func() tea.Msg { return StatusToastMsg("Repo is not cloned yet! Press 'c' to clone.") }
+			}
+		}
 	case "c":
 		// Clone repo
 		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
@@ -66,7 +94,8 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if err != nil {
 					return StatusToastMsg("Clone failed: " + err.Error())
 				}
-				return StatusToastMsg("Successfully cloned " + repo.Name + " to " + targetDir)
+				collapsed := config.CollapseHome(targetDir)
+				return StatusToastMsg("Successfully cloned " + repo.Name + " to " + collapsed)
 			}
 		}
 	case "u":
@@ -105,9 +134,16 @@ func (m Model) renderReposView() string {
 		return "\n  No repositories found for " + m.CurrentOrg + ".\n"
 	}
 
-	header := fmt.Sprintf("  %-25s %-22s %-16s %-12s %-18s %s",
-		"REPOSITORY", "GROUPS", "GIT STATUS", "BRANCH", "LAST PUSHED", "LOCAL PATH")
-	renderedHeader := TableHeaderStyle.Render(header)
+	headerRow := lipgloss.JoinHorizontal(lipgloss.Top,
+		repoColCursor.Render(""),
+		repoColName.Render("REPOSITORY"),
+		repoColGroup.Render("GROUPS"),
+		repoColGit.Render("GIT STATUS"),
+		repoColBranch.Render("BRANCH"),
+		repoColLast.Render("LAST PUSHED"),
+		repoColPath.Render("LOCAL PATH"),
+	)
+	renderedHeader := TableHeaderStyle.Render(headerRow)
 
 	var rows []string
 	rows = append(rows, renderedHeader)
@@ -136,8 +172,8 @@ func (m Model) renderReposView() string {
 		if len(groups) > 0 {
 			groupText = strings.Join(groups, ", ")
 		}
-		if len(groupText) > 20 {
-			groupText = groupText[:17] + "..."
+		if len(groupText) > 16 {
+			groupText = groupText[:13] + "..."
 		}
 
 		// Git badge
@@ -160,17 +196,17 @@ func (m Model) renderReposView() string {
 		if branch == "" {
 			branch = r.DefaultBranch
 		}
-		if len(branch) > 10 {
-			branch = branch[:9] + "…"
+		if len(branch) > 12 {
+			branch = branch[:11] + "…"
 		}
 
 		lastPushed := formatTimeAgo(r.PushedAt)
 
 		localPath := "-"
 		if st.IsCloned {
-			localPath = st.LocalPath
-			if len(localPath) > 35 {
-				localPath = "…" + localPath[len(localPath)-34:]
+			localPath = config.CollapseHome(st.LocalPath)
+			if len(localPath) > 32 {
+				localPath = "…" + localPath[len(localPath)-31:]
 			}
 		}
 
@@ -179,13 +215,25 @@ func (m Model) renderReposView() string {
 			prefix = "▶ "
 		}
 
-		rowContent := fmt.Sprintf("%s%-23s %-22s %-26s %-12s %-18s %s",
-			prefix, r.Name, groupText, styledBadge, branch, lastPushed, localPath)
+		name := r.Name
+		if len(name) > 22 {
+			name = name[:20] + "…"
+		}
+
+		rowCells := lipgloss.JoinHorizontal(lipgloss.Top,
+			repoColCursor.Render(prefix),
+			repoColName.Render(name),
+			repoColGroup.Render(groupText),
+			repoColGit.Render(styledBadge),
+			repoColBranch.Render(branch),
+			repoColLast.Render(lastPushed),
+			repoColPath.Render(localPath),
+		)
 
 		if i == m.RepoCursor {
-			rows = append(rows, SelectedRowStyle.Render(rowContent))
+			rows = append(rows, SelectedRowStyle.Render(rowCells))
 		} else {
-			rows = append(rows, NormalRowStyle.Render(rowContent))
+			rows = append(rows, NormalRowStyle.Render(rowCells))
 		}
 	}
 

@@ -11,6 +11,18 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+var (
+	prColCursor   = lipgloss.NewStyle().Width(3)
+	prColNum      = lipgloss.NewStyle().Width(7)
+	prColRepo     = lipgloss.NewStyle().Width(18)
+	prColTitle    = lipgloss.NewStyle().Width(32)
+	prColAuthor   = lipgloss.NewStyle().Width(12)
+	prColAge      = lipgloss.NewStyle().Width(12)
+	prColReview   = lipgloss.NewStyle().Width(16)
+	prColComments = lipgloss.NewStyle().Width(12)
+	prColLabels   = lipgloss.NewStyle().Width(20)
+)
+
 func (m Model) handlePRsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
@@ -71,9 +83,18 @@ func (m Model) renderPRsView() string {
 		return "\n  No open pull requests found.\n"
 	}
 
-	header := fmt.Sprintf("  %-6s %-18s %-32s %-12s %-8s %-14s %-12s %s",
-		"PR", "REPOSITORY", "TITLE", "AUTHOR", "AGE", "REVIEW", "COMMENTS", "LABELS")
-	renderedHeader := TableHeaderStyle.Render(header)
+	headerRow := lipgloss.JoinHorizontal(lipgloss.Top,
+		prColCursor.Render(""),
+		prColNum.Render("PR"),
+		prColRepo.Render("REPOSITORY"),
+		prColTitle.Render("TITLE"),
+		prColAuthor.Render("AUTHOR"),
+		prColAge.Render("AGE"),
+		prColReview.Render("REVIEW"),
+		prColComments.Render("COMMENTS"),
+		prColLabels.Render("LABELS"),
+	)
+	renderedHeader := TableHeaderStyle.Render(headerRow)
 
 	var rows []string
 	rows = append(rows, renderedHeader)
@@ -125,8 +146,8 @@ func (m Model) renderPRsView() string {
 		}
 
 		labelsText := strings.Join(pr.Labels, ", ")
-		if len(labelsText) > 20 {
-			labelsText = labelsText[:17] + "..."
+		if len(labelsText) > 18 {
+			labelsText = labelsText[:15] + "..."
 		}
 
 		prefix := "  "
@@ -134,13 +155,24 @@ func (m Model) renderPRsView() string {
 			prefix = "▶ "
 		}
 
-		rowContent := fmt.Sprintf("%s#%-4d %-18s %-32s %-12s %-18s %-20s %-12s %s",
-			prefix, pr.Number, pr.Repo, title, pr.Author, ageText, reviewBadge, commentsText, labelsText)
+		numText := fmt.Sprintf("#%-5d", pr.Number)
+
+		rowCells := lipgloss.JoinHorizontal(lipgloss.Top,
+			prColCursor.Render(prefix),
+			prColNum.Render(numText),
+			prColRepo.Render(pr.Repo),
+			prColTitle.Render(title),
+			prColAuthor.Render(pr.Author),
+			prColAge.Render(ageText),
+			prColReview.Render(reviewBadge),
+			prColComments.Render(commentsText),
+			prColLabels.Render(labelsText),
+		)
 
 		if i == m.PRCursor {
-			rows = append(rows, SelectedRowStyle.Render(rowContent))
+			rows = append(rows, SelectedRowStyle.Render(rowCells))
 		} else {
-			rows = append(rows, NormalRowStyle.Render(rowContent))
+			rows = append(rows, NormalRowStyle.Render(rowCells))
 		}
 	}
 

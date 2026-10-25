@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -43,6 +44,7 @@ type DataLoadedMsg struct {
 	Repos       []github.Repository
 	PRs         []github.PullRequest
 	SquadEvents []github.SquadEvent
+	Security    map[string]github.SecurityAlertSummary
 	RateLimit   github.RateLimitInfo
 	Err         error
 }
@@ -67,13 +69,14 @@ type Model struct {
 	SearchEng search.Engine
 
 	// Data
-	CurrentOrg  string
-	Repos       []github.Repository
-	PRs         []github.PullRequest
-	SquadEvents []github.SquadEvent
-	GitStatuses map[string]git.RepoGitStatus
-	RateLimit   github.RateLimitInfo
-	Loading     bool
+	CurrentOrg        string
+	Repos             []github.Repository
+	PRs               []github.PullRequest
+	SquadEvents       []github.SquadEvent
+	SecuritySummaries map[string]github.SecurityAlertSummary
+	GitStatuses       map[string]git.RepoGitStatus
+	RateLimit         github.RateLimitInfo
+	Loading           bool
 
 	// Navigation & Cursors
 	RepoCursor int
@@ -130,6 +133,7 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 		SearchEng:          search.NewRipgrepEngine(),
 		CurrentOrg:         org,
 		GitStatuses:        make(map[string]git.RepoGitStatus),
+		SecuritySummaries:  make(map[string]github.SecurityAlertSummary),
 		Loading:            true,
 		SearchInput:        si,
 		ModalInput:         mi,
@@ -152,15 +156,20 @@ func (m Model) loadDataCmd() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 
-		repos, prs, err := m.GHClient.FetchRepositoriesAndPRs(ctx, m.CurrentOrg)
+		repos, prs, secAlerts, err := m.GHClient.FetchRepositoriesAndPRs(ctx, m.CurrentOrg)
 		if err != nil {
 			return DataLoadedMsg{Err: err}
 		}
 
 		// Fetch squad activity
 		var members []string
-		if activeSquad := m.Config.GetActiveSquad(); activeSquad != nil {
+		if activeSquad := m.Config.GetActiveSquad(); activeSquad != nil && len(activeSquad.Members) > 0 {
 			members = activeSquad.Members
+		} else {
+			// Auto-seed squad with current user/org
+			_ = m.Config.AddMemberToSquad("my-squad", m.CurrentOrg)
+			_ = m.Config.SetActiveSquad("my-squad")
+			members = []string{m.CurrentOrg}
 		}
 		events, _ := m.GHClient.FetchSquadActivity(ctx, members)
 
@@ -168,6 +177,7 @@ func (m Model) loadDataCmd() tea.Cmd {
 			Repos:       repos,
 			PRs:         prs,
 			SquadEvents: events,
+			Security:    secAlerts,
 			RateLimit:   m.GHClient.RateLimit(),
 		}
 	}
@@ -218,6 +228,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Repos = msg.Repos
 		m.PRs = msg.PRs
 		m.SquadEvents = msg.SquadEvents
+		m.SecuritySummaries = msg.Security
 		m.RateLimit = msg.RateLimit
 
 		// Trigger workspace git scan once repos are known
@@ -400,7 +411,7 @@ func (m Model) renderFooter() string {
 	var help string
 	switch m.ActiveTab {
 	case TabRepos:
-		help = "[g] Groups  [c] Clone  [e] Editor  [o] Browser  [u] Fast-forward  [r] Refresh  [?] Help  [q] Quit"
+		help = "[g] Groups  [c] Clone  [e] Editor  [t] Shell (iTerm)  [o] Browser  [u] Fast-forward  [?] Help  [q] Quit"
 	case TabPRs:
 		help = "[o] Browser  [p] Trigger Copilot Review  [c] Checkout Branch  [r] Refresh  [?] Help  [q] Quit"
 	case TabSquad:
@@ -438,4 +449,32 @@ func OpenInEditor(editor, path string, lineNum int) error {
 		cmd = exec.Command(editor, fmt.Sprintf("+%d", lineNum), path)
 	}
 	return cmd.Start()
+}
+
+func OpenInShell(dir string) error {
+	if _, err := os.Stat("/Applications/iTerm.app"); err == nil {
+		script := fmt.Sprintf(`
+tell application "iTerm"
+	activate
+	try
+		tell current window
+			create tab with default profile
+			tell current session
+				write text "cd %q && clear"
+			end tell
+		end tell
+	on error
+		create window with default profile
+		tell current session of current window
+			write text "cd %q && clear"
+		end tell
+	end try
+end tell`, dir, dir)
+		cmd := exec.Command("osascript", "-e", script)
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+		return exec.Command("open", "-a", "iTerm", dir).Start()
+	}
+	return exec.Command("open", "-a", "Terminal", dir).Start()
 }

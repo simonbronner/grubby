@@ -168,8 +168,8 @@ func (c *Client) queryGraphQL(ctx context.Context, query string, variables map[s
 	return json.Unmarshal(gqlResp.Data, target)
 }
 
-// FetchRepositoriesAndPRs fetches both repos and open PRs for an owner (org or user)
-func (c *Client) FetchRepositoriesAndPRs(ctx context.Context, owner string) ([]Repository, []PullRequest, error) {
+// FetchRepositoriesAndPRs fetches repos, open PRs, and vulnerability summaries for an owner (org or user)
+func (c *Client) FetchRepositoriesAndPRs(ctx context.Context, owner string) ([]Repository, []PullRequest, map[string]SecurityAlertSummary, error) {
 	query := `
 query($login: String!) {
   repositoryOwner(login: $login) {
@@ -183,6 +183,17 @@ query($login: String!) {
         sshUrl
         defaultBranchRef {
           name
+        }
+        vulnerabilityAlerts(first: 50, states: OPEN) {
+          totalCount
+          nodes {
+            securityVulnerability {
+              severity
+              package {
+                name
+              }
+            }
+          }
         }
         pullRequests(first: 20, states: OPEN, orderBy: {field: UPDATED_AT, direction: DESC}) {
           nodes {
@@ -208,7 +219,7 @@ query($login: String!) {
             reviewThreads(first: 30) {
               totalCount
               nodes {
-                isResolved
+                IsResolved: isResolved
               }
             }
           }
@@ -231,6 +242,17 @@ query($login: String!) {
 					DefaultBranchRef *struct {
 						Name string `json:"name"`
 					} `json:"defaultBranchRef"`
+					VulnerabilityAlerts struct {
+						TotalCount int `json:"totalCount"`
+						Nodes      []struct {
+							SecurityVulnerability struct {
+								Severity string `json:"severity"`
+								Package  struct {
+									Name string `json:"name"`
+								} `json:"package"`
+							} `json:"securityVulnerability"`
+						} `json:"nodes"`
+					} `json:"vulnerabilityAlerts"`
 					PullRequests struct {
 						Nodes []struct {
 							Number         int       `json:"number"`
@@ -267,11 +289,12 @@ query($login: String!) {
 
 	err := c.queryGraphQL(ctx, query, map[string]interface{}{"login": owner}, &resp)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	var repos []Repository
 	var prs []PullRequest
+	securityMap := make(map[string]SecurityAlertSummary)
 
 	for _, node := range resp.RepositoryOwner.Repositories.Nodes {
 		desc := ""
@@ -294,6 +317,39 @@ query($login: String!) {
 			SSHURL:        node.SSHURL,
 		}
 		repos = append(repos, repo)
+
+		// Parse Vulnerability Alerts
+		crit, high, med, low := 0, 0, 0, 0
+		var packages []string
+		seenPkg := make(map[string]bool)
+		for _, va := range node.VulnerabilityAlerts.Nodes {
+			pkgName := va.SecurityVulnerability.Package.Name
+			if pkgName != "" && !seenPkg[pkgName] {
+				seenPkg[pkgName] = true
+				packages = append(packages, pkgName)
+			}
+			switch strings.ToUpper(va.SecurityVulnerability.Severity) {
+			case "CRITICAL":
+				crit++
+			case "HIGH":
+				high++
+			case "MODERATE":
+				med++
+			case "LOW":
+				low++
+			}
+		}
+
+		securityMap[node.Name] = SecurityAlertSummary{
+			Repo:        node.Name,
+			Critical:    crit,
+			High:        high,
+			Medium:      med,
+			Low:         low,
+			Total:       node.VulnerabilityAlerts.TotalCount,
+			Packages:    packages,
+			LastScanned: time.Now(),
+		}
 
 		for _, p := range node.PullRequests.Nodes {
 			author := "unknown"
@@ -334,10 +390,10 @@ query($login: String!) {
 		}
 	}
 
-	return repos, prs, nil
+	return repos, prs, securityMap, nil
 }
 
-// FetchSquadActivity retrieves public events for a list of squad members
+// FetchSquadActivity retrieves public and private events for a list of squad members
 func (c *Client) FetchSquadActivity(ctx context.Context, members []string) ([]SquadEvent, error) {
 	var events []SquadEvent
 	if len(members) == 0 {
@@ -345,7 +401,8 @@ func (c *Client) FetchSquadActivity(ctx context.Context, members []string) ([]Sq
 	}
 
 	for _, member := range members {
-		url := fmt.Sprintf("https://api.github.com/users/%s/events/public?per_page=10", member)
+		// Use /users/{member}/events which returns both public and private events for authenticated user/collaborators
+		url := fmt.Sprintf("https://api.github.com/users/%s/events?per_page=30", member)
 		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 		if err != nil {
 			continue
@@ -380,15 +437,45 @@ func (c *Client) FetchSquadActivity(ctx context.Context, members []string) ([]Sq
 
 				switch ev.Type {
 				case "PushEvent":
-					action = "Pushed commits"
 					var p struct {
+						Ref     string `json:"ref"`
 						Commits []struct {
 							Message string `json:"message"`
 						} `json:"commits"`
 					}
 					_ = json.Unmarshal(ev.Payload, &p)
+					branch := strings.TrimPrefix(p.Ref, "refs/heads/")
+					if branch != "" {
+						target = fmt.Sprintf("%s:%s", ev.Repo.Name, branch)
+					}
 					if len(p.Commits) > 0 {
+						action = fmt.Sprintf("Pushed %d commit", len(p.Commits))
+						if len(p.Commits) > 1 {
+							action += "s"
+						}
 						details = strings.Split(p.Commits[0].Message, "\n")[0]
+					} else {
+						action = "Pushed commits"
+					}
+				case "CreateEvent":
+					var p struct {
+						Ref     string `json:"ref"`
+						RefType string `json:"ref_type"`
+					}
+					_ = json.Unmarshal(ev.Payload, &p)
+					action = fmt.Sprintf("Created %s", p.RefType)
+					if p.Ref != "" {
+						details = p.Ref
+					}
+				case "DeleteEvent":
+					var p struct {
+						Ref     string `json:"ref"`
+						RefType string `json:"ref_type"`
+					}
+					_ = json.Unmarshal(ev.Payload, &p)
+					action = fmt.Sprintf("Deleted %s", p.RefType)
+					if p.Ref != "" {
+						details = p.Ref
 					}
 				case "PullRequestEvent":
 					var p struct {
@@ -402,14 +489,35 @@ func (c *Client) FetchSquadActivity(ctx context.Context, members []string) ([]Sq
 					action = fmt.Sprintf("PR %s", p.Action)
 					target = fmt.Sprintf("%s#%d", ev.Repo.Name, p.PullRequest.Number)
 					details = p.PullRequest.Title
+				case "PullRequestReviewEvent":
+					var p struct {
+						Action string `json:"action"`
+						Review struct {
+							State string `json:"state"`
+						} `json:"review"`
+						PullRequest struct {
+							Number int    `json:"number"`
+							Title  string `json:"title"`
+						} `json:"pull_request"`
+					}
+					_ = json.Unmarshal(ev.Payload, &p)
+					action = fmt.Sprintf("Review %s", strings.ToLower(p.Review.State))
+					target = fmt.Sprintf("%s#%d", ev.Repo.Name, p.PullRequest.Number)
+					details = p.PullRequest.Title
 				case "IssueCommentEvent":
 					action = "Commented"
 					var p struct {
+						Issue struct {
+							Number int `json:"number"`
+						} `json:"issue"`
 						Comment struct {
 							Body string `json:"body"`
 						} `json:"comment"`
 					}
 					_ = json.Unmarshal(ev.Payload, &p)
+					if p.Issue.Number > 0 {
+						target = fmt.Sprintf("%s#%d", ev.Repo.Name, p.Issue.Number)
+					}
 					details = strings.Split(p.Comment.Body, "\n")[0]
 				default:
 					action = strings.TrimSuffix(ev.Type, "Event")
