@@ -15,17 +15,31 @@ import (
 	"grubby/internal/ui"
 )
 
+var (
+	Version = "dev"
+	Commit  = "none"
+	Date    = "unknown"
+)
+
 func main() {
 	var (
 		orgFlag       string
 		workspaceFlag string
 		configFlag    string
+		versionFlag   bool
 	)
 
 	flag.StringVar(&orgFlag, "org", "", "Target GitHub organization or user (defaults to personal account)")
 	flag.StringVar(&workspaceFlag, "workspace", "", "Path to local workspace directory (defaults to ~/workspaces)")
 	flag.StringVar(&configFlag, "config", "", "Path to Grubby config file (defaults to ~/.config/grubby/config.yaml)")
+	flag.BoolVar(&versionFlag, "version", false, "Print Grubby version and exit")
+	flag.BoolVar(&versionFlag, "v", false, "Print Grubby version and exit (shorthand)")
 	flag.Parse()
+
+	if versionFlag {
+		fmt.Printf("grubby %s (%s, %s)\n", Version, Commit, Date)
+		return
+	}
 
 	// Check authentication
 	token, err := github.GetGHToken()

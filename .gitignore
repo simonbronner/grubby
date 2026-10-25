@@ -2,6 +2,7 @@
 /grubby
 *.exe
 *.test
+/dist/
 
 # OS & Editor
 .DS_Store
