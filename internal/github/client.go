@@ -692,6 +692,83 @@ query($searchQuery: String!) {
 	return repos, prs, commitEvents, securityMap, nil
 }
 
+type OrgMember struct {
+	Login string `json:"login"`
+	Name  string `json:"name"`
+}
+
+// FetchOrgMembers retrieves the members of an organization (up to 100)
+func (c *Client) FetchOrgMembers(ctx context.Context, org string) ([]OrgMember, error) {
+	query := `
+query($login: String!) {
+  organization(login: $login) {
+    membersWithRole(first: 100) {
+      nodes {
+        login
+        name
+      }
+    }
+  }
+}
+`
+	var resp struct {
+		Organization *struct {
+			MembersWithRole struct {
+				Nodes []struct {
+					Login string  `json:"login"`
+					Name  *string `json:"name"`
+				} `json:"nodes"`
+			} `json:"membersWithRole"`
+		} `json:"organization"`
+	}
+
+	err := c.queryGraphQL(ctx, query, map[string]interface{}{"login": org}, &resp)
+	if err == nil && resp.Organization != nil && len(resp.Organization.MembersWithRole.Nodes) > 0 {
+		var members []OrgMember
+		for _, n := range resp.Organization.MembersWithRole.Nodes {
+			name := n.Login
+			if n.Name != nil && strings.TrimSpace(*n.Name) != "" {
+				name = *n.Name
+			}
+			members = append(members, OrgMember{
+				Login: n.Login,
+				Name:  name,
+			})
+		}
+		return members, nil
+	}
+
+	// Fallback to REST API /orgs/{org}/members
+	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("https://api.github.com/orgs/%s/members?per_page=100", org), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	httpResp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer httpResp.Body.Close()
+	c.updateRateLimits(httpResp)
+
+	if httpResp.StatusCode == http.StatusOK {
+		var raw []struct {
+			Login string `json:"login"`
+		}
+		if err := json.NewDecoder(httpResp.Body).Decode(&raw); err == nil && len(raw) > 0 {
+			var members []OrgMember
+			for _, r := range raw {
+				members = append(members, OrgMember{Login: r.Login, Name: r.Login})
+			}
+			return members, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no members found for org %s", org)
+}
+
 // FetchSquadActivity retrieves public and private events for a list of squad members and merges with commit history
 func (c *Client) FetchSquadActivity(ctx context.Context, members []string, commitEvents []SquadEvent) ([]SquadEvent, error) {
 	var events []SquadEvent

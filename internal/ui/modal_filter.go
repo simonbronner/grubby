@@ -139,3 +139,52 @@ func (m Model) handleFilterNameModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 }
+
+// Filter PRs Modal
+
+func (m Model) renderFilterPRModal() string {
+	title := ModalTitleStyle.Render("Filter Pull Requests")
+
+	var lines []string
+	lines = append(lines, title)
+	lines = append(lines, "Type keyword to filter PRs by title, repository, or author.\nPress [Enter] to apply, [Esc] to exit.\n")
+	lines = append(lines, m.PRFilterInput.View())
+
+	// Live match preview
+	query := strings.TrimSpace(strings.ToLower(m.PRFilterInput.Value()))
+	matchCount := 0
+	for _, pr := range m.PRs {
+		if query == "" || strings.Contains(strings.ToLower(pr.Title), query) ||
+			strings.Contains(strings.ToLower(pr.Repo), query) ||
+			strings.Contains(strings.ToLower(pr.Author), query) {
+			matchCount++
+		}
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, MetaBarStyle.Render(fmt.Sprintf("Matches: %d of %d pull requests", matchCount, len(m.PRs))))
+
+	return ModalBoxStyle.Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) handleFilterPRModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.ActiveModal = ModalNone
+		return m, nil
+	case "enter":
+		m.PRFilter = strings.TrimSpace(m.PRFilterInput.Value())
+		m.PRCursor = 0
+		m.ActiveModal = ModalNone
+		if m.PRFilter != "" {
+			return m, func() tea.Msg {
+				return StatusToastMsg(fmt.Sprintf("Filtered PRs by: %q", m.PRFilter))
+			}
+		}
+		return m, func() tea.Msg { return StatusToastMsg("Cleared pull request filter") }
+	default:
+		var cmd tea.Cmd
+		m.PRFilterInput, cmd = m.PRFilterInput.Update(msg)
+		return m, cmd
+	}
+}

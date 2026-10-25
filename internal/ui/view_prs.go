@@ -9,28 +9,78 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"grubby/internal/github"
 )
 
+func (m Model) getDisplayPRs() []github.PullRequest {
+	if m.PRFilter == "" {
+		return m.PRs
+	}
+	f := strings.ToLower(m.PRFilter)
+	var result []github.PullRequest
+	for _, pr := range m.PRs {
+		if strings.Contains(strings.ToLower(pr.Title), f) ||
+			strings.Contains(strings.ToLower(pr.Repo), f) ||
+			strings.Contains(strings.ToLower(pr.Author), f) {
+			result = append(result, pr)
+		}
+	}
+	return result
+}
+
 func (m Model) handlePRsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	prs := m.getDisplayPRs()
+	visibleCount := m.Height - 8
+	if visibleCount < 3 {
+		visibleCount = 3
+	}
+
 	switch msg.String() {
 	case "up", "k":
 		if m.PRCursor > 0 {
 			m.PRCursor--
 		}
 	case "down", "j":
-		if m.PRCursor < len(m.PRs)-1 {
+		if m.PRCursor < len(prs)-1 {
 			m.PRCursor++
 		}
+	case "pgdown", "ctrl+d":
+		m.PRCursor += visibleCount
+		if m.PRCursor >= len(prs) {
+			m.PRCursor = len(prs) - 1
+		}
+	case "pgup", "ctrl+u":
+		m.PRCursor -= visibleCount
+		if m.PRCursor < 0 {
+			m.PRCursor = 0
+		}
+	case "home", "g":
+		m.PRCursor = 0
+	case "end", "G":
+		if len(prs) > 0 {
+			m.PRCursor = len(prs) - 1
+		}
+	case "f":
+		m.ActiveModal = ModalFilterPR
+		m.PRFilterInput.SetValue(m.PRFilter)
+		m.PRFilterInput.Focus()
+		return m, nil
+	case "esc":
+		if m.PRFilter != "" {
+			m.PRFilter = ""
+			m.PRCursor = 0
+			return m, func() tea.Msg { return StatusToastMsg("Cleared pull request filter") }
+		}
 	case "o":
-		if len(m.PRs) > 0 && m.PRCursor < len(m.PRs) {
-			pr := m.PRs[m.PRCursor]
+		if len(prs) > 0 && m.PRCursor < len(prs) {
+			pr := prs[m.PRCursor]
 			_ = OpenBrowser(pr.URL)
 			return m, func() tea.Msg { return StatusToastMsg(fmt.Sprintf("Opened PR #%d in browser", pr.Number)) }
 		}
 	case "p":
 		// Trigger Copilot review
-		if len(m.PRs) > 0 && m.PRCursor < len(m.PRs) {
-			pr := m.PRs[m.PRCursor]
+		if len(prs) > 0 && m.PRCursor < len(prs) {
+			pr := prs[m.PRCursor]
 			return m, func() tea.Msg {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
@@ -43,8 +93,8 @@ func (m Model) handlePRsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "c":
 		// Checkout PR branch locally
-		if len(m.PRs) > 0 && m.PRCursor < len(m.PRs) {
-			pr := m.PRs[m.PRCursor]
+		if len(prs) > 0 && m.PRCursor < len(prs) {
+			pr := prs[m.PRCursor]
 			st := m.GitStatuses[pr.Repo]
 			if !st.IsCloned {
 				return m, func() tea.Msg { return StatusToastMsg("Repo " + pr.Repo + " is not cloned yet!") }
@@ -67,8 +117,19 @@ func (m Model) renderPRsView() string {
 	if m.Loading {
 		return "\n  Fetching pull requests from GitHub...\n"
 	}
+
+	displayPRs := m.getDisplayPRs()
+
 	if len(m.PRs) == 0 {
-		return "\n  No open pull requests found.\n"
+		return "\n  No open pull requests found for " + m.CurrentOrg + ".\n"
+	}
+
+	if len(displayPRs) == 0 {
+		return fmt.Sprintf("\n  No open pull requests match filter %q.\n  Press [Esc] to clear filter.\n", m.PRFilter)
+	}
+
+	if m.PRCursor >= len(displayPRs) {
+		m.PRCursor = len(displayPRs) - 1
 	}
 
 	cols := computePRColumns(m.Width)
@@ -87,11 +148,27 @@ func (m Model) renderPRsView() string {
 	renderedHeader := TableHeaderStyle.Render(headerRow)
 
 	var rows []string
-	rows = append(rows, renderedHeader)
+
+	// Banner summary & filter indicator
+	var bannerText string
+	if m.PRFilter != "" {
+		bannerText = MetaBarStyle.Render(fmt.Sprintf("  ⑂ %d Open Pull Requests  ", len(m.PRs))) +
+			lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render(fmt.Sprintf("🔍 Filter: %q (%d matched)", m.PRFilter, len(displayPRs))) +
+			MetaBarStyle.Render(" • [Esc] Clear")
+	} else {
+		bannerText = MetaBarStyle.Render(fmt.Sprintf("  ⑂ %d Open Pull Requests across %s", len(m.PRs), m.CurrentOrg))
+	}
+	rows = append(rows, bannerText, renderedHeader)
 
 	visibleCount := m.Height - 8
-	if visibleCount < 5 {
-		visibleCount = 10
+	if m.PRFilter != "" {
+		visibleCount = m.Height - 9
+	}
+	if visibleCount < 3 {
+		visibleCount = 3
+	}
+	if visibleCount > m.Height-6 {
+		visibleCount = m.Height - 6
 	}
 
 	start := 0
@@ -99,26 +176,34 @@ func (m Model) renderPRsView() string {
 		start = m.PRCursor - visibleCount + 1
 	}
 	end := start + visibleCount
-	if end > len(m.PRs) {
-		end = len(m.PRs)
+	if end > len(displayPRs) {
+		end = len(displayPRs)
 	}
 
 	for i := start; i < end; i++ {
-		pr := m.PRs[i]
+		pr := displayPRs[i]
 
 		repoText := pr.Repo
 		if len(repoText) > cols.RepoWidth-2 && cols.RepoWidth > 3 {
 			repoText = repoText[:cols.RepoWidth-3] + "…"
 		}
 
-		title := pr.Title
+		title := strings.ReplaceAll(strings.ReplaceAll(pr.Title, "\r", " "), "\n", " ")
 		if len(title) > cols.TitleWidth-2 && cols.TitleWidth > 3 {
 			title = title[:cols.TitleWidth-3] + "…"
+		}
+
+		authorText := pr.Author
+		if len(authorText) > cols.AuthorWidth-1 && cols.AuthorWidth > 2 {
+			authorText = authorText[:cols.AuthorWidth-2] + "…"
 		}
 
 		ageText := formatTimeAgo(pr.CreatedAt)
 		if pr.DaysStale() >= 3 {
 			ageText = StaleBadge.Render(fmt.Sprintf("%dd [!]", pr.DaysStale()))
+		}
+		if len(ageText) > cols.AgeWidth && cols.AgeWidth > 2 {
+			ageText = ageText[:cols.AgeWidth-1]
 		}
 
 		// Review Decision Badge
@@ -157,7 +242,7 @@ func (m Model) renderPRsView() string {
 			cols.Num.Render(numText),
 			cols.Repo.Render(repoText),
 			cols.Title.Render(title),
-			cols.Author.Render(pr.Author),
+			cols.Author.Render(authorText),
 			cols.Age.Render(ageText),
 			cols.Review.Render(reviewBadge),
 			cols.Comments.Render(commentsText),
@@ -165,9 +250,9 @@ func (m Model) renderPRsView() string {
 		)
 
 		if i == m.PRCursor {
-			rows = append(rows, SelectedRowStyle.Render(rowCells))
+			rows = append(rows, SelectedRowStyle.MaxHeight(1).Render(rowCells))
 		} else {
-			rows = append(rows, NormalRowStyle.Render(rowCells))
+			rows = append(rows, NormalRowStyle.MaxHeight(1).Render(rowCells))
 		}
 	}
 

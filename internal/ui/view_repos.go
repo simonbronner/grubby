@@ -75,6 +75,30 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.RepoCursor < len(repos)-1 {
 			m.RepoCursor++
 		}
+	case "pgdown", "ctrl+d":
+		visibleCount := m.Height - 8
+		if visibleCount < 5 {
+			visibleCount = 10
+		}
+		m.RepoCursor += visibleCount
+		if m.RepoCursor >= len(repos) {
+			m.RepoCursor = len(repos) - 1
+		}
+	case "pgup", "ctrl+u":
+		visibleCount := m.Height - 8
+		if visibleCount < 5 {
+			visibleCount = 10
+		}
+		m.RepoCursor -= visibleCount
+		if m.RepoCursor < 0 {
+			m.RepoCursor = 0
+		}
+	case "home":
+		m.RepoCursor = 0
+	case "end", "G":
+		if len(repos) > 0 {
+			m.RepoCursor = len(repos) - 1
+		}
 	case "v":
 		// 'v' view by group: select a group to filter the view on
 		m.ActiveModal = ModalFilterGroup
@@ -415,9 +439,9 @@ func (m Model) renderReposView() string {
 		)
 
 		if i == m.RepoCursor {
-			rows = append(rows, SelectedRowStyle.Render(rowCells))
+			rows = append(rows, SelectedRowStyle.MaxHeight(1).Render(rowCells))
 		} else {
-			rows = append(rows, NormalRowStyle.Render(rowCells))
+			rows = append(rows, NormalRowStyle.MaxHeight(1).Render(rowCells))
 		}
 	}
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -18,16 +19,49 @@ func (m Model) handleSquadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.SquadCursor < len(m.SquadEvents)-1 {
 			m.SquadCursor++
 		}
+	case "pgdown", "ctrl+d":
+		visibleCount := m.Height - 10
+		if visibleCount < 5 {
+			visibleCount = 10
+		}
+		m.SquadCursor += visibleCount
+		if m.SquadCursor >= len(m.SquadEvents) {
+			m.SquadCursor = len(m.SquadEvents) - 1
+		}
+	case "pgup", "ctrl+u":
+		visibleCount := m.Height - 10
+		if visibleCount < 5 {
+			visibleCount = 10
+		}
+		m.SquadCursor -= visibleCount
+		if m.SquadCursor < 0 {
+			m.SquadCursor = 0
+		}
+	case "home", "g":
+		m.SquadCursor = 0
+	case "end", "G":
+		if len(m.SquadEvents) > 0 {
+			m.SquadCursor = len(m.SquadEvents) - 1
+		}
 	case "s":
 		// Open Squad switch modal
 		m.ActiveModal = ModalSelectSquad
 		m.ModalCursor = 0
-	case "a":
-		// Open Add member modal
-		m.ActiveModal = ModalAddMember
+	case "n", "+":
+		// Create new squad directly
+		m.ActiveModal = ModalCreateSquad
 		m.ModalInput.Reset()
-		m.ModalInput.Placeholder = "GitHub username (e.g. alice)"
+		m.ModalInput.Placeholder = "New squad name (e.g. backend-team)"
 		m.ModalInput.Focus()
+		return m, textinput.Blink
+	case "a":
+		// Open Add member modal with organization member selector
+		m.ActiveModal = ModalAddMember
+		m.ModalCursor = 0
+		m.ModalInput.Reset()
+		m.ModalInput.Placeholder = "Type to filter org members or enter handle..."
+		m.ModalInput.Focus()
+		return m, textinput.Blink
 	case "d":
 		// Remove selected member if on squad list
 		activeSquad := m.Config.GetActiveSquad()
@@ -127,9 +161,9 @@ func (m Model) renderSquadView() string {
 		)
 
 		if i == m.SquadCursor {
-			rows = append(rows, SelectedRowStyle.Render(rowCells))
+			rows = append(rows, SelectedRowStyle.MaxHeight(1).Render(rowCells))
 		} else {
-			rows = append(rows, NormalRowStyle.Render(rowCells))
+			rows = append(rows, NormalRowStyle.MaxHeight(1).Render(rowCells))
 		}
 	}
 

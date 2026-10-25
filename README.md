@@ -29,7 +29,9 @@ It merges **remote GitHub state** (pull requests, unresolved review threads, tea
   * `S` opens the Dependabot security advisory page in your browser.
 
 ### 2. Pull Request Dashboard
-* **Actionable Focus**: Prioritizes open pull requests across your active organization or squad.
+* **Actionable Focus**: Prioritizes open pull requests across your active organization or squad with fixed, pinned table headers and smooth scrolling even on large tables (50+ PRs).
+* **Real-Time PR Filter**: Press `f` to filter open PRs across the organization by title, repository, or author. Press `Esc` to instantly clear the filter.
+* **Large Table Navigation**: Smooth scrolling with `PgDown` / `PgUp` (or `Ctrl+D` / `Ctrl+U`), and quick jump to top (`Home` / `g`) or bottom (`End` / `G`).
 * **Staleness Indicator**: Pull requests inactive for >3 days are flagged with a prominent warning badge `[!]`.
 * **Unresolved Comments Counter**: Instant visibility into review progress (`💬 {unresolved}/{total}`).
 * **Review States**: Clear color-coded badges for `APPROVED`, `CHANGES_REQ`, and `REVIEW_REQ`.
@@ -38,9 +40,9 @@ It merges **remote GitHub state** (pull requests, unresolved review threads, tea
 
 ### 3. Squad Activity Feed
 * **Watched Squad Focus**: Group squad members together and track what they are actively shipping across the organization (PR opens, merges, comments, commits).
-* **Interactive Squad Management**:
-  * `s` opens the **Squad Switcher Modal** to pivot between watched squads.
-  * `a` opens the **Add Member Modal** to add GitHub handles on the fly with instant persistence to `config.yaml`.
+* **Organization Member Selection**:
+  * `a` opens the **Add Member Modal** with a searchable, scrollable list of organization members—choose any colleague with `Space` or `Enter` without having to manually look up their handles!
+  * `s` opens the **Squad Switcher Modal** to pivot between watched squads. Press `+` or `n` to create a new squad/group and immediately pick members from the organization.
   * `d` removes members from the active squad.
 
 ### 4. Cross-Repo Code Search & Live Syntax Preview
@@ -172,6 +174,10 @@ Press `?` at any time inside Grubby to display the contextual keybindings overla
 | Key | Action |
 | :--- | :--- |
 | `j` / `k` or `↑` / `↓` | Select pull request |
+| `PgDn` / `PgUp` (or `Ctrl+D/U`) | Page down / up through pull requests |
+| `Home` / `End` (or `g` / `G`) | Jump to top / bottom |
+| `f` | Filter pull requests by title, repo, or author |
+| `Esc` | Clear pull request filter |
 | `o` | Open pull request in browser |
 | `p` | Trigger GitHub Copilot code review |
 | `c` | Checkout pull request branch in local workspace |
@@ -180,7 +186,8 @@ Press `?` at any time inside Grubby to display the contextual keybindings overla
 | Key | Action |
 | :--- | :--- |
 | `s` | Open **Squad Switcher Modal** |
-| `a` | Open **Add Member Modal** |
+| `n` or `+` | Create a new squad/group and pick members |
+| `a` | Open **Add Member Modal** (pick from organization members list or search) |
 | `d` | Remove member from watched squad |
 | `o` | Open activity target in browser |
 
