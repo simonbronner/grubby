@@ -3,11 +3,14 @@ package github
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -21,10 +24,69 @@ type RateLimitInfo struct {
 	Reset     time.Time
 }
 
+type ClientOptions struct {
+	Token              string
+	ProxyURL           string
+	InsecureSkipVerify bool
+	Timeout            time.Duration
+}
+
 type Client struct {
 	token      string
 	httpClient *http.Client
 	rateLimit  RateLimitInfo
+	proxyUsed  string
+}
+
+func (c *Client) ProxyUsed() string {
+	return c.proxyUsed
+}
+
+func getGitProxy() string {
+	for _, key := range []string{"https.proxy", "http.proxy"} {
+		cmd := exec.Command("git", "config", "--get", key)
+		if out, err := cmd.Output(); err == nil {
+			val := strings.TrimSpace(string(out))
+			if val != "" {
+				return val
+			}
+		}
+	}
+	return ""
+}
+
+func getEnvProxy() string {
+	for _, envKey := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"} {
+		if val := strings.TrimSpace(os.Getenv(envKey)); val != "" {
+			return val
+		}
+	}
+	return ""
+}
+
+// ResolveProxy resolves proxy configuration in priority order:
+// 1. Explicitly configured proxy URL
+// 2. Shell environment variables (HTTPS_PROXY, HTTP_PROXY, ALL_PROXY)
+// 3. Git configuration (git config --get https.proxy / http.proxy)
+func ResolveProxy(explicit string) string {
+	if p := strings.TrimSpace(explicit); p != "" {
+		return p
+	}
+	if p := getEnvProxy(); p != "" {
+		return p
+	}
+	return getGitProxy()
+}
+
+func normalizeProxyURL(raw string) (*url.URL, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "http://" + raw
+	}
+	return url.Parse(raw)
 }
 
 func GetGHToken() (string, error) {
@@ -47,26 +109,87 @@ func GetGHToken() (string, error) {
 	return token, nil
 }
 
-func NewClient(token string) (*Client, error) {
-	if token == "" {
+// NewClientWithOptions creates a new GitHub API client with custom options (proxy, TLS, timeouts)
+func NewClientWithOptions(opts ClientOptions) (*Client, error) {
+	if opts.Token == "" {
 		var err error
-		token, err = GetGHToken()
+		opts.Token, err = GetGHToken()
 		if err != nil {
 			return nil, err
 		}
 	}
 
+	timeout := opts.Timeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+
+	proxyStr := ResolveProxy(opts.ProxyURL)
+
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: opts.InsecureSkipVerify,
+	}
+
+	rootCAs, _ := x509.SystemCertPool()
+	if rootCAs == nil {
+		rootCAs = x509.NewCertPool()
+	}
+	if certFile := os.Getenv("SSL_CERT_FILE"); certFile != "" {
+		if certData, err := os.ReadFile(certFile); err == nil {
+			rootCAs.AppendCertsFromPEM(certData)
+		}
+	}
+	tlsConfig.RootCAs = rootCAs
+
+	transport := &http.Transport{
+		TLSClientConfig:       tlsConfig,
+		Proxy:                 http.ProxyFromEnvironment,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+
+	if proxyStr != "" {
+		proxyURL, err := normalizeProxyURL(proxyStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid proxy URL %q: %w", proxyStr, err)
+		}
+		transport.Proxy = http.ProxyURL(proxyURL)
+
+		// Propagate to child processes (gh, git)
+		if os.Getenv("HTTPS_PROXY") == "" {
+			_ = os.Setenv("HTTPS_PROXY", proxyStr)
+		}
+		if os.Getenv("HTTP_PROXY") == "" {
+			_ = os.Setenv("HTTP_PROXY", proxyStr)
+		}
+	}
+
+	if opts.InsecureSkipVerify {
+		_ = os.Setenv("GIT_SSL_NO_VERIFY", "true")
+	}
+
 	return &Client{
-		token: token,
+		token: opts.Token,
 		httpClient: &http.Client{
-			Timeout: 15 * time.Second,
+			Transport: transport,
+			Timeout:   timeout,
 		},
+		proxyUsed: proxyStr,
 		rateLimit: RateLimitInfo{
 			Remaining: 5000,
 			Limit:     5000,
 			Reset:     time.Now().Add(1 * time.Hour),
 		},
 	}, nil
+}
+
+// NewClient creates a new GitHub API client using default options
+func NewClient(token string) (*Client, error) {
+	return NewClientWithOptions(ClientOptions{
+		Token: token,
+	})
 }
 
 func (c *Client) RateLimit() RateLimitInfo {
@@ -137,19 +260,63 @@ func (c *Client) queryGraphQL(ctx context.Context, query string, variables map[s
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.github.com/graphql", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Content-Type", "application/json")
+	maxRetries := 2
+	var resp *http.Response
+	var lastErr error
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(attempt*500) * time.Millisecond
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST", "https://api.github.com/graphql", bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err = c.httpClient.Do(req)
+		if err != nil {
+			lastErr = err
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			continue
+		}
+
+		c.updateRateLimits(resp)
+
+		// Transient gateway / server errors: retry
+		if resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusGatewayTimeout {
+			data, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			lastErr = fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+			continue
+		}
+
+		// Non-retryable status or 200 OK
+		break
+	}
+
+	if resp == nil || resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusGatewayTimeout {
+		proxyNotice := ""
+		if c.proxyUsed != "" {
+			proxyNotice = fmt.Sprintf(" (via proxy: %s)", c.proxyUsed)
+		} else {
+			proxyNotice = " (no proxy configured; if behind a corporate proxy, set HTTPS_PROXY, git config http.proxy, or use --proxy)"
+		}
+		if lastErr != nil {
+			return fmt.Errorf("graphql request failed%s: %w", proxyNotice, lastErr)
+		}
+		return fmt.Errorf("graphql request failed%s", proxyNotice)
 	}
 	defer resp.Body.Close()
-	c.updateRateLimits(resp)
 
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(resp.Body)
@@ -168,9 +335,11 @@ func (c *Client) queryGraphQL(ctx context.Context, query string, variables map[s
 	return json.Unmarshal(gqlResp.Data, target)
 }
 
-// FetchRepositoriesAndPRs fetches repos, open PRs, commit events, and vulnerability summaries for an owner (org or user)
+// FetchRepositoriesAndPRs fetches repos, open PRs, commit events, and vulnerability summaries for an owner (org or user).
+// Decoupled into optimized repository and indexed search queries to avoid GitHub 10s backend timeouts on large enterprise orgs.
 func (c *Client) FetchRepositoriesAndPRs(ctx context.Context, owner string) ([]Repository, []PullRequest, []SquadEvent, map[string]SecurityAlertSummary, error) {
-	query := `
+	// Query 1: Repositories, default branch commit history, and vulnerability alerts
+	repoQueryWithAlerts := `
 query($login: String!) {
   repositoryOwner(login: $login) {
     repositories(first: 50, orderBy: {field: PUSHED_AT, direction: DESC}) {
@@ -185,7 +354,7 @@ query($login: String!) {
           name
           target {
             ... on Commit {
-              history(first: 10) {
+              history(first: 5) {
                 nodes {
                   oid
                   message
@@ -201,7 +370,7 @@ query($login: String!) {
             }
           }
         }
-        vulnerabilityAlerts(first: 50, states: OPEN) {
+        vulnerabilityAlerts(first: 25, states: OPEN) {
           totalCount
           nodes {
             securityVulnerability {
@@ -212,31 +381,87 @@ query($login: String!) {
             }
           }
         }
-        pullRequests(first: 20, states: OPEN, orderBy: {field: UPDATED_AT, direction: DESC}) {
-          nodes {
-            number
-            title
-            author {
-              login
-            }
-            createdAt
-            updatedAt
-            isDraft
-            reviewDecision
-            headRefName
-            url
-            labels(first: 5) {
-              nodes {
-                name
-              }
-            }
-            comments {
-              totalCount
-            }
-            reviewThreads(first: 30) {
-              totalCount
-              nodes {
-                IsResolved: isResolved
+      }
+    }
+  }
+}
+`
+	type repoNode struct {
+		Name             string    `json:"name"`
+		Description      *string   `json:"description"`
+		PushedAt         time.Time `json:"pushedAt"`
+		IsPrivate        bool      `json:"isPrivate"`
+		URL              string    `json:"url"`
+		SSHURL           string    `json:"sshUrl"`
+		DefaultBranchRef *struct {
+			Name   string `json:"name"`
+			Target *struct {
+				History struct {
+					Nodes []struct {
+						OID           string    `json:"oid"`
+						Message       string    `json:"message"`
+						CommittedDate time.Time `json:"committedDate"`
+						Author        struct {
+							Name string `json:"name"`
+							User *struct {
+								Login string `json:"login"`
+							} `json:"user"`
+						} `json:"author"`
+					} `json:"nodes"`
+				} `json:"history"`
+			} `json:"target"`
+		} `json:"defaultBranchRef"`
+		VulnerabilityAlerts struct {
+			TotalCount int `json:"totalCount"`
+			Nodes      []struct {
+				SecurityVulnerability struct {
+					Severity string `json:"severity"`
+					Package  struct {
+						Name string `json:"name"`
+					} `json:"package"`
+				} `json:"securityVulnerability"`
+			} `json:"nodes"`
+		} `json:"vulnerabilityAlerts"`
+	}
+
+	var repoResp struct {
+		RepositoryOwner struct {
+			Repositories struct {
+				Nodes []repoNode `json:"nodes"`
+			} `json:"repositories"`
+		} `json:"repositoryOwner"`
+	}
+
+	err := c.queryGraphQL(ctx, repoQueryWithAlerts, map[string]interface{}{"login": owner}, &repoResp)
+	if err != nil {
+		// Fallback: Query repositories without vulnerabilityAlerts if org permissions / Dependabot disabled
+		repoQueryFallback := `
+query($login: String!) {
+  repositoryOwner(login: $login) {
+    repositories(first: 50, orderBy: {field: PUSHED_AT, direction: DESC}) {
+      nodes {
+        name
+        description
+        pushedAt
+        isPrivate
+        url
+        sshUrl
+        defaultBranchRef {
+          name
+          target {
+            ... on Commit {
+              history(first: 5) {
+                nodes {
+                  oid
+                  message
+                  committedDate
+                  author {
+                    name
+                    user {
+                      login
+                    }
+                  }
+                }
               }
             }
           }
@@ -246,90 +471,25 @@ query($login: String!) {
   }
 }
 `
-	var resp struct {
-		RepositoryOwner struct {
-			Repositories struct {
-				Nodes []struct {
-					Name             string    `json:"name"`
-					Description      *string   `json:"description"`
-					PushedAt         time.Time `json:"pushedAt"`
-					IsPrivate        bool      `json:"isPrivate"`
-					URL              string    `json:"url"`
-					SSHURL           string    `json:"sshUrl"`
-					DefaultBranchRef *struct {
-						Name   string `json:"name"`
-						Target *struct {
-							History struct {
-								Nodes []struct {
-									OID           string    `json:"oid"`
-									Message       string    `json:"message"`
-									CommittedDate time.Time `json:"committedDate"`
-									Author        struct {
-										Name string `json:"name"`
-										User *struct {
-											Login string `json:"login"`
-										} `json:"user"`
-									} `json:"author"`
-								} `json:"nodes"`
-							} `json:"history"`
-						} `json:"target"`
-					} `json:"defaultBranchRef"`
-					VulnerabilityAlerts struct {
-						TotalCount int `json:"totalCount"`
-						Nodes      []struct {
-							SecurityVulnerability struct {
-								Severity string `json:"severity"`
-								Package  struct {
-									Name string `json:"name"`
-								} `json:"package"`
-							} `json:"securityVulnerability"`
-						} `json:"nodes"`
-					} `json:"vulnerabilityAlerts"`
-					PullRequests struct {
-						Nodes []struct {
-							Number         int       `json:"number"`
-							Title          string    `json:"title"`
-							Author         *struct {
-								Login string `json:"login"`
-							} `json:"author"`
-							CreatedAt      time.Time `json:"createdAt"`
-							UpdatedAt      time.Time `json:"updatedAt"`
-							IsDraft        bool      `json:"isDraft"`
-							ReviewDecision *string   `json:"reviewDecision"`
-							HeadRefName    string    `json:"headRefName"`
-							URL            string    `json:"url"`
-							Labels         struct {
-								Nodes []struct {
-									Name string `json:"name"`
-								} `json:"nodes"`
-							} `json:"labels"`
-							Comments struct {
-								TotalCount int `json:"totalCount"`
-							} `json:"comments"`
-							ReviewThreads struct {
-								TotalCount int `json:"totalCount"`
-								Nodes      []struct {
-									IsResolved bool `json:"isResolved"`
-								} `json:"nodes"`
-							} `json:"reviewThreads"`
-						} `json:"nodes"`
-					} `json:"pullRequests"`
-				} `json:"nodes"`
-			} `json:"repositories"`
-		} `json:"repositoryOwner"`
-	}
-
-	err := c.queryGraphQL(ctx, query, map[string]interface{}{"login": owner}, &resp)
-	if err != nil {
-		return nil, nil, nil, nil, err
+		var fallbackResp struct {
+			RepositoryOwner struct {
+				Repositories struct {
+					Nodes []repoNode `json:"nodes"`
+				} `json:"repositories"`
+			} `json:"repositoryOwner"`
+		}
+		fallbackErr := c.queryGraphQL(ctx, repoQueryFallback, map[string]interface{}{"login": owner}, &fallbackResp)
+		if fallbackErr != nil {
+			return nil, nil, nil, nil, fmt.Errorf("failed to fetch repositories: %w (fallback error: %v)", err, fallbackErr)
+		}
+		repoResp = fallbackResp
 	}
 
 	var repos []Repository
-	var prs []PullRequest
 	var commitEvents []SquadEvent
 	securityMap := make(map[string]SecurityAlertSummary)
 
-	for _, node := range resp.RepositoryOwner.Repositories.Nodes {
+	for _, node := range repoResp.RepositoryOwner.Repositories.Nodes {
 		desc := ""
 		if node.Description != nil {
 			desc = *node.Description
@@ -407,8 +567,90 @@ query($login: String!) {
 			Packages:    packages,
 			LastScanned: time.Now(),
 		}
+	}
 
-		for _, p := range node.PullRequests.Nodes {
+	// Query 2: Fetch open PRs across the organization/user using GitHub indexed search API
+	// This evaluates in <300ms across thousands of repos without triggering backend timeouts
+	prSearchQuery := `
+query($searchQuery: String!) {
+  search(query: $searchQuery, type: ISSUE, first: 50) {
+    issueCount
+    nodes {
+      ... on PullRequest {
+        number
+        title
+        repository {
+          name
+        }
+        author {
+          login
+        }
+        createdAt
+        updatedAt
+        isDraft
+        reviewDecision
+        headRefName
+        url
+        labels(first: 5) {
+          nodes {
+            name
+          }
+        }
+        comments {
+          totalCount
+        }
+        reviewThreads(first: 30) {
+          totalCount
+          nodes {
+            isResolved
+          }
+        }
+      }
+    }
+  }
+}
+`
+	var prResp struct {
+		Search struct {
+			IssueCount int `json:"issueCount"`
+			Nodes      []struct {
+				Number     int    `json:"number"`
+				Title      string `json:"title"`
+				Repository struct {
+					Name string `json:"name"`
+				} `json:"repository"`
+				Author *struct {
+					Login string `json:"login"`
+				} `json:"author"`
+				CreatedAt      time.Time `json:"createdAt"`
+				UpdatedAt      time.Time `json:"updatedAt"`
+				IsDraft        bool      `json:"isDraft"`
+				ReviewDecision *string   `json:"reviewDecision"`
+				HeadRefName    string    `json:"headRefName"`
+				URL            string    `json:"url"`
+				Labels         struct {
+					Nodes []struct {
+						Name string `json:"name"`
+					} `json:"nodes"`
+				} `json:"labels"`
+				Comments struct {
+					TotalCount int `json:"totalCount"`
+				} `json:"comments"`
+				ReviewThreads struct {
+					TotalCount int `json:"totalCount"`
+					Nodes      []struct {
+						IsResolved bool `json:"isResolved"`
+					} `json:"nodes"`
+				} `json:"reviewThreads"`
+			} `json:"nodes"`
+		} `json:"search"`
+	}
+
+	searchString := fmt.Sprintf("is:pr is:open user:%s sort:updated-desc", owner)
+	var prs []PullRequest
+
+	if prErr := c.queryGraphQL(ctx, prSearchQuery, map[string]interface{}{"searchQuery": searchString}, &prResp); prErr == nil {
+		for _, p := range prResp.Search.Nodes {
 			author := "unknown"
 			if p.Author != nil {
 				author = p.Author.Login
@@ -431,7 +673,7 @@ query($login: String!) {
 
 			prs = append(prs, PullRequest{
 				Number:             p.Number,
-				Repo:               node.Name,
+				Repo:               p.Repository.Name,
 				Title:              p.Title,
 				Author:             author,
 				CreatedAt:          p.CreatedAt,

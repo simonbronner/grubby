@@ -26,12 +26,16 @@ func main() {
 		orgFlag       string
 		workspaceFlag string
 		configFlag    string
+		proxyFlag     string
+		insecureFlag  bool
 		versionFlag   bool
 	)
 
 	flag.StringVar(&orgFlag, "org", "", "Target GitHub organization or user (defaults to personal account)")
 	flag.StringVar(&workspaceFlag, "workspace", "", "Path to local workspace directory (defaults to ~/workspaces)")
 	flag.StringVar(&configFlag, "config", "", "Path to Grubby config file (defaults to ~/.config/grubby/config.yaml)")
+	flag.StringVar(&proxyFlag, "proxy", "", "HTTP, HTTPS, or SOCKS5 corporate proxy URL (e.g. http://proxy.corp.com:8080)")
+	flag.BoolVar(&insecureFlag, "insecure", false, "Skip TLS certificate verification (useful for corporate SSL inspection proxies)")
 	flag.BoolVar(&versionFlag, "version", false, "Print Grubby version and exit")
 	flag.BoolVar(&versionFlag, "v", false, "Print Grubby version and exit (shorthand)")
 	flag.Parse()
@@ -61,8 +65,19 @@ func main() {
 		cfg.WorkspaceDir = workspaceFlag
 	}
 
+	// Resolve proxy settings: CLI flag takes precedence over config
+	proxyURL := proxyFlag
+	if proxyURL == "" {
+		proxyURL = cfg.Proxy
+	}
+	insecure := insecureFlag || cfg.InsecureSkipVerify
+
 	// Initialize GitHub client
-	ghClient, err := github.NewClient(token)
+	ghClient, err := github.NewClientWithOptions(github.ClientOptions{
+		Token:              token,
+		ProxyURL:           proxyURL,
+		InsecureSkipVerify: insecure,
+	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize GitHub client: %v\n", err)
 		os.Exit(1)
