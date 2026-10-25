@@ -3,6 +3,8 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -19,19 +21,26 @@ import (
 func (m Model) getDisplayRepos() []github.Repository {
 	var result []github.Repository
 
-	groupFilter := strings.ToLower(m.RepoGroupFilter)
-	nameFilter := strings.ToLower(strings.TrimSpace(m.RepoFilter))
+	filter := strings.ToLower(strings.TrimSpace(m.RepoFilter))
 
 	for _, r := range m.Repos {
-		if groupFilter != "" {
-			if !m.Config.IsRepoInGroup(m.RepoGroupFilter, r.Name) {
-				continue
-			}
-		}
+		if filter != "" {
+			// Check if repo name or full name contains filter keyword
+			matchesName := strings.Contains(strings.ToLower(r.Name), filter) ||
+				strings.Contains(strings.ToLower(r.FullName), filter)
 
-		if nameFilter != "" {
-			if !strings.Contains(strings.ToLower(r.Name), nameFilter) &&
-				!strings.Contains(strings.ToLower(r.FullName), nameFilter) {
+			// Check if any group assigned to this repo matches filter keyword
+			matchesGroup := false
+			if m.Config != nil {
+				for _, grp := range m.Config.GetGroupsForRepo(r.Name) {
+					if strings.Contains(strings.ToLower(grp), filter) {
+						matchesGroup = true
+						break
+					}
+				}
+			}
+
+			if !matchesName && !matchesGroup {
 				continue
 			}
 		}
@@ -99,31 +108,72 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(repos) > 0 {
 			m.RepoCursor = len(repos) - 1
 		}
-	case "v":
-		// 'v' view by group: select a group to filter the view on
-		m.ActiveModal = ModalFilterGroup
-		m.ModalCursor = 0
-		for idx, g := range m.Config.Groups {
-			if strings.EqualFold(g.Name, m.RepoGroupFilter) {
-				m.ModalCursor = idx + 1
-				break
-			}
-		}
-		return m, nil
-	case "f":
-		// 'f' filter: filter repositories by name
+	case "/":
+		// '/' filter: filter repositories by name or group
 		m.ActiveModal = ModalFilterRepoName
 		m.RepoFilterInput.SetValue(m.RepoFilter)
 		m.RepoFilterInput.Focus()
 		return m, textinput.Blink
-	case "s":
-		// 's' sort by vulnerabilities: toggle sorting from most to least vulnerabilities
+	case "v":
+		// 'v' sort by vulnerabilities: toggle sorting from most to least vulnerabilities
 		m.RepoSortVulnerabilities = !m.RepoSortVulnerabilities
 		m.RepoCursor = 0
 		if m.RepoSortVulnerabilities {
 			return m, func() tea.Msg { return StatusToastMsg("Sorted repositories by vulnerabilities (most to least)") }
 		}
 		return m, func() tea.Msg { return StatusToastMsg("Reset repository sort order to default") }
+	case "s":
+		// 's' session capability: switch to repository tmux session in Grubby window
+		if len(repos) > 0 && m.RepoCursor < len(repos) {
+			repo := repos[m.RepoCursor]
+			st := m.GitStatuses[repo.Name]
+			if st.IsCloned {
+				msg, err := GoToRepoSession(repo.Name, st.LocalPath)
+				if err != nil {
+					return m, func() tea.Msg { return StatusToastMsg("Failed to switch session: " + err.Error()) }
+				}
+				return m, func() tea.Msg { return StatusToastMsg(msg) }
+			}
+			return m.startCloneWithAction(repo, RepoActionSession)
+		}
+	case "e", "E":
+		// 'e' editor: open editor in a new window in the tmux session for that repo
+		if len(repos) > 0 && m.RepoCursor < len(repos) {
+			repo := repos[m.RepoCursor]
+			st := m.GitStatuses[repo.Name]
+			if st.IsCloned {
+				msg, err := OpenRepoEditor(repo.Name, st.LocalPath)
+				if err != nil {
+					return m, func() tea.Msg { return StatusToastMsg("Failed to open editor: " + err.Error()) }
+				}
+				return m, func() tea.Msg { return StatusToastMsg(msg) }
+			}
+			return m.startCloneWithAction(repo, RepoActionEditor)
+		}
+	case "t":
+		// 't' open repo shell (creates new window if session exists, or creates session)
+		if len(repos) > 0 && m.RepoCursor < len(repos) {
+			repo := repos[m.RepoCursor]
+			st := m.GitStatuses[repo.Name]
+			if st.IsCloned {
+				msg, err := OpenRepoShell(repo.Name, st.LocalPath)
+				if err != nil {
+					return m, func() tea.Msg { return StatusToastMsg("Failed to open shell: " + err.Error()) }
+				}
+				return m, func() tea.Msg { return StatusToastMsg(msg) }
+			}
+			return m.startCloneWithAction(repo, RepoActionShell)
+		}
+	case "c":
+		// 'c' clone repo
+		if len(repos) > 0 && m.RepoCursor < len(repos) {
+			repo := repos[m.RepoCursor]
+			st := m.GitStatuses[repo.Name]
+			if st.IsCloned {
+				return m, func() tea.Msg { return StatusToastMsg(repo.Name + " is already cloned!") }
+			}
+			return m.startCloneWithAction(repo, RepoActionNone)
+		}
 	case "esc":
 		// 'esc' clears active filters and sorting
 		if m.RepoFilter != "" || m.RepoGroupFilter != "" || m.RepoSortVulnerabilities {
@@ -166,71 +216,6 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.SelectedRepoGroups[grp] = true
 			}
 		}
-	case "e":
-		// Go to existing session for repository
-		if len(repos) > 0 && m.RepoCursor < len(repos) {
-			repo := repos[m.RepoCursor]
-			st := m.GitStatuses[repo.Name]
-			if st.IsCloned {
-				msg, err := GoToRepoSession(repo.Name, st.LocalPath)
-				if err != nil {
-					return m, func() tea.Msg { return StatusToastMsg("Failed to switch session: " + err.Error()) }
-				}
-				return m, func() tea.Msg { return StatusToastMsg(msg) }
-			}
-			return m, func() tea.Msg { return StatusToastMsg("Repo is not cloned yet! Press 'c' to clone.") }
-		}
-	case "t":
-		// Open repo shell (creates new window if session exists, or creates session)
-		if len(repos) > 0 && m.RepoCursor < len(repos) {
-			repo := repos[m.RepoCursor]
-			st := m.GitStatuses[repo.Name]
-			if st.IsCloned {
-				msg, err := OpenRepoShell(repo.Name, st.LocalPath)
-				if err != nil {
-					return m, func() tea.Msg { return StatusToastMsg("Failed to open shell: " + err.Error()) }
-				}
-				return m, func() tea.Msg { return StatusToastMsg(msg) }
-			}
-			return m, func() tea.Msg { return StatusToastMsg("Repo is not cloned yet! Press 'c' to clone.") }
-		}
-	case "E":
-		// Open repo in editor (nvim)
-		if len(repos) > 0 && m.RepoCursor < len(repos) {
-			repo := repos[m.RepoCursor]
-			st := m.GitStatuses[repo.Name]
-			if st.IsCloned {
-				err := OpenInITermNvim(st.LocalPath, "", 0)
-				if err != nil {
-					return m, func() tea.Msg { return StatusToastMsg("Failed to open nvim: " + err.Error()) }
-				}
-				collapsed := config.CollapseHome(st.LocalPath)
-				return m, func() tea.Msg { return StatusToastMsg("Opened nvim in " + collapsed) }
-			}
-			return m, func() tea.Msg { return StatusToastMsg("Repo is not cloned yet! Press 'c' to clone.") }
-		}
-	case "c":
-		// Clone repo
-		if len(repos) > 0 && m.RepoCursor < len(repos) {
-			repo := repos[m.RepoCursor]
-			st := m.GitStatuses[repo.Name]
-			if st.IsCloned {
-				return m, func() tea.Msg { return StatusToastMsg(repo.Name + " is already cloned!") }
-			}
-			targetDir := m.GitMgr.GetRepoPath(repo.Name)
-			m.StatusMsg = "Cloning " + repo.FullName + "..."
-			m.StatusMsgTimer = time.Now().Add(3 * time.Minute)
-			return m, func() tea.Msg {
-				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-				defer cancel()
-				err := github.CloneRepo(ctx, repo.FullName, targetDir)
-				if err != nil {
-					return RepoClonedMsg{RepoName: repo.Name, TargetDir: targetDir, Err: err}
-				}
-				newStatus := git.InspectRepo(ctx, repo.Name, targetDir)
-				return RepoClonedMsg{RepoName: repo.Name, TargetDir: targetDir, Status: newStatus, Err: nil}
-			}
-		}
 	case "u":
 		// Fast-forward repo
 		if len(repos) > 0 && m.RepoCursor < len(repos) {
@@ -257,6 +242,39 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m Model) startCloneWithAction(repo github.Repository, postAction RepoActionType) (tea.Model, tea.Cmd) {
+	var targetDir string
+	if m.GitMgr != nil {
+		targetDir = m.GitMgr.GetRepoPath(repo.Name)
+	} else {
+		targetDir = filepath.Join(os.Getenv("HOME"), "workspaces", repo.Name)
+	}
+	actionDesc := "session"
+	if postAction == RepoActionEditor {
+		actionDesc = "editor"
+	} else if postAction == RepoActionShell {
+		actionDesc = "shell"
+	}
+
+	if postAction != RepoActionNone {
+		m.StatusMsg = fmt.Sprintf("Cloning %s to open %s...", repo.FullName, actionDesc)
+	} else {
+		m.StatusMsg = "Cloning " + repo.FullName + "..."
+	}
+	m.StatusMsgTimer = time.Now().Add(3 * time.Minute)
+
+	return m, func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		err := github.CloneRepo(ctx, repo.FullName, targetDir)
+		if err != nil {
+			return RepoClonedMsg{RepoName: repo.Name, TargetDir: targetDir, Err: err, PostAction: postAction}
+		}
+		newStatus := git.InspectRepo(ctx, repo.Name, targetDir)
+		return RepoClonedMsg{RepoName: repo.Name, TargetDir: targetDir, Status: newStatus, Err: nil, PostAction: postAction}
+	}
 }
 
 func (m Model) renderReposView() string {

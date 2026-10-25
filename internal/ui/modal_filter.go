@@ -93,21 +93,35 @@ func (m Model) handleFilterGroupModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// Filter by Name Modal
+// Filter Repositories Modal (Name or Group)
 
 func (m Model) renderFilterNameModal() string {
-	title := ModalTitleStyle.Render("Filter Repositories by Name")
+	title := ModalTitleStyle.Render("Filter Repositories")
 
 	var lines []string
 	lines = append(lines, title)
-	lines = append(lines, "Type repository name to filter. Press [Enter] to apply, [Esc] to exit.\n")
+	lines = append(lines, "Type keyword to filter by repository name or group name.\nPress [Enter] to apply, [Esc] to exit.\n")
 	lines = append(lines, m.RepoFilterInput.View())
 
 	// Live match preview
 	query := strings.TrimSpace(strings.ToLower(m.RepoFilterInput.Value()))
 	matchCount := 0
 	for _, r := range m.Repos {
-		if query == "" || strings.Contains(strings.ToLower(r.Name), query) || strings.Contains(strings.ToLower(r.FullName), query) {
+		if query == "" {
+			matchCount++
+			continue
+		}
+		matchesName := strings.Contains(strings.ToLower(r.Name), query) || strings.Contains(strings.ToLower(r.FullName), query)
+		matchesGroup := false
+		if m.Config != nil {
+			for _, grp := range m.Config.GetGroupsForRepo(r.Name) {
+				if strings.Contains(strings.ToLower(grp), query) {
+					matchesGroup = true
+					break
+				}
+			}
+		}
+		if matchesName || matchesGroup {
 			matchCount++
 		}
 	}
@@ -129,10 +143,10 @@ func (m Model) handleFilterNameModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.ActiveModal = ModalNone
 		if m.RepoFilter != "" {
 			return m, func() tea.Msg {
-				return StatusToastMsg(fmt.Sprintf("Filtered by name: %q", m.RepoFilter))
+				return StatusToastMsg(fmt.Sprintf("Filtered by: %q", m.RepoFilter))
 			}
 		}
-		return m, func() tea.Msg { return StatusToastMsg("Cleared name filter") }
+		return m, func() tea.Msg { return StatusToastMsg("Cleared filter") }
 	default:
 		var cmd tea.Cmd
 		m.RepoFilterInput, cmd = m.RepoFilterInput.Update(msg)

@@ -219,3 +219,64 @@ func GoToRepoSession(repoName, repoDir string) (string, error) {
 	}
 	return fmt.Sprintf("Created and switched to session '%s'", sessionName), nil
 }
+
+// OpenRepoEditor opens the editor in a new window in the repository's tmux session:
+// - If the session exists, creates a new window running the editor at repoDir.
+// - If the session does not exist, creates the session with a window running the editor at repoDir.
+// - Ensures the session is displayed in the dedicated Grubby iTerm window.
+func OpenRepoEditor(repoName, repoDir string) (string, error) {
+	sessionName := SanitizeTmuxSessionName(repoName)
+	tmuxInstalled := HasTmux()
+
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "nvim"
+	}
+
+	if !tmuxInstalled {
+		err := OpenInITermNvim(repoDir, "", 0)
+		collapsed := config.CollapseHome(repoDir)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Opened %s at %s", editor, collapsed), nil
+	}
+
+	sessionAlreadyExisted := TmuxSessionExists(sessionName)
+	editorParts := strings.Fields(editor)
+	bin := editorParts[0]
+	args := append(editorParts[1:], ".")
+
+	if !sessionAlreadyExisted {
+		// Create session directly with editor as initial command
+		cmdArgs := append([]string{"new-session", "-d", "-s", sessionName, "-n", "editor", "-c", repoDir, bin}, args...)
+		cmd := exec.Command("tmux", cmdArgs...)
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("failed to create tmux session: %w", err)
+		}
+	} else {
+		// Create a new window running editor inside existing session
+		cmdArgs := append([]string{"new-window", "-t", sessionName, "-n", "editor", "-c", repoDir, bin}, args...)
+		cmd := exec.Command("tmux", cmdArgs...)
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("failed to create editor window in tmux: %w", err)
+		}
+	}
+
+	// Connect client in Grubby iTerm window
+	if TmuxHasAttachedClients() {
+		_ = exec.Command("tmux", "switch-client", "-t", sessionName).Run()
+		_ = activateOrOpenGrubbyITermWindow("")
+	} else {
+		attachCmd := fmt.Sprintf("tmux attach-session -t %s", sessionName)
+		err := activateOrOpenGrubbyITermWindow(attachCmd)
+		if err != nil {
+			_ = activateOrOpenTerminalApp(attachCmd)
+		}
+	}
+
+	if sessionAlreadyExisted {
+		return fmt.Sprintf("Opened %s in new window in session '%s'", bin, sessionName), nil
+	}
+	return fmt.Sprintf("Created session '%s' and opened %s", sessionName, bin), nil
+}

@@ -49,12 +49,22 @@ const (
 	ModalManageSquad
 )
 
+type RepoActionType int
+
+const (
+	RepoActionNone RepoActionType = iota
+	RepoActionSession
+	RepoActionEditor
+	RepoActionShell
+)
+
 // Async messages
 type RepoClonedMsg struct {
-	RepoName  string
-	TargetDir string
-	Status    git.RepoGitStatus
-	Err       error
+	RepoName   string
+	TargetDir  string
+	Status     git.RepoGitStatus
+	Err        error
+	PostAction RepoActionType
 }
 
 type DataLoadedMsg struct {
@@ -247,6 +257,7 @@ func (m Model) Init() tea.Cmd {
 		textinput.Blink,
 		m.Spinner.Tick,
 		autoRefreshTickCmd(),
+		m.emitSplashImageCmd(),
 	)
 }
 
@@ -386,6 +397,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Height = msg.Height
 		m.SearchPreview.Width = (m.Width / 2) - 4
 		m.SearchPreview.Height = m.Height - 12
+		if !m.InitialDataLoaded {
+			return m, m.emitSplashImageCmd()
+		}
 		if m.ActiveTab == TabSquad {
 			return m, m.emitSquadMemberAvatarsCmd()
 		}
@@ -394,6 +408,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.Spinner, cmd = m.Spinner.Update(msg)
+		if !m.InitialDataLoaded {
+			return m, tea.Batch(cmd, m.emitSplashImageCmd())
+		}
 		return m, cmd
 
 	case AutoRefreshTickMsg:
@@ -590,7 +607,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.GitStatuses[msg.RepoName] = msg.Status
 		collapsed := config.CollapseHome(msg.TargetDir)
-		m.StatusMsg = "Successfully cloned " + msg.RepoName + " to " + collapsed
+
+		switch msg.PostAction {
+		case RepoActionSession:
+			outMsg, err := GoToRepoSession(msg.RepoName, msg.TargetDir)
+			if err != nil {
+				m.StatusMsg = "Cloned, but session failed: " + err.Error()
+			} else {
+				m.StatusMsg = fmt.Sprintf("Cloned %s & %s", msg.RepoName, outMsg)
+			}
+		case RepoActionEditor:
+			outMsg, err := OpenRepoEditor(msg.RepoName, msg.TargetDir)
+			if err != nil {
+				m.StatusMsg = "Cloned, but editor failed: " + err.Error()
+			} else {
+				m.StatusMsg = fmt.Sprintf("Cloned %s & %s", msg.RepoName, outMsg)
+			}
+		case RepoActionShell:
+			outMsg, err := OpenRepoShell(msg.RepoName, msg.TargetDir)
+			if err != nil {
+				m.StatusMsg = "Cloned, but shell failed: " + err.Error()
+			} else {
+				m.StatusMsg = fmt.Sprintf("Cloned %s & %s", msg.RepoName, outMsg)
+			}
+		default:
+			m.StatusMsg = "Successfully cloned " + msg.RepoName + " to " + collapsed
+		}
 		m.StatusMsgTimer = time.Now().Add(4 * time.Second)
 		return m, nil
 
@@ -908,7 +950,7 @@ func (m Model) renderTopBar() string {
 		fullLine = leftPart
 	}
 
-	return TabBarBorder.Render(fullLine)
+	return TopBarStyle.Render(fullLine)
 }
 
 func (m Model) renderFooter() string {
@@ -918,9 +960,9 @@ func (m Model) renderFooter() string {
 	switch m.ActiveTab {
 	case TabRepos:
 		if m.RepoFilter != "" || m.RepoGroupFilter != "" || m.RepoSortVulnerabilities {
-			help = "[v] View Group  [f] Filter  [s] Sort Vulns  [Esc] Clear  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [e] Session  [t] Shell  [E] Editor  [?] Help"
+			help = "[/] Filter  [v] Sort Vulns  [s] Session  [e] Editor  [t] Shell  [Esc] Clear  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [?] Help"
 		} else {
-			help = "[v] View Group  [f] Filter  [s] Sort Vulns  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [e] Session  [t] Shell  [E] Editor  [u] Sync  [?] Help"
+			help = "[/] Filter  [v] Sort Vulns  [s] Session  [e] Editor  [t] Shell  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [u] Sync  [?] Help"
 		}
 	case TabPRs:
 		if m.PRFilter != "" {

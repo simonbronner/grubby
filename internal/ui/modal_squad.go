@@ -389,17 +389,17 @@ Global Navigation:
 
 Repositories Tab (1):
   [j/k] or [↑/↓]      Select repository
-  [v]                 View by Group (filter repositories by group)
-  [f]                 Filter repositories by name
-  [s]                 Sort by vulnerabilities (highest to lowest toggle)
-  [Esc]               Clear active group, name filters, and sorting
+  [/]                 Filter repositories by name or group
+  [v]                 Sort by vulnerabilities (toggle most to least)
+  [s]                 Switch to / open tmux session in Grubby window (auto-clones if needed)
+  [e]                 Open editor in new window in tmux session (auto-clones if needed)
+  [t]                 Open shell / new window in tmux session (auto-clones if needed)
+  [Esc]               Clear active filter and sorting
   [Enter]             Open repo in dedicated browser
   [o]                 Open GitHub Web Tabs Submenu (Issues, PRs, Actions, Security...)
   [S]                 Open Security (Dependabot) tab directly in browser
   [g]                 Manage Groups (assign / create groups)
   [c]                 Clone repo to ~/workspaces/
-  [e]                 Open in $EDITOR (Neovim/VS Code)
-  [t]                 Open in shell (iTerm2 on macOS)
   [u]                 Fast-forward clean behind repo
 
 Pull Requests Tab (2):

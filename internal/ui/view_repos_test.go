@@ -84,26 +84,25 @@ func TestGetDisplayRepos_NameFilter(t *testing.T) {
 func TestGetDisplayRepos_GroupFilter(t *testing.T) {
 	m := createTestModel()
 
-	// Filter by group "backend" (auth-service, api-gateway)
-	m.RepoGroupFilter = "backend"
+	// Filter by group name "backend" via unified filter (auth-service, api-gateway)
+	m.RepoFilter = "backend"
 	display := m.getDisplayRepos()
 	if len(display) != 2 {
 		t.Fatalf("expected 2 backend repos, got %d", len(display))
 	}
 
-	// Filter by group "frontend" (web-client)
-	m.RepoGroupFilter = "frontend"
+	// Filter by group name "frontend" via unified filter (web-client)
+	m.RepoFilter = "frontend"
 	display = m.getDisplayRepos()
 	if len(display) != 1 || display[0].Name != "web-client" {
 		t.Fatalf("expected web-client, got %+v", display)
 	}
 
-	// Combined group + name filter
-	m.RepoGroupFilter = "backend"
+	// Filter by repo name "auth" via unified filter
 	m.RepoFilter = "auth"
 	display = m.getDisplayRepos()
 	if len(display) != 1 || display[0].Name != "auth-service" {
-		t.Fatalf("expected auth-service for combined filter, got %+v", display)
+		t.Fatalf("expected auth-service for auth filter, got %+v", display)
 	}
 }
 
@@ -176,28 +175,21 @@ func TestRepoClonedMsg_ImmediateDetection(t *testing.T) {
 func TestReposKeyHandling_FilterAndSortKeys(t *testing.T) {
 	m := createTestModel()
 
-	// Press 'v' -> opens ModalFilterGroup
-	updated, _ := m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
-	m = updated.(Model)
-	if m.ActiveModal != ModalFilterGroup {
-		t.Errorf("expected ModalFilterGroup, got %v", m.ActiveModal)
-	}
-
-	// Press 'esc' inside modal -> closes modal
-	updated, _ = m.handleFilterGroupModalKeys(tea.KeyMsg{Type: tea.KeyEsc})
-	m = updated.(Model)
-	if m.ActiveModal != ModalNone {
-		t.Errorf("expected ModalNone after esc, got %v", m.ActiveModal)
-	}
-
-	// Press 'f' -> opens ModalFilterRepoName
-	updated, _ = m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	// Press '/' -> opens ModalFilterRepoName
+	updated, _ := m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
 	m = updated.(Model)
 	if m.ActiveModal != ModalFilterRepoName {
 		t.Errorf("expected ModalFilterRepoName, got %v", m.ActiveModal)
 	}
 
-	// Type query and press enter inside filter modal
+	// Press 'esc' inside modal -> closes modal
+	updated, _ = m.handleFilterNameModalKeys(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.ActiveModal != ModalNone {
+		t.Errorf("expected ModalNone after esc, got %v", m.ActiveModal)
+	}
+
+	// Press '/' again, type query and press enter inside filter modal
 	m.RepoFilterInput.SetValue("gateway")
 	updated, _ = m.handleFilterNameModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(Model)
@@ -218,18 +210,54 @@ func TestReposKeyHandling_FilterAndSortKeys(t *testing.T) {
 		t.Errorf("expected cleared RepoFilter, got %q", m.RepoFilter)
 	}
 
-	// Press 's' -> toggles sort by vulnerabilities
-	updated, _ = m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	// Filter by group name "backend"
+	m.RepoFilterInput.SetValue("backend")
+	updated, _ = m.handleFilterNameModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if len(m.getDisplayRepos()) != 2 {
+		t.Errorf("expected 2 matches for group 'backend', got %d", len(m.getDisplayRepos()))
+	}
+
+	// Press 'esc' again -> clears
+	updated, _ = m.handleReposKeys(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+
+	// Press 'v' -> toggles sort by vulnerabilities
+	updated, _ = m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
 	m = updated.(Model)
 	if !m.RepoSortVulnerabilities {
 		t.Errorf("expected RepoSortVulnerabilities=true")
 	}
 
-	// Press 's' again -> toggles off
-	updated, _ = m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	// Press 'v' again -> toggles off
+	updated, _ = m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
 	m = updated.(Model)
 	if m.RepoSortVulnerabilities {
 		t.Errorf("expected RepoSortVulnerabilities=false")
+	}
+
+	// Test uncloned repo auto-clone triggers
+	// docs is not cloned in createTestModel()
+	m.RepoCursor = 3 // docs
+	updated, cmd := m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Errorf("expected non-nil clone command when pressing 's' on uncloned repo")
+	}
+	if !strings.Contains(m.StatusMsg, "Cloning") {
+		t.Errorf("expected status msg to indicate cloning, got %q", m.StatusMsg)
+	}
+
+	updated, cmd = m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Errorf("expected non-nil clone command when pressing 'e' on uncloned repo")
+	}
+
+	updated, cmd = m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Errorf("expected non-nil clone command when pressing 't' on uncloned repo")
 	}
 }
 

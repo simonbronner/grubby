@@ -10,7 +10,7 @@ var (
 	WarningColor   = lipgloss.Color("#FFAF00") // Amber
 	DangerColor    = lipgloss.Color("#FF5F87") // Coral Red
 	MutedColor     = lipgloss.Color("#626262") // Dim Gray
-	DarkBgColor    = lipgloss.Color("#1A1A24")
+	DarkBgColor    = lipgloss.Color("#14141E") // Shade darker than tabs
 	HighlightColor = lipgloss.Color("#F1F1F1")
 
 	// Header & Tabs
@@ -28,12 +28,16 @@ var (
 			MarginRight(1)
 
 	InactiveTabStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("#202030")).
+			Background(lipgloss.Color("#222234")).
 			Foreground(lipgloss.Color("#8E8EA8")).
 			Padding(0, 1).
 			MarginRight(1)
 
+	TopBarStyle = lipgloss.NewStyle().
+			Background(DarkBgColor)
+
 	TabBarBorder = lipgloss.NewStyle().
+			Background(DarkBgColor).
 			Foreground(lipgloss.Color("#3E3E50"))
 
 	// Status & Meta Bar
@@ -118,7 +122,7 @@ var (
 	ModalBoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(PrimaryColor).
-			Background(lipgloss.Color("#1E1C2B")).
+			Background(DarkBgColor).
 			Padding(1, 2)
 
 	ModalTitleStyle = lipgloss.NewStyle().
@@ -128,7 +132,7 @@ var (
 
 	// Footer / Keybindings
 	FooterStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("#181822")).
+			Background(DarkBgColor).
 			Foreground(lipgloss.Color("#777788")).
 			Padding(0, 1)
 

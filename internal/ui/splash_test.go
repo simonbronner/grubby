@@ -3,6 +3,7 @@ package ui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -34,5 +35,33 @@ func TestRenderSplashArt(t *testing.T) {
 	abs, err := filepath.Abs(iconPath)
 	if err != nil || abs == "" {
 		t.Fatalf("Failed to resolve absolute path: %v", err)
+	}
+}
+
+func TestRenderSplashScreen_AvatarBoundingBox(t *testing.T) {
+	m := Model{
+		Width:             100,
+		Height:            30,
+		InitialDataLoaded: false,
+		CurrentOrg:        "acme",
+	}
+
+	splash := m.renderSplashScreen()
+	if !strings.Contains(splash, "G R U B B Y") {
+		t.Errorf("expected splash screen to contain 'G R U B B Y'")
+	}
+	if !strings.Contains(splash, "@acme") {
+		t.Errorf("expected splash screen to contain '@acme'")
+	}
+
+	cmd := m.emitSplashImageCmd()
+	if cmd == nil {
+		t.Errorf("expected non-nil splash image cmd when InitialDataLoaded is false")
+	}
+
+	m.InitialDataLoaded = true
+	cmdLoaded := m.emitSplashImageCmd()
+	if cmdLoaded != nil {
+		t.Errorf("expected nil splash image cmd when InitialDataLoaded is true")
 	}
 }
