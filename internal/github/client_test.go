@@ -166,3 +166,31 @@ func TestLiveFetchRepositoriesAndPRs(t *testing.T) {
 		t.Errorf("expected security alerts for best-resume-ever, got: %+v", sec)
 	}
 }
+
+func TestLiveFetchOrgMembers(t *testing.T) {
+	token, err := GetGHToken()
+	if err != nil {
+		t.Skip("gh auth not available")
+	}
+
+	client, err := NewClient(token)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	members, err := client.FetchOrgMembers(ctx, "github")
+	if err != nil {
+		t.Fatalf("FetchOrgMembers failed: %v", err)
+	}
+	if len(members) == 0 {
+		t.Fatalf("expected members for github org, got 0")
+	}
+	for _, m := range members {
+		if m.Login == "" {
+			t.Errorf("member has empty login: %+v", m)
+		}
+	}
+}

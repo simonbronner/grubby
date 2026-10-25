@@ -6,8 +6,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"grubby/internal/github"
 )
 
 func (m Model) handleModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -18,12 +20,16 @@ func (m Model) handleModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleSelectSquadModalKeys(msg)
 	case ModalAddMember:
 		return m.handleAddMemberModalKeys(msg)
+	case ModalCreateSquad:
+		return m.handleCreateSquadModalKeys(msg)
 	case ModalRepoTabs:
 		return m.handleRepoTabsModalKeys(msg)
 	case ModalFilterGroup:
 		return m.handleFilterGroupModalKeys(msg)
 	case ModalFilterRepoName:
 		return m.handleFilterNameModalKeys(msg)
+	case ModalFilterPR:
+		return m.handleFilterPRModalKeys(msg)
 	case ModalHelp:
 		if msg.String() == "esc" || msg.String() == "q" || msg.String() == "?" {
 			m.ActiveModal = ModalNone
@@ -42,12 +48,16 @@ func (m Model) renderModalOverlay(baseView string) string {
 		modalContent = m.renderSelectSquadModal()
 	case ModalAddMember:
 		modalContent = m.renderAddMemberModal()
+	case ModalCreateSquad:
+		modalContent = m.renderCreateSquadModal()
 	case ModalRepoTabs:
 		modalContent = m.renderRepoTabsModal()
 	case ModalFilterGroup:
 		modalContent = m.renderFilterGroupModal()
 	case ModalFilterRepoName:
 		modalContent = m.renderFilterNameModal()
+	case ModalFilterPR:
+		modalContent = m.renderFilterPRModal()
 	case ModalHelp:
 		modalContent = m.renderHelpModal()
 	}
@@ -72,11 +82,11 @@ func (m Model) renderSelectSquadModal() string {
 
 	var lines []string
 	lines = append(lines, title)
-	lines = append(lines, "Use [↑/↓] or [j/k] to choose, [Enter] to select, [Esc] to cancel.\n")
+	lines = append(lines, "Use [↑/↓] or [j/k] to choose, [Enter] to select, [+] or [n] to create new squad, [Esc] to exit.\n")
 
 	squads := m.Config.Squads
 	if len(squads) == 0 {
-		lines = append(lines, "  No squads defined yet. Press [Esc] and then [a] to create one!")
+		lines = append(lines, "  No squads defined yet. Press [+] or [n] to create one!")
 	}
 
 	for i, s := range squads {
@@ -107,6 +117,12 @@ func (m Model) handleSelectSquadModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.ActiveModal = ModalNone
 		return m, nil
+	case "+", "n":
+		m.ActiveModal = ModalCreateSquad
+		m.ModalInput.Reset()
+		m.ModalInput.Placeholder = "New squad name (e.g. backend-squad)"
+		m.ModalInput.Focus()
+		return m, textinput.Blink
 	case "up", "k":
 		if m.ModalCursor > 0 {
 			m.ModalCursor--
@@ -139,23 +155,19 @@ func (m Model) handleSelectSquadModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) renderAddMemberModal() string {
-	activeSquad := m.Config.GetActiveSquad()
-	squadName := "New Squad"
-	if activeSquad != nil {
-		squadName = activeSquad.DisplayName
-	}
+func (m Model) renderCreateSquadModal() string {
+	title := ModalTitleStyle.Render("Create New Squad / Group")
 
-	title := ModalTitleStyle.Render(fmt.Sprintf("Add Member to '%s'", squadName))
 	var lines []string
 	lines = append(lines, title)
-	lines = append(lines, "Enter GitHub handle, press [Enter] to add, [Esc] to cancel.\n")
-	lines = append(lines, m.ModalInput.View())
+	lines = append(lines, "Enter a name for the squad, then choose members from the organization.\n")
+	lines = append(lines, "Squad Name: "+m.ModalInput.View()+"\n")
+	lines = append(lines, MetaBarStyle.Render("Press [Enter] to create squad and choose members, [Esc] to cancel."))
 
 	return ModalBoxStyle.Render(strings.Join(lines, "\n"))
 }
 
-func (m Model) handleAddMemberModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleCreateSquadModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.ActiveModal = ModalNone
@@ -163,7 +175,151 @@ func (m Model) handleAddMemberModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.ModalInput.Blur()
 		return m, nil
 	case "enter":
-		username := strings.TrimSpace(m.ModalInput.Value())
+		squadName := strings.TrimSpace(m.ModalInput.Value())
+		if squadName != "" {
+			_ = m.Config.CreateSquad(squadName, squadName, nil)
+			_ = m.Config.SetActiveSquad(squadName)
+			// Transition directly to Member Selector modal
+			m.ActiveModal = ModalAddMember
+			m.ModalCursor = 0
+			m.ModalInput.Reset()
+			m.ModalInput.Placeholder = "Type to search members or enter username..."
+			m.ModalInput.Focus()
+			return m, func() tea.Msg {
+				return StatusToastMsg(fmt.Sprintf("Created squad '%s'. Select members below!", squadName))
+			}
+		}
+	default:
+		var cmd tea.Cmd
+		m.ModalInput, cmd = m.ModalInput.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m Model) getFilteredOrgMembers() []github.OrgMember {
+	filter := strings.ToLower(strings.TrimSpace(m.ModalInput.Value()))
+	if filter == "" {
+		return m.OrgMembers
+	}
+	var res []github.OrgMember
+	for _, om := range m.OrgMembers {
+		if strings.Contains(strings.ToLower(om.Login), filter) || strings.Contains(strings.ToLower(om.Name), filter) {
+			res = append(res, om)
+		}
+	}
+	return res
+}
+
+func (m Model) renderAddMemberModal() string {
+	activeSquad := m.Config.GetActiveSquad()
+	squadName := "Squad"
+	if activeSquad != nil {
+		squadName = activeSquad.DisplayName
+	}
+
+	title := ModalTitleStyle.Render(fmt.Sprintf("Add Member to '%s'", squadName))
+	var lines []string
+	lines = append(lines, title)
+	lines = append(lines, fmt.Sprintf("Select an organization member from '%s' or enter a username.\n", m.CurrentOrg))
+	lines = append(lines, "Search / Username: "+m.ModalInput.View()+"\n")
+
+	filtered := m.getFilteredOrgMembers()
+	if len(filtered) == 0 {
+		typed := strings.TrimSpace(m.ModalInput.Value())
+		if typed != "" {
+			lines = append(lines, lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render(fmt.Sprintf("  ▶ Add '%s' directly (Press [Enter])", typed)))
+		} else {
+			lines = append(lines, "  No organization members found. Type a GitHub username and press [Enter].")
+		}
+	} else {
+		visibleLimit := 8
+		if m.ModalCursor >= len(filtered) {
+			m.ModalCursor = len(filtered) - 1
+		}
+		if m.ModalCursor < 0 {
+			m.ModalCursor = 0
+		}
+
+		start := 0
+		if m.ModalCursor >= visibleLimit {
+			start = m.ModalCursor - visibleLimit + 1
+		}
+		end := start + visibleLimit
+		if end > len(filtered) {
+			end = len(filtered)
+		}
+
+		squadMembersMap := make(map[string]bool)
+		if activeSquad != nil {
+			for _, mem := range activeSquad.Members {
+				squadMembersMap[strings.ToLower(mem)] = true
+			}
+		}
+
+		for i := start; i < end; i++ {
+			om := filtered[i]
+			cursor := "  "
+			if i == m.ModalCursor {
+				cursor = "▶ "
+			}
+
+			inSquad := squadMembersMap[strings.ToLower(om.Login)]
+			tag := "[ ]"
+			suffix := ""
+			if inSquad {
+				tag = "[✓]"
+				suffix = lipgloss.NewStyle().Foreground(MutedColor).Render(" (In Squad)")
+			}
+
+			disp := om.Login
+			if om.Name != "" && om.Name != om.Login {
+				disp = fmt.Sprintf("%-16s (%s)", om.Login, om.Name)
+			}
+			line := fmt.Sprintf("%s%s %s%s", cursor, tag, disp, suffix)
+			if i == m.ModalCursor {
+				lines = append(lines, SelectedRowStyle.Render(line))
+			} else {
+				lines = append(lines, NormalRowStyle.Render(line))
+			}
+		}
+
+		if len(filtered) > visibleLimit {
+			lines = append(lines, MetaBarStyle.Render(fmt.Sprintf("  (Showing %d-%d of %d members)", start+1, end, len(filtered))))
+		}
+	}
+
+	lines = append(lines, "\n"+MetaBarStyle.Render("[↑/↓] Select  [Enter/Space] Add Member  [Esc] Done"))
+	return ModalBoxStyle.Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) handleAddMemberModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	filtered := m.getFilteredOrgMembers()
+
+	switch msg.String() {
+	case "esc":
+		m.ActiveModal = ModalNone
+		m.ModalInput.Reset()
+		m.ModalInput.Blur()
+		return m, nil
+	case "up", "k":
+		if m.ModalCursor > 0 {
+			m.ModalCursor--
+		}
+		return m, nil
+	case "down", "j":
+		if m.ModalCursor < len(filtered)-1 {
+			m.ModalCursor++
+		}
+		return m, nil
+	case "enter", " ":
+		var username string
+		if len(filtered) > 0 && m.ModalCursor < len(filtered) {
+			username = filtered[m.ModalCursor].Login
+		} else {
+			username = strings.TrimSpace(m.ModalInput.Value())
+		}
+
 		if username != "" {
 			squadName := "default-squad"
 			if s := m.Config.GetActiveSquad(); s != nil {
@@ -193,11 +349,17 @@ func (m Model) handleAddMemberModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+	default:
+		prevVal := m.ModalInput.Value()
+		var cmd tea.Cmd
+		m.ModalInput, cmd = m.ModalInput.Update(msg)
+		if m.ModalInput.Value() != prevVal {
+			m.ModalCursor = 0
+		}
+		return m, cmd
 	}
 
-	var cmd tea.Cmd
-	m.ModalInput, cmd = m.ModalInput.Update(msg)
-	return m, cmd
+	return m, nil
 }
 
 func (m Model) renderHelpModal() string {

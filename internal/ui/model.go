@@ -42,6 +42,8 @@ const (
 	ModalHelp
 	ModalFilterGroup
 	ModalFilterRepoName
+	ModalFilterPR
+	ModalCreateSquad
 )
 
 // Async messages
@@ -59,6 +61,7 @@ type DataLoadedMsg struct {
 	SquadEvents   []github.SquadEvent
 	Security      map[string]github.SecurityAlertSummary
 	Notifications []github.Notification
+	OrgMembers    []github.OrgMember
 	RateLimit     github.RateLimitInfo
 	Err           error
 }
@@ -98,6 +101,7 @@ type Model struct {
 	SquadEvents         []github.SquadEvent
 	SecuritySummaries   map[string]github.SecurityAlertSummary
 	Notifications       []github.Notification
+	OrgMembers          []github.OrgMember
 	SeenNotificationIDs map[string]bool
 	GitStatuses         map[string]git.RepoGitStatus
 	RateLimit           github.RateLimitInfo
@@ -112,8 +116,9 @@ type Model struct {
 	RepoSortVulnerabilities bool
 	RepoFilterInput         textinput.Model
 
-	PRCursor int
-	PRFilter string
+	PRCursor      int
+	PRFilter      string
+	PRFilterInput textinput.Model
 
 	SquadCursor int
 
@@ -162,6 +167,12 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 	rfi.CharLimit = 50
 	rfi.Width = 40
 
+	prfi := textinput.New()
+	prfi.Placeholder = "Type PR title, repo, or author..."
+	prfi.Prompt = "🔍 "
+	prfi.CharLimit = 50
+	prfi.Width = 40
+
 	vp := viewport.New(60, 20)
 
 	sp := spinner.New()
@@ -185,6 +196,7 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 		SearchInput:         si,
 		ModalInput:          mi,
 		RepoFilterInput:     rfi,
+		PRFilterInput:       prfi,
 		SearchPreview:       vp,
 		SelectedRepoGroups:  make(map[string]bool),
 		Spinner:             sp,
@@ -232,6 +244,25 @@ func (m Model) loadDataCmd() tea.Cmd {
 		// Fetch notifications
 		notifs, _ := m.GHClient.FetchNotifications(ctx)
 
+		// Fetch organization members and merge with unique actors
+		orgMembers, _ := m.GHClient.FetchOrgMembers(ctx, m.CurrentOrg)
+		seenMembers := make(map[string]bool)
+		for _, om := range orgMembers {
+			seenMembers[strings.ToLower(om.Login)] = true
+		}
+		for _, ce := range commitEvents {
+			if ce.Actor != "" && !seenMembers[strings.ToLower(ce.Actor)] {
+				seenMembers[strings.ToLower(ce.Actor)] = true
+				orgMembers = append(orgMembers, github.OrgMember{Login: ce.Actor, Name: ce.Actor})
+			}
+		}
+		for _, pr := range prs {
+			if pr.Author != "" && !seenMembers[strings.ToLower(pr.Author)] {
+				seenMembers[strings.ToLower(pr.Author)] = true
+				orgMembers = append(orgMembers, github.OrgMember{Login: pr.Author, Name: pr.Author})
+			}
+		}
+
 		return DataLoadedMsg{
 			AuthUser:      authUser,
 			Repos:         repos,
@@ -239,6 +270,7 @@ func (m Model) loadDataCmd() tea.Cmd {
 			SquadEvents:   events,
 			Security:      secAlerts,
 			Notifications: notifs,
+			OrgMembers:    orgMembers,
 			RateLimit:     m.GHClient.RateLimit(),
 		}
 	}
@@ -308,6 +340,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.PRs = msg.PRs
 		m.SquadEvents = msg.SquadEvents
 		m.SecuritySummaries = msg.Security
+		m.OrgMembers = msg.OrgMembers
 		m.RateLimit = msg.RateLimit
 		if msg.AuthUser != "" {
 			m.AuthUser = msg.AuthUser
@@ -654,9 +687,13 @@ func (m Model) renderFooter() string {
 			help = "[v] View Group  [f] Filter  [s] Sort Vulns  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [e] Editor  [t] Shell  [u] Sync  [?] Help"
 		}
 	case TabPRs:
-		help = "[o] Browser  [p] Trigger Copilot Review  [c] Checkout Branch  [r] Refresh  [?] Help  [q] Quit"
+		if m.PRFilter != "" {
+			help = "[f] Filter  [Esc] Clear Filter  [o] Browser  [p] Copilot Review  [c] Checkout Branch  [?] Help"
+		} else {
+			help = "[f] Filter  [o] Browser  [p] Copilot Review  [c] Checkout Branch  [r] Refresh  [?] Help"
+		}
 	case TabSquad:
-		help = "[s] Switch Squad  [a] Add Member  [d] Remove Member  [r] Refresh  [?] Help  [q] Quit"
+		help = "[s] Switch Squad  [n] New Squad  [a] Add Member  [d] Remove Member  [r] Refresh  [?] Help"
 	case TabSearch:
 		help = "[/] Query  [j/k] Nodes  [h/l/Space] Toggle  [Tab] Switch Viewport  [Enter] Open Editor  [?] Help"
 	case TabNotifications:

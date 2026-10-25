@@ -39,15 +39,19 @@ func computeRepoColumns(termWidth int) RepoColumns {
 	}
 	pathW := elastic - nameW - groupW
 
+	colStyle := func(width int) lipgloss.Style {
+		return lipgloss.NewStyle().Width(width).MaxHeight(1).Inline(true)
+	}
+
 	return RepoColumns{
-		Cursor:      lipgloss.NewStyle().Width(3),
-		Name:        lipgloss.NewStyle().Width(nameW),
-		Sec:         lipgloss.NewStyle().Width(16),
-		Group:       lipgloss.NewStyle().Width(groupW),
-		Git:         lipgloss.NewStyle().Width(16),
-		Branch:      lipgloss.NewStyle().Width(12),
-		Last:        lipgloss.NewStyle().Width(13),
-		Path:        lipgloss.NewStyle().Width(pathW),
+		Cursor:      colStyle(3),
+		Name:        colStyle(nameW),
+		Sec:         colStyle(16),
+		Group:       colStyle(groupW),
+		Git:         colStyle(16),
+		Branch:      colStyle(12),
+		Last:        colStyle(13),
+		Path:        colStyle(pathW),
 		NameWidth:   nameW,
 		GroupWidth:  groupW,
 		BranchWidth: 12,
@@ -68,6 +72,9 @@ type PRColumns struct {
 
 	RepoWidth   int
 	TitleWidth  int
+	AuthorWidth int
+	AgeWidth    int
+	ReviewWidth int
 	LabelsWidth int
 }
 
@@ -92,18 +99,25 @@ func computePRColumns(termWidth int) PRColumns {
 	}
 	titleW := elastic - repoW - labelsW
 
+	colStyle := func(width int) lipgloss.Style {
+		return lipgloss.NewStyle().Width(width).MaxHeight(1).Inline(true)
+	}
+
 	return PRColumns{
-		Cursor:      lipgloss.NewStyle().Width(3),
-		Num:         lipgloss.NewStyle().Width(7),
-		Repo:        lipgloss.NewStyle().Width(repoW),
-		Title:       lipgloss.NewStyle().Width(titleW),
-		Author:      lipgloss.NewStyle().Width(12),
-		Age:         lipgloss.NewStyle().Width(10),
-		Review:      lipgloss.NewStyle().Width(15),
-		Comments:    lipgloss.NewStyle().Width(10),
-		Labels:      lipgloss.NewStyle().Width(labelsW),
+		Cursor:      colStyle(3),
+		Num:         colStyle(7),
+		Repo:        colStyle(repoW),
+		Title:       colStyle(titleW),
+		Author:      colStyle(12),
+		Age:         colStyle(10),
+		Review:      colStyle(15),
+		Comments:    colStyle(10),
+		Labels:      colStyle(labelsW),
 		RepoWidth:   repoW,
 		TitleWidth:  titleW,
+		AuthorWidth: 12,
+		AgeWidth:    10,
+		ReviewWidth: 15,
 		LabelsWidth: labelsW,
 	}
 }
@@ -137,13 +151,17 @@ func computeSquadColumns(termWidth int) SquadColumns {
 	}
 	detailsW := elastic - targetW
 
+	colStyle := func(width int) lipgloss.Style {
+		return lipgloss.NewStyle().Width(width).MaxHeight(1).Inline(true)
+	}
+
 	return SquadColumns{
-		Cursor:       lipgloss.NewStyle().Width(3),
-		Time:         lipgloss.NewStyle().Width(11),
-		Actor:        lipgloss.NewStyle().Width(15),
-		Action:       lipgloss.NewStyle().Width(16),
-		Target:       lipgloss.NewStyle().Width(targetW),
-		Details:      lipgloss.NewStyle().Width(detailsW),
+		Cursor:       colStyle(3),
+		Time:         colStyle(11),
+		Actor:        colStyle(15),
+		Action:       colStyle(16),
+		Target:       colStyle(targetW),
+		Details:      colStyle(detailsW),
 		TargetWidth:  targetW,
 		DetailsWidth: detailsW,
 	}
@@ -179,14 +197,18 @@ func computeNotificationColumns(termWidth int) NotificationColumns {
 	}
 	titleW := elastic - repoW
 
+	colStyle := func(width int) lipgloss.Style {
+		return lipgloss.NewStyle().Width(width).MaxHeight(1).Inline(true)
+	}
+
 	return NotificationColumns{
-		Cursor:     lipgloss.NewStyle().Width(3),
-		Status:     lipgloss.NewStyle().Width(7),
-		Type:       lipgloss.NewStyle().Width(13),
-		Reason:     lipgloss.NewStyle().Width(14),
-		Repo:       lipgloss.NewStyle().Width(repoW),
-		Title:      lipgloss.NewStyle().Width(titleW),
-		Time:       lipgloss.NewStyle().Width(11),
+		Cursor:     colStyle(3),
+		Status:     colStyle(7),
+		Type:       colStyle(13),
+		Reason:     colStyle(14),
+		Repo:       colStyle(repoW),
+		Title:      colStyle(titleW),
+		Time:       colStyle(11),
 		RepoWidth:  repoW,
 		TitleWidth: titleW,
 	}
