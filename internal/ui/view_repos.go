@@ -3,9 +3,11 @@ package ui
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -14,42 +16,125 @@ import (
 	"grubby/internal/github"
 )
 
+func (m Model) getDisplayRepos() []github.Repository {
+	var result []github.Repository
+
+	groupFilter := strings.ToLower(m.RepoGroupFilter)
+	nameFilter := strings.ToLower(strings.TrimSpace(m.RepoFilter))
+
+	for _, r := range m.Repos {
+		if groupFilter != "" {
+			if !m.Config.IsRepoInGroup(m.RepoGroupFilter, r.Name) {
+				continue
+			}
+		}
+
+		if nameFilter != "" {
+			if !strings.Contains(strings.ToLower(r.Name), nameFilter) &&
+				!strings.Contains(strings.ToLower(r.FullName), nameFilter) {
+				continue
+			}
+		}
+
+		result = append(result, r)
+	}
+
+	if m.RepoSortVulnerabilities {
+		sort.SliceStable(result, func(i, j int) bool {
+			secA := m.SecuritySummaries[result[i].Name]
+			secB := m.SecuritySummaries[result[j].Name]
+
+			if secA.Total != secB.Total {
+				return secA.Total > secB.Total
+			}
+			if secA.Critical != secB.Critical {
+				return secA.Critical > secB.Critical
+			}
+			if secA.High != secB.High {
+				return secA.High > secB.High
+			}
+			if secA.Medium != secB.Medium {
+				return secA.Medium > secB.Medium
+			}
+			return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
+		})
+	}
+
+	return result
+}
+
 func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	repos := m.getDisplayRepos()
+
 	switch msg.String() {
 	case "up", "k":
 		if m.RepoCursor > 0 {
 			m.RepoCursor--
 		}
 	case "down", "j":
-		if m.RepoCursor < len(m.Repos)-1 {
+		if m.RepoCursor < len(repos)-1 {
 			m.RepoCursor++
+		}
+	case "v":
+		// 'v' view by group: select a group to filter the view on
+		m.ActiveModal = ModalFilterGroup
+		m.ModalCursor = 0
+		for idx, g := range m.Config.Groups {
+			if strings.EqualFold(g.Name, m.RepoGroupFilter) {
+				m.ModalCursor = idx + 1
+				break
+			}
+		}
+		return m, nil
+	case "f":
+		// 'f' filter: filter repositories by name
+		m.ActiveModal = ModalFilterRepoName
+		m.RepoFilterInput.SetValue(m.RepoFilter)
+		m.RepoFilterInput.Focus()
+		return m, textinput.Blink
+	case "s":
+		// 's' sort by vulnerabilities: toggle sorting from most to least vulnerabilities
+		m.RepoSortVulnerabilities = !m.RepoSortVulnerabilities
+		m.RepoCursor = 0
+		if m.RepoSortVulnerabilities {
+			return m, func() tea.Msg { return StatusToastMsg("Sorted repositories by vulnerabilities (most to least)") }
+		}
+		return m, func() tea.Msg { return StatusToastMsg("Reset repository sort order to default") }
+	case "esc":
+		// 'esc' clears active filters and sorting
+		if m.RepoFilter != "" || m.RepoGroupFilter != "" || m.RepoSortVulnerabilities {
+			m.RepoFilter = ""
+			m.RepoGroupFilter = ""
+			m.RepoSortVulnerabilities = false
+			m.RepoCursor = 0
+			return m, func() tea.Msg { return StatusToastMsg("Cleared all repository filters and sorting") }
 		}
 	case "enter":
 		// Enter key opens repository root in dedicated browser
-		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
-			repo := m.Repos[m.RepoCursor]
+		if len(repos) > 0 && m.RepoCursor < len(repos) {
+			repo := repos[m.RepoCursor]
 			_ = OpenBrowser(repo.URL)
 			return m, func() tea.Msg { return StatusToastMsg("Opened " + repo.Name + " in dedicated browser") }
 		}
 	case "o":
 		// 'o' opens the repo tabs submenu (issues, pull requests, actions, security, etc.)
-		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
+		if len(repos) > 0 && m.RepoCursor < len(repos) {
 			m.ActiveModal = ModalRepoTabs
 			m.ModalCursor = 0
 			return m, nil
 		}
 	case "S":
 		// 'S' opens repository Security (Dependabot) directly in dedicated browser
-		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
-			repo := m.Repos[m.RepoCursor]
+		if len(repos) > 0 && m.RepoCursor < len(repos) {
+			repo := repos[m.RepoCursor]
 			url := fmt.Sprintf("https://github.com/%s/security/dependabot", repo.FullName)
 			_ = OpenBrowser(url)
 			return m, func() tea.Msg { return StatusToastMsg("Opened Security tab for " + repo.Name) }
 		}
 	case "g":
 		// Open Groups modal for current repo
-		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
-			repo := m.Repos[m.RepoCursor]
+		if len(repos) > 0 && m.RepoCursor < len(repos) {
+			repo := repos[m.RepoCursor]
 			m.ActiveModal = ModalManageGroups
 			m.ModalCursor = 0
 			m.SelectedRepoGroups = make(map[string]bool)
@@ -58,8 +143,8 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "e":
-		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
-			repo := m.Repos[m.RepoCursor]
+		if len(repos) > 0 && m.RepoCursor < len(repos) {
+			repo := repos[m.RepoCursor]
 			st := m.GitStatuses[repo.Name]
 			if st.IsCloned {
 				err := OpenInITermNvim(st.LocalPath, "", 0)
@@ -74,8 +159,8 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "t":
 		// Open repo in a new shell (iTerm2 on macOS)
-		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
-			repo := m.Repos[m.RepoCursor]
+		if len(repos) > 0 && m.RepoCursor < len(repos) {
+			repo := repos[m.RepoCursor]
 			st := m.GitStatuses[repo.Name]
 			if st.IsCloned {
 				err := OpenInShell(st.LocalPath)
@@ -90,28 +175,30 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "c":
 		// Clone repo
-		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
-			repo := m.Repos[m.RepoCursor]
+		if len(repos) > 0 && m.RepoCursor < len(repos) {
+			repo := repos[m.RepoCursor]
 			st := m.GitStatuses[repo.Name]
 			if st.IsCloned {
 				return m, func() tea.Msg { return StatusToastMsg(repo.Name + " is already cloned!") }
 			}
 			targetDir := m.GitMgr.GetRepoPath(repo.Name)
+			m.StatusMsg = "Cloning " + repo.FullName + "..."
+			m.StatusMsgTimer = time.Now().Add(3 * time.Minute)
 			return m, func() tea.Msg {
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer cancel()
 				err := github.CloneRepo(ctx, repo.FullName, targetDir)
 				if err != nil {
-					return StatusToastMsg("Clone failed: " + err.Error())
+					return RepoClonedMsg{RepoName: repo.Name, TargetDir: targetDir, Err: err}
 				}
-				collapsed := config.CollapseHome(targetDir)
-				return StatusToastMsg("Successfully cloned " + repo.Name + " to " + collapsed)
+				newStatus := git.InspectRepo(ctx, repo.Name, targetDir)
+				return RepoClonedMsg{RepoName: repo.Name, TargetDir: targetDir, Status: newStatus, Err: nil}
 			}
 		}
 	case "u":
 		// Fast-forward repo
-		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
-			repo := m.Repos[m.RepoCursor]
+		if len(repos) > 0 && m.RepoCursor < len(repos) {
+			repo := repos[m.RepoCursor]
 			st := m.GitStatuses[repo.Name]
 			if !st.IsCloned {
 				return m, func() tea.Msg { return StatusToastMsg("Repo is not cloned yet.") }
@@ -137,11 +224,20 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) renderReposView() string {
+	repos := m.getDisplayRepos()
+
 	if m.Loading && len(m.Repos) == 0 {
 		return fmt.Sprintf("\n  %s Fetching repositories from GitHub...\n", m.Spinner.View())
 	}
-	if len(m.Repos) == 0 {
+	if len(repos) == 0 {
+		if m.RepoFilter != "" || m.RepoGroupFilter != "" {
+			return "\n  No repositories match the current filter(s).\n  Press [Esc] to clear filters.\n"
+		}
 		return "\n  No repositories found for " + m.CurrentOrg + ".\n"
+	}
+
+	if m.RepoCursor >= len(repos) {
+		m.RepoCursor = len(repos) - 1
 	}
 
 	cols := computeRepoColumns(m.Width)
@@ -159,9 +255,31 @@ func (m Model) renderReposView() string {
 	renderedHeader := TableHeaderStyle.Render(headerRow)
 
 	var rows []string
+
+	// Active filter indicator if filtering or sorting is on
+	var filterBadges []string
+	if m.RepoGroupFilter != "" {
+		filterBadges = append(filterBadges, lipgloss.NewStyle().Foreground(PrimaryColor).Bold(true).Render("Group: "+m.RepoGroupFilter))
+	}
+	if m.RepoFilter != "" {
+		filterBadges = append(filterBadges, lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render(fmt.Sprintf("Name: %q", m.RepoFilter)))
+	}
+	if m.RepoSortVulnerabilities {
+		filterBadges = append(filterBadges, lipgloss.NewStyle().Foreground(WarningColor).Bold(true).Render("Sort: 🛡️ Most Vulns ↓"))
+	}
+
+	if len(filterBadges) > 0 {
+		filterSummary := MetaBarStyle.Render("  🔍 ") + strings.Join(filterBadges, "  ") +
+			MetaBarStyle.Render(fmt.Sprintf("  (%d of %d repos) • [Esc] Clear", len(repos), len(m.Repos)))
+		rows = append(rows, filterSummary)
+	}
+
 	rows = append(rows, renderedHeader)
 
 	visibleCount := m.Height - 8
+	if len(filterBadges) > 0 {
+		visibleCount = m.Height - 9
+	}
 	if visibleCount < 5 {
 		visibleCount = 10
 	}
@@ -171,12 +289,12 @@ func (m Model) renderReposView() string {
 		start = m.RepoCursor - visibleCount + 1
 	}
 	end := start + visibleCount
-	if end > len(m.Repos) {
-		end = len(m.Repos)
+	if end > len(repos) {
+		end = len(repos)
 	}
 
 	for i := start; i < end; i++ {
-		r := m.Repos[i]
+		r := repos[i]
 		st := m.GitStatuses[r.Name]
 
 		// 1. Calculate open PR count for this repository

@@ -13,13 +13,20 @@ It merges **remote GitHub state** (pull requests, unresolved review threads, tea
 ## Features
 
 ### 1. Repositories Cockpit
-* **Workspace Status Awareness**: Scans your local workspace folder (default `~/workspaces/*`) and classifies branches non-destructively: `[✓ synced]`, `[↓ behind]`, `[↑ ahead]`, `[* dirty]`, or `[Not Cloned]`.
+* **Workspace Status Awareness**: Scans your local workspace folder (default `~/workspaces/*`) and classifies branches non-destructively: `[✓ synced]`, `[↓ behind]`, `[↑ ahead]`, `[* dirty]`, or `[Not Cloned]`. When a repository is cloned via `c`, Grubby immediately detects the clone and reflects its git status and local path without requiring a manual refresh.
 * **Dynamic Multi-Group Tagging**: Press `g` to assign repositories to one or more groups (e.g., `backend`, `payments`, `core-services`). Group definitions are persisted immediately to `~/.config/grubby/config.yaml`.
+* **Filtering & Sorting**:
+  * `v` (**View by Group**): Filter the repository table by any defined group, or show all.
+  * `f` (**Filter by Name**): Real-time substring filter on repository name.
+  * `s` (**Sort by Vulnerabilities**): Toggle sorting from highest vulnerability count to lowest.
+  * `Esc`: Instantly clear active group, name filters, and custom sorting.
 * **Developer Ergonomics**:
-  * `c` clones uncloned repositories into `~/workspaces/{repo}` using `gh repo clone`.
-  * `e` launches the local repository directly in your `$EDITOR` (Neovim, VS Code, etc.).
+  * `c` clones uncloned repositories into `~/workspaces/{repo}` using `gh repo clone` and updates status in real time.
+  * `e` launches the local repository directly in your `$EDITOR` (Neovim in iTerm2, VS Code, etc.).
+  * `t` opens a dedicated shell tab in iTerm2 at the repository root.
   * `u` safely fast-forwards clean `behind` repositories (`git merge --ff-only`).
-  * `o` opens the repository in your browser.
+  * `o` opens the repository submenu with direct links to GitHub tabs (Code, PRs, Issues, Actions, Security, Releases, etc.).
+  * `S` opens the Dependabot security advisory page in your browser.
 
 ### 2. Pull Request Dashboard
 * **Actionable Focus**: Prioritizes open pull requests across your active organization or squad.

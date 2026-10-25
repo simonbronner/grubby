@@ -24,10 +24,11 @@ var repoTabOptions = []RepoTabOption{
 }
 
 func (m Model) renderRepoTabsModal() string {
-	if len(m.Repos) == 0 || m.RepoCursor >= len(m.Repos) {
+	repos := m.getDisplayRepos()
+	if len(repos) == 0 || m.RepoCursor >= len(repos) {
 		return ""
 	}
-	repo := m.Repos[m.RepoCursor]
+	repo := repos[m.RepoCursor]
 
 	title := ModalTitleStyle.Render(fmt.Sprintf("Open GitHub Tab: %s", repo.FullName))
 
@@ -54,11 +55,12 @@ func (m Model) renderRepoTabsModal() string {
 }
 
 func (m Model) handleRepoTabsModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if len(m.Repos) == 0 || m.RepoCursor >= len(m.Repos) {
+	repos := m.getDisplayRepos()
+	if len(repos) == 0 || m.RepoCursor >= len(repos) {
 		m.ActiveModal = ModalNone
 		return m, nil
 	}
-	repo := m.Repos[m.RepoCursor]
+	repo := repos[m.RepoCursor]
 
 	switch msg.String() {
 	case "esc", "q":

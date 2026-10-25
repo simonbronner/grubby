@@ -8,10 +8,11 @@ import (
 )
 
 func (m Model) renderManageGroupsModal() string {
-	if len(m.Repos) == 0 || m.RepoCursor >= len(m.Repos) {
+	repos := m.getDisplayRepos()
+	if len(repos) == 0 || m.RepoCursor >= len(repos) {
 		return ""
 	}
-	repo := m.Repos[m.RepoCursor]
+	repo := repos[m.RepoCursor]
 
 	title := ModalTitleStyle.Render(fmt.Sprintf("Manage Groups for '%s'", repo.Name))
 
@@ -53,11 +54,12 @@ func (m Model) renderManageGroupsModal() string {
 }
 
 func (m Model) handleGroupsModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if len(m.Repos) == 0 || m.RepoCursor >= len(m.Repos) {
+	repos := m.getDisplayRepos()
+	if len(repos) == 0 || m.RepoCursor >= len(repos) {
 		m.ActiveModal = ModalNone
 		return m, nil
 	}
-	repo := m.Repos[m.RepoCursor]
+	repo := repos[m.RepoCursor]
 
 	if m.ModalInput.Focused() {
 		switch msg.String() {
