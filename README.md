@@ -61,12 +61,39 @@ It merges **remote GitHub state** (pull requests, unresolved review threads, tea
 
 ## Installation
 
-### Prerequisites
+### Homebrew (macOS & Linux)
+
+The easiest way to install Grubby on macOS or Linux is via Homebrew:
+
+```bash
+# Install directly from the tap:
+brew install simonbronner/tap/grubby
+
+# Or tap first and install:
+brew tap simonbronner/tap
+brew install grubby
+```
+
+To upgrade in the future:
+```bash
+brew update
+brew upgrade grubby
+```
+
+### Pre-built Binaries (GitHub Releases)
+
+Download pre-compiled binaries from [GitHub Releases](https://github.com/simonbronner/grubby/releases):
+* **macOS**: Apple Silicon (`darwin_arm64`) & Intel (`darwin_amd64`)
+* **Linux**: x86_64 (`linux_amd64`) & ARM64 (`linux_arm64`)
+* **Windows**: x86_64 (`windows_amd64`)
+
+### Build from Source
+
+#### Prerequisites
 * **Go**: 1.21 or later
 * **GitHub CLI (`gh`)**: Authenticated via `gh auth login` with `repo` and `read:org` scopes.
 * **Ripgrep (`rg`)**: Recommended for real-time code search (`brew install ripgrep`).
 
-### Build from Source
 ```bash
 git clone https://github.com/simonbronner/grubby.git
 cd grubby
@@ -197,6 +224,38 @@ search:
 * **Syntax Highlighting**: [Chroma v2](https://github.com/alecthomas/chroma) (pure Go syntax engine with Dracula styling).
 * **Search Engine**: Parallel streaming `ripgrep` runner parsing structured JSON Lines.
 * **Git Engine**: Safe non-destructive status inspection and fast-forwarding (`git rev-list`, `git merge --ff-only`).
+
+---
+
+## Releasing & Multi-Platform Automation
+
+Grubby includes fully automated release workflows for multi-platform builds, GitHub Releases, and Homebrew tap publishing.
+
+### 1. Tagging a Release
+Use the release helper script to automatically increment the next version tag (`v1`, `v2`, `v3`, etc.) and push it to GitHub:
+
+```bash
+# Auto-detects the next release tag (e.g. v1 -> v2) and prompts for confirmation
+./scripts/release.sh
+
+# Or trigger a specific tag directly:
+./scripts/release.sh v1
+```
+
+### 2. GitHub Actions Automation
+When a `v*` tag is pushed:
+1. GitHub Actions triggers `.github/workflows/release.yml`.
+2. Compiles cross-platform binaries for Darwin (`amd64`, `arm64`), Linux (`amd64`, `arm64`), and Windows (`amd64`).
+3. Packages `.tar.gz` and `.zip` archives and computes SHA256 checksums (`checksums.txt`).
+4. Generates a matching `Formula/grubby.rb` with the archive checksums.
+5. Creates the GitHub Release with attached binaries, checksums, and auto-generated release notes.
+6. Synchronizes the Homebrew tap repository [`simonbronner/homebrew-tap`](https://github.com/simonbronner/homebrew-tap).
+
+### 3. Homebrew Tap Synchronization
+To sync or update the tap formula locally at any time:
+```bash
+./scripts/update-tap.sh v1
+```
 
 ---
 

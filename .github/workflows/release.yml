@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Build multi-platform packages & Homebrew formula
+        run: |
+          chmod +x ./scripts/build-all.sh
+          ./scripts/build-all.sh "${GITHUB_REF_NAME}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/grubby_* \
+            dist/checksums.txt \
+            dist/grubby.rb \
+            --title "Grubby ${GITHUB_REF_NAME}" \
+            --generate-notes
+
+      - name: Update Homebrew Tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || secrets.TAP_GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TOKEN="${TAP_TOKEN:-$GITHUB_TOKEN}"
+          echo "--> Syncing formula with simonbronner/homebrew-tap..."
+          TAP_DIR=$(mktemp -d)
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git clone "https://x-access-token:${TOKEN}@github.com/simonbronner/homebrew-tap.git" "${TAP_DIR}" 2>/dev/null; then
+            mkdir -p "${TAP_DIR}/Formula"
+            cp dist/grubby.rb "${TAP_DIR}/Formula/grubby.rb"
+            cd "${TAP_DIR}"
+            git add Formula/grubby.rb
+            if git diff-index --quiet HEAD --; then
+              echo "Homebrew formula already up to date."
+            else
+              git commit -m "chore(release): bump grubby to ${GITHUB_REF_NAME}"
+              if git push origin main; then
+                echo "✓ Successfully pushed updated formula to simonbronner/homebrew-tap!"
+              else
+                echo "Warning: Could not push to simonbronner/homebrew-tap."
+                echo "To enable automated tap updates in GitHub Actions, configure a HOMEBREW_TAP_TOKEN secret with 'repo' scope."
+              fi
+            fi
+          else
+            echo "Notice: Could not clone simonbronner/homebrew-tap with current token."
+            echo "To enable automated tap updates in GitHub Actions, configure a HOMEBREW_TAP_TOKEN secret with 'repo' scope."
+            echo "Formula is attached to the GitHub release as dist/grubby.rb."
+          fi
