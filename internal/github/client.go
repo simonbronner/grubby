@@ -168,8 +168,8 @@ func (c *Client) queryGraphQL(ctx context.Context, query string, variables map[s
 	return json.Unmarshal(gqlResp.Data, target)
 }
 
-// FetchRepositoriesAndPRs fetches both repos and open PRs for an owner (org or user)
-func (c *Client) FetchRepositoriesAndPRs(ctx context.Context, owner string) ([]Repository, []PullRequest, error) {
+// FetchRepositoriesAndPRs fetches repos, open PRs, commit events, and vulnerability summaries for an owner (org or user)
+func (c *Client) FetchRepositoriesAndPRs(ctx context.Context, owner string) ([]Repository, []PullRequest, []SquadEvent, map[string]SecurityAlertSummary, error) {
 	query := `
 query($login: String!) {
   repositoryOwner(login: $login) {
@@ -183,6 +183,34 @@ query($login: String!) {
         sshUrl
         defaultBranchRef {
           name
+          target {
+            ... on Commit {
+              history(first: 10) {
+                nodes {
+                  oid
+                  message
+                  committedDate
+                  author {
+                    name
+                    user {
+                      login
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        vulnerabilityAlerts(first: 50, states: OPEN) {
+          totalCount
+          nodes {
+            securityVulnerability {
+              severity
+              package {
+                name
+              }
+            }
+          }
         }
         pullRequests(first: 20, states: OPEN, orderBy: {field: UPDATED_AT, direction: DESC}) {
           nodes {
@@ -208,7 +236,7 @@ query($login: String!) {
             reviewThreads(first: 30) {
               totalCount
               nodes {
-                isResolved
+                IsResolved: isResolved
               }
             }
           }
@@ -229,8 +257,34 @@ query($login: String!) {
 					URL              string    `json:"url"`
 					SSHURL           string    `json:"sshUrl"`
 					DefaultBranchRef *struct {
-						Name string `json:"name"`
+						Name   string `json:"name"`
+						Target *struct {
+							History struct {
+								Nodes []struct {
+									OID           string    `json:"oid"`
+									Message       string    `json:"message"`
+									CommittedDate time.Time `json:"committedDate"`
+									Author        struct {
+										Name string `json:"name"`
+										User *struct {
+											Login string `json:"login"`
+										} `json:"user"`
+									} `json:"author"`
+								} `json:"nodes"`
+							} `json:"history"`
+						} `json:"target"`
 					} `json:"defaultBranchRef"`
+					VulnerabilityAlerts struct {
+						TotalCount int `json:"totalCount"`
+						Nodes      []struct {
+							SecurityVulnerability struct {
+								Severity string `json:"severity"`
+								Package  struct {
+									Name string `json:"name"`
+								} `json:"package"`
+							} `json:"securityVulnerability"`
+						} `json:"nodes"`
+					} `json:"vulnerabilityAlerts"`
 					PullRequests struct {
 						Nodes []struct {
 							Number         int       `json:"number"`
@@ -267,11 +321,13 @@ query($login: String!) {
 
 	err := c.queryGraphQL(ctx, query, map[string]interface{}{"login": owner}, &resp)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	var repos []Repository
 	var prs []PullRequest
+	var commitEvents []SquadEvent
+	securityMap := make(map[string]SecurityAlertSummary)
 
 	for _, node := range resp.RepositoryOwner.Repositories.Nodes {
 		desc := ""
@@ -294,6 +350,63 @@ query($login: String!) {
 			SSHURL:        node.SSHURL,
 		}
 		repos = append(repos, repo)
+
+		// Parse commit events from default branch
+		if node.DefaultBranchRef != nil && node.DefaultBranchRef.Target != nil {
+			for _, cNode := range node.DefaultBranchRef.Target.History.Nodes {
+				actor := ""
+				if cNode.Author.User != nil && cNode.Author.User.Login != "" {
+					actor = cNode.Author.User.Login
+				} else if cNode.Author.Name != "" {
+					actor = cNode.Author.Name
+				}
+				msg := strings.Split(cNode.Message, "\n")[0]
+				if len(msg) > 60 {
+					msg = msg[:57] + "..."
+				}
+				commitEvents = append(commitEvents, SquadEvent{
+					Actor:     actor,
+					Action:    "Committed",
+					Repo:      node.Name,
+					Target:    fmt.Sprintf("%s:%s", node.Name, defBranch),
+					Details:   msg,
+					Timestamp: cNode.CommittedDate,
+				})
+			}
+		}
+
+		// Parse Vulnerability Alerts
+		crit, high, med, low := 0, 0, 0, 0
+		var packages []string
+		seenPkg := make(map[string]bool)
+		for _, va := range node.VulnerabilityAlerts.Nodes {
+			pkgName := va.SecurityVulnerability.Package.Name
+			if pkgName != "" && !seenPkg[pkgName] {
+				seenPkg[pkgName] = true
+				packages = append(packages, pkgName)
+			}
+			switch strings.ToUpper(va.SecurityVulnerability.Severity) {
+			case "CRITICAL":
+				crit++
+			case "HIGH":
+				high++
+			case "MODERATE":
+				med++
+			case "LOW":
+				low++
+			}
+		}
+
+		securityMap[node.Name] = SecurityAlertSummary{
+			Repo:        node.Name,
+			Critical:    crit,
+			High:        high,
+			Medium:      med,
+			Low:         low,
+			Total:       node.VulnerabilityAlerts.TotalCount,
+			Packages:    packages,
+			LastScanned: time.Now(),
+		}
 
 		for _, p := range node.PullRequests.Nodes {
 			author := "unknown"
@@ -334,18 +447,31 @@ query($login: String!) {
 		}
 	}
 
-	return repos, prs, nil
+	return repos, prs, commitEvents, securityMap, nil
 }
 
-// FetchSquadActivity retrieves public events for a list of squad members
-func (c *Client) FetchSquadActivity(ctx context.Context, members []string) ([]SquadEvent, error) {
+// FetchSquadActivity retrieves public and private events for a list of squad members and merges with commit history
+func (c *Client) FetchSquadActivity(ctx context.Context, members []string, commitEvents []SquadEvent) ([]SquadEvent, error) {
 	var events []SquadEvent
 	if len(members) == 0 {
 		return events, nil
 	}
 
+	memberMap := make(map[string]bool)
+	for _, m := range members {
+		memberMap[strings.ToLower(strings.TrimSpace(m))] = true
+	}
+
+	// Filter commitEvents to only include squad members
+	for _, ce := range commitEvents {
+		if memberMap[strings.ToLower(ce.Actor)] {
+			events = append(events, ce)
+		}
+	}
+
 	for _, member := range members {
-		url := fmt.Sprintf("https://api.github.com/users/%s/events/public?per_page=10", member)
+		// Use /users/{member}/events which returns both public and private events for authenticated user/collaborators
+		url := fmt.Sprintf("https://api.github.com/users/%s/events?per_page=30", member)
 		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 		if err != nil {
 			continue
@@ -380,15 +506,45 @@ func (c *Client) FetchSquadActivity(ctx context.Context, members []string) ([]Sq
 
 				switch ev.Type {
 				case "PushEvent":
-					action = "Pushed commits"
 					var p struct {
+						Ref     string `json:"ref"`
 						Commits []struct {
 							Message string `json:"message"`
 						} `json:"commits"`
 					}
 					_ = json.Unmarshal(ev.Payload, &p)
+					branch := strings.TrimPrefix(p.Ref, "refs/heads/")
+					if branch != "" {
+						target = fmt.Sprintf("%s:%s", ev.Repo.Name, branch)
+					}
 					if len(p.Commits) > 0 {
+						action = fmt.Sprintf("Pushed %d commit", len(p.Commits))
+						if len(p.Commits) > 1 {
+							action += "s"
+						}
 						details = strings.Split(p.Commits[0].Message, "\n")[0]
+					} else {
+						action = "Pushed commits"
+					}
+				case "CreateEvent":
+					var p struct {
+						Ref     string `json:"ref"`
+						RefType string `json:"ref_type"`
+					}
+					_ = json.Unmarshal(ev.Payload, &p)
+					action = fmt.Sprintf("Created %s", p.RefType)
+					if p.Ref != "" {
+						details = p.Ref
+					}
+				case "DeleteEvent":
+					var p struct {
+						Ref     string `json:"ref"`
+						RefType string `json:"ref_type"`
+					}
+					_ = json.Unmarshal(ev.Payload, &p)
+					action = fmt.Sprintf("Deleted %s", p.RefType)
+					if p.Ref != "" {
+						details = p.Ref
 					}
 				case "PullRequestEvent":
 					var p struct {
@@ -402,14 +558,35 @@ func (c *Client) FetchSquadActivity(ctx context.Context, members []string) ([]Sq
 					action = fmt.Sprintf("PR %s", p.Action)
 					target = fmt.Sprintf("%s#%d", ev.Repo.Name, p.PullRequest.Number)
 					details = p.PullRequest.Title
+				case "PullRequestReviewEvent":
+					var p struct {
+						Action string `json:"action"`
+						Review struct {
+							State string `json:"state"`
+						} `json:"review"`
+						PullRequest struct {
+							Number int    `json:"number"`
+							Title  string `json:"title"`
+						} `json:"pull_request"`
+					}
+					_ = json.Unmarshal(ev.Payload, &p)
+					action = fmt.Sprintf("Review %s", strings.ToLower(p.Review.State))
+					target = fmt.Sprintf("%s#%d", ev.Repo.Name, p.PullRequest.Number)
+					details = p.PullRequest.Title
 				case "IssueCommentEvent":
 					action = "Commented"
 					var p struct {
+						Issue struct {
+							Number int `json:"number"`
+						} `json:"issue"`
 						Comment struct {
 							Body string `json:"body"`
 						} `json:"comment"`
 					}
 					_ = json.Unmarshal(ev.Payload, &p)
+					if p.Issue.Number > 0 {
+						target = fmt.Sprintf("%s#%d", ev.Repo.Name, p.Issue.Number)
+					}
 					details = strings.Split(p.Comment.Body, "\n")[0]
 				default:
 					action = strings.TrimSuffix(ev.Type, "Event")
@@ -432,7 +609,27 @@ func (c *Client) FetchSquadActivity(ctx context.Context, members []string) ([]Sq
 		resp.Body.Close()
 	}
 
-	return events, nil
+	// Deduplicate events that might appear as both PushEvent and Commit
+	var deduplicated []SquadEvent
+	seen := make(map[string]bool)
+	for _, ev := range events {
+		key := fmt.Sprintf("%s|%s|%s|%d", ev.Actor, ev.Repo, ev.Details, ev.Timestamp.Unix())
+		if !seen[key] {
+			seen[key] = true
+			deduplicated = append(deduplicated, ev)
+		}
+	}
+
+	// Sort events by timestamp descending (newest first)
+	for i := 0; i < len(deduplicated)-1; i++ {
+		for j := i + 1; j < len(deduplicated); j++ {
+			if deduplicated[j].Timestamp.After(deduplicated[i].Timestamp) {
+				deduplicated[i], deduplicated[j] = deduplicated[j], deduplicated[i]
+			}
+		}
+	}
+
+	return deduplicated, nil
 }
 
 // TriggerCopilotReview requests a Copilot review on a PR
@@ -482,6 +679,123 @@ func (c *Client) TriggerCopilotReview(ctx context.Context, owner, repo string, p
 		return fmt.Errorf("failed to trigger copilot review: HTTP %d", cresp.StatusCode)
 	}
 	return nil
+}
+
+// FetchNotifications retrieves unread and recent GitHub notifications for the authenticated user
+func (c *Client) FetchNotifications(ctx context.Context) ([]Notification, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://api.github.com/notifications?all=true", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	c.updateRateLimits(resp)
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch notifications: HTTP %d", resp.StatusCode)
+	}
+
+	var rawList []struct {
+		ID        string    `json:"id"`
+		Unread    bool      `json:"unread"`
+		Reason    string    `json:"reason"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Subject   struct {
+			Title string `json:"title"`
+			URL   string `json:"url"`
+			Type  string `json:"type"`
+		} `json:"subject"`
+		Repository struct {
+			Name     string `json:"name"`
+			FullName string `json:"full_name"`
+			HTMLURL  string `json:"html_url"`
+		} `json:"repository"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&rawList); err != nil {
+		return nil, err
+	}
+
+	notifications := make([]Notification, 0, len(rawList))
+	for _, raw := range rawList {
+		webURL := formatNotificationWebURL(raw.Subject.URL, raw.Repository.HTMLURL)
+
+		notifications = append(notifications, Notification{
+			ID:         raw.ID,
+			Unread:     raw.Unread,
+			Reason:     raw.Reason,
+			UpdatedAt:  raw.UpdatedAt,
+			Repository: raw.Repository.FullName,
+			RepoURL:    raw.Repository.HTMLURL,
+			Title:      raw.Subject.Title,
+			Type:       raw.Subject.Type,
+			URL:        webURL,
+		})
+	}
+
+	return notifications, nil
+}
+
+// MarkNotificationRead marks a notification thread as read on GitHub
+func (c *Client) MarkNotificationRead(ctx context.Context, threadID string) error {
+	req, err := http.NewRequestWithContext(ctx, "PATCH", "https://api.github.com/notifications/threads/"+threadID, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	c.updateRateLimits(resp)
+
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusResetContent {
+		return nil
+	}
+	return fmt.Errorf("failed to mark notification as read: HTTP %d", resp.StatusCode)
+}
+
+// MarkAllNotificationsRead marks all notifications as read on GitHub
+func (c *Client) MarkAllNotificationsRead(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, "PUT", "https://api.github.com/notifications", bytes.NewBuffer([]byte("{}")))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	c.updateRateLimits(resp)
+
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusResetContent || resp.StatusCode == http.StatusAccepted {
+		return nil
+	}
+	return fmt.Errorf("failed to mark all notifications as read: HTTP %d", resp.StatusCode)
+}
+
+func formatNotificationWebURL(apiURL, repoHTMLURL string) string {
+	if apiURL != "" && strings.Contains(apiURL, "api.github.com/repos/") {
+		webURL := strings.Replace(apiURL, "https://api.github.com/repos/", "https://github.com/", 1)
+		webURL = strings.Replace(webURL, "/pulls/", "/pull/", 1)
+		return webURL
+	}
+	return repoHTMLURL
 }
 
 // CloneRepo clones a repository into targetDir

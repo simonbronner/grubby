@@ -13,8 +13,8 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-// RenderPreview reads a file and formats a syntax-highlighted code snippet around targetLine
-func RenderPreview(absPath string, targetLine int, viewportWidth int) (string, error) {
+// RenderPreview reads a file and formats syntax-highlighted code with line numbers and active line indicator
+func RenderPreview(absPath string, targetLine int) (string, error) {
 	data, err := os.ReadFile(absPath)
 	if err != nil {
 		return fmt.Sprintf("Error reading file: %v", err), err
@@ -26,21 +26,18 @@ func RenderPreview(absPath string, targetLine int, viewportWidth int) (string, e
 		return "(Empty file)", nil
 	}
 
-	start := targetLine - 15
-	if start < 1 {
-		start = 1
-	}
-	end := targetLine + 25
-	if end > totalLines {
-		end = totalLines
+	// Cap at 1500 lines for snappy preview performance
+	maxLines := totalLines
+	if maxLines > 1500 {
+		maxLines = 1500
 	}
 
-	windowText := strings.Join(allLines[start-1:end], "\n")
+	fullText := strings.Join(allLines[:maxLines], "\n")
 
 	// Determine lexer
 	lexer := lexers.Match(filepath.Base(absPath))
 	if lexer == nil {
-		lexer = lexers.Analyse(windowText)
+		lexer = lexers.Analyse(fullText)
 	}
 	if lexer == nil {
 		lexer = lexers.Fallback
@@ -52,9 +49,9 @@ func RenderPreview(absPath string, targetLine int, viewportWidth int) (string, e
 		style = styles.Fallback
 	}
 
-	iterator, err := lexer.Tokenise(nil, windowText)
+	iterator, err := lexer.Tokenise(nil, fullText)
 	if err != nil {
-		return windowText, nil
+		return fullText, nil
 	}
 
 	var buf bytes.Buffer
@@ -64,20 +61,20 @@ func RenderPreview(absPath string, targetLine int, viewportWidth int) (string, e
 	}
 
 	if err := formatter.Format(&buf, style, iterator); err != nil {
-		return windowText, nil
+		return fullText, nil
 	}
 
 	highlightedLines := strings.Split(buf.String(), "\n")
 
 	var result strings.Builder
 	for i, hLine := range highlightedLines {
-		currentLineNum := start + i
-		if currentLineNum > end {
+		currentLineNum := i + 1
+		if currentLineNum > maxLines {
 			break
 		}
 
 		if currentLineNum == targetLine {
-			// Distinct indicator and background highlight
+			// Distinct pointer and background highlight
 			result.WriteString(fmt.Sprintf("\x1b[1;33m▶ %4d \x1b[0m│ \x1b[48;5;236m%s\x1b[0m\n", currentLineNum, hLine))
 		} else {
 			result.WriteString(fmt.Sprintf("\x1b[90m  %4d │ \x1b[0m%s\n", currentLineNum, hLine))

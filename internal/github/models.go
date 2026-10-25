@@ -55,5 +55,18 @@ type SecurityAlertSummary struct {
 	Medium      int       `json:"medium"`
 	Low         int       `json:"low"`
 	Total       int       `json:"total"`
+	Packages    []string  `json:"packages"`
 	LastScanned time.Time `json:"last_scanned"`
+}
+
+type Notification struct {
+	ID         string    `json:"id"`
+	Unread     bool      `json:"unread"`
+	Reason     string    `json:"reason"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	Repository string    `json:"repository"`
+	RepoURL    string    `json:"repo_url"`
+	Title      string    `json:"title"`
+	Type       string    `json:"type"`
+	URL        string    `json:"url"`
 }

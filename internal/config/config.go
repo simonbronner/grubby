@@ -62,6 +62,15 @@ func ExpandHome(path string) string {
 	return path
 }
 
+// CollapseHome replaces the user's home directory path with ~/
+func CollapseHome(path string) string {
+	home, err := os.UserHomeDir()
+	if err == nil && home != "" && strings.HasPrefix(path, home) {
+		return "~" + strings.TrimPrefix(path, home)
+	}
+	return path
+}
+
 // Load loads or creates the config at path
 func Load(path string) (*Config, error) {
 	if path == "" {

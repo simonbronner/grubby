@@ -43,7 +43,16 @@ It merges **remote GitHub state** (pull requests, unresolved review threads, tea
 * **Zero-Index Overhead**: Powered by `ripgrep --json` streaming under the hood. Queries across dozens of local repositories execute in under 80ms while respecting `.gitignore`.
 * **Jump to Editor**: Press `Enter` on any match to open your editor directly at that file and line number.
 
-### 5. Rate-Limit Friendly & Local-First
+### 5. Notifications & macOS Desktop Integration
+* **Header Notification Bubble**: Dynamic visual indicator (`🔔 {n} unread`) tracking unread GitHub notifications in real time.
+* **macOS Native Notification Banners**:
+  * **GitHub Ingestion**: Automatically fires native macOS notification banners with chimes whenever a refresh discovers new unread notifications.
+  * **Window & Task Dispatch**: Triggers native desktop notification bubbles when opening dedicated browser tabs, launching Neovim in iTerm2, spawning shell sessions, or completing repository clones and fast-forwards.
+
+### 6. Terminal-Responsive Dynamic Tables
+* **Adaptive Column Sizing**: All views (Repositories, Pull Requests, Squad Activity, Security) compute layout widths dynamically from the terminal dimensions (`m.Width`), maximizing readability and eliminating awkward text wrapping or truncated paths on larger monitors.
+
+### 7. Rate-Limit Friendly & Local-First
 * **Batched GraphQL Queries**: Eliminates REST N+1 query bottlenecks by consolidating repositories, PRs, review threads, and CI checks into single GraphQL round-trips.
 * **Automatic Credentials**: Re-uses your existing `gh auth token` session without requiring manual PAT setup.
 * **Live Quota Monitoring**: Tracks your remaining API rate limit and reset window in the top status bar.
@@ -104,7 +113,9 @@ Press `?` at any time inside Grubby to display the contextual keybindings overla
 | `g` | Open **Manage Groups Modal** (Space to toggle, `+` to add new group) |
 | `c` | Clone repository to `~/workspaces/{repo}` |
 | `e` | Open local repository in `$EDITOR` |
+| `t` | Open repository in a new shell (iTerm2 on macOS) |
 | `o` | Open repository in web browser |
+| `S` | Open repository Security (Dependabot) alerts directly in browser |
 | `u` | Safe fast-forward clean `behind` repository |
 
 ### Tab 2: Pull Requests
@@ -131,6 +142,14 @@ Press `?` at any time inside Grubby to display the contextual keybindings overla
 | `h` / `l` or `Space` | Collapse / expand repository or file branch |
 | `Tab` | Switch focus between Tree Navigator and Code Preview |
 | `Enter` | Open selected match in `$EDITOR` at exact line number |
+
+### Tab 5: Notifications
+| Key | Action |
+| :--- | :--- |
+| `j` / `k` or `↑` / `↓` | Select notification thread |
+| `Enter` or `o` | Open notification in dedicated browser and mark as read |
+| `m` | Mark selected notification as read |
+| `M` | Mark all notifications as read |
 
 ---
 

@@ -1,0 +1,134 @@
+package github
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestParseEvents(t *testing.T) {
+	samplePushEvent := `{
+		"type": "PushEvent",
+		"actor": {"login": "simonbronner"},
+		"repo": {"name": "simonbronner/seqta-agent-cf"},
+		"payload": {
+			"ref": "refs/heads/main",
+			"commits": [{"message": "feat: improve notification formatting\n\nFull details"}]
+		},
+		"created_at": "2026-10-17T01:22:21Z"
+	}`
+
+	var raw struct {
+		Type      string          `json:"type"`
+		CreatedAt time.Time       `json:"created_at"`
+		Actor     struct {
+			Login string `json:"login"`
+		} `json:"actor"`
+		Repo struct {
+			Name string `json:"name"`
+		} `json:"repo"`
+		Payload json.RawMessage `json:"payload"`
+	}
+
+	err := json.Unmarshal([]byte(samplePushEvent), &raw)
+	if err != nil {
+		t.Fatalf("failed to parse event json: %v", err)
+	}
+
+	if raw.Type != "PushEvent" {
+		t.Errorf("expected PushEvent, got %s", raw.Type)
+	}
+
+	var p struct {
+		Ref     string `json:"ref"`
+		Commits []struct {
+			Message string `json:"message"`
+		} `json:"commits"`
+	}
+	_ = json.Unmarshal(raw.Payload, &p)
+
+	branch := strings.TrimPrefix(p.Ref, "refs/heads/")
+	if branch != "main" {
+		t.Errorf("expected branch main, got %s", branch)
+	}
+
+	if len(p.Commits) != 1 {
+		t.Fatalf("expected 1 commit, got %d", len(p.Commits))
+	}
+
+	firstLine := strings.Split(p.Commits[0].Message, "\n")[0]
+	if firstLine != "feat: improve notification formatting" {
+		t.Errorf("unexpected commit message: %s", firstLine)
+	}
+}
+
+func TestLiveFetchRepositoriesAndPRs(t *testing.T) {
+	token, err := GetGHToken()
+	if err != nil {
+		t.Skip("gh auth not available")
+	}
+
+	client, err := NewClient(token)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	repos, prs, commitEvents, secMap, err := client.FetchRepositoriesAndPRs(ctx, "simonbronner")
+	if err != nil {
+		t.Fatalf("FetchRepositoriesAndPRs failed: %v", err)
+	}
+
+	if len(repos) == 0 {
+		t.Fatalf("expected repos, got 0")
+	}
+
+	// Verify PR #1 for grubby is present
+	foundGrubbyPR := false
+	for _, pr := range prs {
+		if pr.Repo == "grubby" && pr.Number == 1 {
+			foundGrubbyPR = true
+			break
+		}
+	}
+	if !foundGrubbyPR {
+		t.Errorf("expected PR #1 for grubby to be found, got PRs: %+v", prs)
+	}
+
+	// Verify commit events include grubby
+	foundGrubbyCommit := false
+	for _, ce := range commitEvents {
+		if ce.Repo == "grubby" {
+			foundGrubbyCommit = true
+			break
+		}
+	}
+	if !foundGrubbyCommit {
+		t.Errorf("expected commit events for grubby")
+	}
+
+	// Verify squad activity includes recent activity
+	squadEvents, err := client.FetchSquadActivity(ctx, []string{"simonbronner"}, commitEvents)
+	if err != nil {
+		t.Fatalf("FetchSquadActivity failed: %v", err)
+	}
+	if len(squadEvents) == 0 {
+		t.Fatalf("expected squad events, got 0")
+	}
+
+	// Verify the most recent squad event is from today (within last 24h)
+	mostRecent := squadEvents[0]
+	if time.Since(mostRecent.Timestamp) > 24*time.Hour {
+		t.Errorf("expected most recent event from today, got timestamp %v (%s)", mostRecent.Timestamp, mostRecent.Details)
+	}
+
+	// Verify security map includes best-resume-ever
+	sec, ok := secMap["best-resume-ever"]
+	if !ok || sec.Total == 0 {
+		t.Errorf("expected security alerts for best-resume-ever, got: %+v", sec)
+	}
+}

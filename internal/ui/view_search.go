@@ -2,12 +2,14 @@ package ui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"grubby/internal/config"
 	"grubby/internal/search"
 )
 
@@ -74,14 +76,24 @@ func (m Model) handleSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab":
 		m.SearchFocusedPane = (m.SearchFocusedPane + 1) % 2
 	case "enter":
-		// Open file at line in editor
+		// Open in nvim via iTerm2
 		if len(m.SearchFlatNodes) > 0 && m.SearchCursor < len(m.SearchFlatNodes) {
 			node := m.SearchFlatNodes[m.SearchCursor]
-			if node.Kind == search.NodeMatch && node.Match != nil {
-				_ = OpenInEditor(m.Config.Editor, node.AbsPath, node.Match.LineNumber)
-				return m, func() tea.Msg {
-					return StatusToastMsg(fmt.Sprintf("Opened %s:%d in %s", node.FilePath, node.Match.LineNumber, m.Config.Editor))
-				}
+			lineNum := 1
+			if node.Match != nil {
+				lineNum = node.Match.LineNumber
+			}
+			repoDir := node.RepoPath
+			if repoDir == "" {
+				repoDir = filepath.Dir(node.AbsPath)
+			}
+			err := OpenInITermNvim(repoDir, node.AbsPath, lineNum)
+			if err != nil {
+				return m, func() tea.Msg { return StatusToastMsg("Failed to open nvim: " + err.Error()) }
+			}
+			collapsed := config.CollapseHome(node.AbsPath)
+			return m, func() tea.Msg {
+				return StatusToastMsg(fmt.Sprintf("Opened nvim at %s:%d", collapsed, lineNum))
 			}
 		}
 	}
@@ -91,6 +103,7 @@ func (m Model) handleSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *Model) updateSearchPreview() {
 	if len(m.SearchFlatNodes) == 0 || m.SearchCursor >= len(m.SearchFlatNodes) {
 		m.SearchPreview.SetContent("(No match selected)")
+		m.SearchPreview.SetYOffset(0)
 		return
 	}
 
@@ -104,15 +117,22 @@ func (m *Model) updateSearchPreview() {
 		targetLine = 1
 	} else {
 		m.SearchPreview.SetContent(fmt.Sprintf("Repository: %s\nSelect a match below to preview code.", node.Title))
+		m.SearchPreview.SetYOffset(0)
 		return
 	}
 
-	rendered, err := search.RenderPreview(filePath, targetLine, m.SearchPreview.Width)
+	rendered, err := search.RenderPreview(filePath, targetLine)
 	if err != nil {
-		m.SearchPreview.SetContent(fmt.Sprintf("Could not preview %s: %v", filePath, err))
+		m.SearchPreview.SetContent(fmt.Sprintf("Could not preview %s: %v", config.CollapseHome(filePath), err))
+		m.SearchPreview.SetYOffset(0)
 		return
 	}
 	m.SearchPreview.SetContent(rendered)
+	offset := targetLine - 5
+	if offset < 0 {
+		offset = 0
+	}
+	m.SearchPreview.SetYOffset(offset)
 }
 
 func (m Model) renderSearchView() string {
@@ -132,17 +152,24 @@ func (m Model) renderSearchView() string {
 		paneHeight = 10
 	}
 
-	// Render Left Pane (Tree)
+	// Render Left Pane (Tree) with windowed scrolling
 	var treeLines []string
 	if m.Searching {
 		treeLines = append(treeLines, "\n  Searching repositories...")
 	} else if len(m.SearchFlatNodes) == 0 {
 		treeLines = append(treeLines, "\n  Type a pattern above and press Enter to search all cloned workspaces.")
 	} else {
-		for i, node := range m.SearchFlatNodes {
-			if len(treeLines) >= paneHeight {
-				break
-			}
+		start := 0
+		if m.SearchCursor >= paneHeight {
+			start = m.SearchCursor - paneHeight + 1
+		}
+		end := start + paneHeight
+		if end > len(m.SearchFlatNodes) {
+			end = len(m.SearchFlatNodes)
+		}
+
+		for i := start; i < end; i++ {
+			node := m.SearchFlatNodes[i]
 			cursor := "  "
 			if i == m.SearchCursor {
 				cursor = "▶ "

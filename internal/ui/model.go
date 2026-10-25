@@ -3,10 +3,13 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -25,7 +28,7 @@ const (
 	TabPRs
 	TabSquad
 	TabSearch
-	TabSecurity
+	TabNotifications
 )
 
 type ModalType int
@@ -35,16 +38,20 @@ const (
 	ModalManageGroups
 	ModalSelectSquad
 	ModalAddMember
+	ModalRepoTabs
 	ModalHelp
 )
 
 // Async messages
 type DataLoadedMsg struct {
-	Repos       []github.Repository
-	PRs         []github.PullRequest
-	SquadEvents []github.SquadEvent
-	RateLimit   github.RateLimitInfo
-	Err         error
+	AuthUser      string
+	Repos         []github.Repository
+	PRs           []github.PullRequest
+	SquadEvents   []github.SquadEvent
+	Security      map[string]github.SecurityAlertSummary
+	Notifications []github.Notification
+	RateLimit     github.RateLimitInfo
+	Err           error
 }
 
 type GitStatusUpdatedMsg struct {
@@ -59,6 +66,14 @@ type SearchResultsMsg struct {
 
 type StatusToastMsg string
 
+type AutoRefreshTickMsg time.Time
+
+func autoRefreshTickCmd() tea.Cmd {
+	return tea.Tick(30*time.Second, func(t time.Time) tea.Msg {
+		return AutoRefreshTickMsg(t)
+	})
+}
+
 type Model struct {
 	ActiveTab TabType
 	Config    *config.Config
@@ -67,13 +82,19 @@ type Model struct {
 	SearchEng search.Engine
 
 	// Data
-	CurrentOrg  string
-	Repos       []github.Repository
-	PRs         []github.PullRequest
-	SquadEvents []github.SquadEvent
-	GitStatuses map[string]git.RepoGitStatus
-	RateLimit   github.RateLimitInfo
-	Loading     bool
+	CurrentOrg          string
+	AuthUser            string
+	Repos               []github.Repository
+	PRs                 []github.PullRequest
+	SquadEvents         []github.SquadEvent
+	SecuritySummaries   map[string]github.SecurityAlertSummary
+	Notifications       []github.Notification
+	SeenNotificationIDs map[string]bool
+	GitStatuses         map[string]git.RepoGitStatus
+	RateLimit           github.RateLimitInfo
+	Loading             bool
+	InitialDataLoaded   bool
+	LastRefreshTime     time.Time
 
 	// Navigation & Cursors
 	RepoCursor int
@@ -83,6 +104,8 @@ type Model struct {
 	PRFilter string
 
 	SquadCursor int
+
+	NotifCursor int
 
 	// Search View
 	SearchInput       textinput.Model
@@ -107,6 +130,7 @@ type Model struct {
 	// Status / Toast
 	StatusMsg      string
 	StatusMsgTimer time.Time
+	Spinner        spinner.Model
 }
 
 func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceManager, org string) Model {
@@ -122,19 +146,29 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 
 	vp := viewport.New(60, 20)
 
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(SecondaryColor)
+
 	m := Model{
-		ActiveTab:          TabRepos,
-		Config:             cfg,
-		GHClient:           gh,
-		GitMgr:             gitMgr,
-		SearchEng:          search.NewRipgrepEngine(),
-		CurrentOrg:         org,
-		GitStatuses:        make(map[string]git.RepoGitStatus),
-		Loading:            true,
-		SearchInput:        si,
-		ModalInput:         mi,
-		SearchPreview:      vp,
-		SelectedRepoGroups: make(map[string]bool),
+		ActiveTab:           TabRepos,
+		Config:              cfg,
+		GHClient:            gh,
+		GitMgr:              gitMgr,
+		SearchEng:           search.NewRipgrepEngine(),
+		CurrentOrg:          org,
+		AuthUser:            org,
+		GitStatuses:         make(map[string]git.RepoGitStatus),
+		SecuritySummaries:   make(map[string]github.SecurityAlertSummary),
+		SeenNotificationIDs: make(map[string]bool),
+		Loading:             true,
+		InitialDataLoaded:   false,
+		LastRefreshTime:     time.Now(),
+		SearchInput:         si,
+		ModalInput:          mi,
+		SearchPreview:       vp,
+		SelectedRepoGroups:  make(map[string]bool),
+		Spinner:             sp,
 	}
 
 	return m
@@ -144,6 +178,8 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.loadDataCmd(),
 		textinput.Blink,
+		m.Spinner.Tick,
+		autoRefreshTickCmd(),
 	)
 }
 
@@ -152,23 +188,39 @@ func (m Model) loadDataCmd() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 
-		repos, prs, err := m.GHClient.FetchRepositoriesAndPRs(ctx, m.CurrentOrg)
+		authUser, _ := m.GHClient.GetAuthenticatedUser(ctx)
+		if authUser == "" {
+			authUser = m.CurrentOrg
+		}
+
+		repos, prs, commitEvents, secAlerts, err := m.GHClient.FetchRepositoriesAndPRs(ctx, m.CurrentOrg)
 		if err != nil {
 			return DataLoadedMsg{Err: err}
 		}
 
 		// Fetch squad activity
 		var members []string
-		if activeSquad := m.Config.GetActiveSquad(); activeSquad != nil {
+		if activeSquad := m.Config.GetActiveSquad(); activeSquad != nil && len(activeSquad.Members) > 0 {
 			members = activeSquad.Members
+		} else {
+			// Auto-seed squad with current user/org
+			_ = m.Config.AddMemberToSquad("my-squad", m.CurrentOrg)
+			_ = m.Config.SetActiveSquad("my-squad")
+			members = []string{m.CurrentOrg}
 		}
-		events, _ := m.GHClient.FetchSquadActivity(ctx, members)
+		events, _ := m.GHClient.FetchSquadActivity(ctx, members, commitEvents)
+
+		// Fetch notifications
+		notifs, _ := m.GHClient.FetchNotifications(ctx)
 
 		return DataLoadedMsg{
-			Repos:       repos,
-			PRs:         prs,
-			SquadEvents: events,
-			RateLimit:   m.GHClient.RateLimit(),
+			AuthUser:      authUser,
+			Repos:         repos,
+			PRs:           prs,
+			SquadEvents:   events,
+			Security:      secAlerts,
+			Notifications: notifs,
+			RateLimit:     m.GHClient.RateLimit(),
 		}
 	}
 }
@@ -209,16 +261,77 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.SearchPreview.Height = m.Height - 12
 		return m, nil
 
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.Spinner, cmd = m.Spinner.Update(msg)
+		return m, cmd
+
+	case AutoRefreshTickMsg:
+		if time.Since(m.LastRefreshTime) >= 5*time.Minute && !m.Loading {
+			m.Loading = true
+			m.LastRefreshTime = time.Now()
+			m.StatusMsg = "Auto-refreshing data from GitHub..."
+			m.StatusMsgTimer = time.Now().Add(4 * time.Second)
+			return m, tea.Batch(m.loadDataCmd(), m.Spinner.Tick, autoRefreshTickCmd())
+		}
+		return m, autoRefreshTickCmd()
+
 	case DataLoadedMsg:
 		m.Loading = false
+		m.InitialDataLoaded = true
+		m.LastRefreshTime = time.Now()
 		if msg.Err != nil {
 			m.StatusMsg = fmt.Sprintf("Error loading data: %v", msg.Err)
+			m.StatusMsgTimer = time.Now().Add(5 * time.Second)
 			return m, nil
 		}
 		m.Repos = msg.Repos
 		m.PRs = msg.PRs
 		m.SquadEvents = msg.SquadEvents
+		m.SecuritySummaries = msg.Security
 		m.RateLimit = msg.RateLimit
+		if msg.AuthUser != "" {
+			m.AuthUser = msg.AuthUser
+		}
+
+		// Process notifications and alert for new unread items
+		var newNotifs []github.Notification
+		for _, n := range msg.Notifications {
+			if n.Unread && !m.SeenNotificationIDs[n.ID] {
+				newNotifs = append(newNotifs, n)
+				m.SeenNotificationIDs[n.ID] = true
+			}
+		}
+		m.Notifications = msg.Notifications
+
+		if len(newNotifs) > 0 {
+			if len(newNotifs) == 1 {
+				n := newNotifs[0]
+				SendNativeNotification("Grubby • GitHub Notification", n.Repository, fmt.Sprintf("[%s] %s", n.Type, n.Title))
+			} else {
+				first := newNotifs[0]
+				SendNativeNotification("Grubby • GitHub Notifications", fmt.Sprintf("%d New Notifications", len(newNotifs)), fmt.Sprintf("%s: %s", first.Repository, first.Title))
+			}
+
+			// Automatically mark popped-up notifications as read
+			for _, n := range newNotifs {
+				for i := range m.Notifications {
+					if m.Notifications[i].ID == n.ID {
+						m.Notifications[i].Unread = false
+					}
+				}
+				threadID := n.ID
+				cmds = append(cmds, func() tea.Msg {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					_ = m.GHClient.MarkNotificationRead(ctx, threadID)
+					return nil
+				})
+			}
+		}
+
+		m.StatusMsg = "Refreshed data from GitHub"
+		m.StatusMsgTimer = time.Now().Add(4 * time.Second)
 
 		// Trigger workspace git scan once repos are known
 		var names []string
@@ -252,14 +365,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleModalKeys(msg)
 		}
 
-		// Global Key Handling
+		// When search input is focused, route keystrokes directly to it
+		if m.ActiveTab == TabSearch && m.SearchInput.Focused() {
+			return m.handleSearchKeys(msg)
+		}
+
+		// Global Key Handling (only active when not typing in an input field)
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
 		case "q":
-			if m.ActiveTab != TabSearch || !m.SearchInput.Focused() {
-				return m, tea.Quit
-			}
+			return m, tea.Quit
 		case "1":
 			m.ActiveTab = TabRepos
 			return m, nil
@@ -271,18 +387,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "4":
 			m.ActiveTab = TabSearch
-			m.SearchInput.Focus()
 			return m, nil
 		case "5":
-			m.ActiveTab = TabSecurity
+			m.ActiveTab = TabNotifications
 			return m, nil
 		case "tab":
 			m.ActiveTab = (m.ActiveTab + 1) % 5
-			if m.ActiveTab == TabSearch {
-				m.SearchInput.Focus()
-			} else {
-				m.SearchInput.Blur()
-			}
 			return m, nil
 		case "shift+tab":
 			m.ActiveTab = (m.ActiveTab + 4) % 5
@@ -292,8 +402,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "r":
 			m.Loading = true
+			m.LastRefreshTime = time.Now()
 			m.StatusMsg = "Refreshing data from GitHub..."
-			return m, m.loadDataCmd()
+			m.StatusMsgTimer = time.Now().Add(5 * time.Second)
+			return m, tea.Batch(m.loadDataCmd(), m.Spinner.Tick)
 		}
 
 		// Tab-Specific Key Handling
@@ -306,8 +418,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleSquadKeys(msg)
 		case TabSearch:
 			return m.handleSearchKeys(msg)
-		case TabSecurity:
-			return m.handleSecurityKeys(msg)
+		case TabNotifications:
+			return m.handleNotificationsKeys(msg)
 		}
 	}
 
@@ -321,8 +433,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	if m.Width == 0 {
-		return "Initializing Grubby..."
+	if m.Width == 0 || !m.InitialDataLoaded {
+		return m.renderSplashScreen()
 	}
 
 	header := m.renderHeader()
@@ -338,8 +450,8 @@ func (m Model) View() string {
 		body = m.renderSquadView()
 	case TabSearch:
 		body = m.renderSearchView()
-	case TabSecurity:
-		body = m.renderSecurityView()
+	case TabNotifications:
+		body = m.renderNotificationsView()
 	}
 
 	footer := m.renderFooter()
@@ -354,33 +466,138 @@ func (m Model) View() string {
 }
 
 func (m Model) renderHeader() string {
-	orgInfo := fmt.Sprintf("Target: %s", m.CurrentOrg)
-	rateInfo := fmt.Sprintf("API Rate: %d/%d (resets %s)", m.RateLimit.Remaining, m.RateLimit.Limit, m.RateLimit.Reset.Format("15:04"))
+	// 1. Hobbit avatar mascot replacing "GRUBBY"
+	hobbitBadge := HeaderStyle.Render(" ᘛ( ᵔ ᴗ ᵔ*)ᘚ ")
 
+	// 2. Organization with icon
+	orgItem := MetaBarStyle.Render("🏢 " + m.CurrentOrg)
+
+	// 3. Squad with icon
 	watchedSquad := "None"
 	if s := m.Config.GetActiveSquad(); s != nil {
 		watchedSquad = s.DisplayName
 	}
-	squadInfo := fmt.Sprintf("Watched Squad: %s", watchedSquad)
+	squadItem := MetaBarStyle.Render("👥 " + watchedSquad)
 
-	left := HeaderStyle.Render("GRUBBY") + "  " + MetaBarStyle.Render(orgInfo+"  |  "+squadInfo)
-	right := MetaBarStyle.Render(rateInfo)
-
-	space := m.Width - lipgloss.Width(left) - lipgloss.Width(right)
-	if space < 1 {
-		space = 1
+	// 4. Summary of total open pull requests
+	prCount := len(m.PRs)
+	var prItem string
+	if prCount > 0 {
+		prItem = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render(fmt.Sprintf("⑂ %d Open PRs", prCount))
+	} else {
+		prItem = lipgloss.NewStyle().Foreground(MutedColor).Render("⑂ 0 PRs")
 	}
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", space), right)
+	// 5. Summary of total outstanding security issues across all repos
+	totalCrit := 0
+	totalHigh := 0
+	totalMedRest := 0
+	totalAlerts := 0
+	for _, sum := range m.SecuritySummaries {
+		totalCrit += sum.Critical
+		totalHigh += sum.High
+		totalMedRest += (sum.Medium + sum.Low)
+		totalAlerts += sum.Total
+	}
+
+	var secItem string
+	if totalAlerts == 0 {
+		secItem = lipgloss.NewStyle().Foreground(SuccessColor).Render("🛡️ 0 Alerts [✓ clean]")
+	} else {
+		var parts []string
+		if totalCrit > 0 {
+			parts = append(parts, lipgloss.NewStyle().Foreground(DangerColor).Bold(true).Render(fmt.Sprintf("%dc", totalCrit)))
+		}
+		if totalHigh > 0 {
+			parts = append(parts, lipgloss.NewStyle().Foreground(WarningColor).Bold(true).Render(fmt.Sprintf("%dh", totalHigh)))
+		}
+		if totalMedRest > 0 {
+			parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("#E5C07B")).Render(fmt.Sprintf("%dm+", totalMedRest)))
+		}
+		secItem = "🛡️ " + strings.Join(parts, " ")
+	}
+
+	// 6. Logged-in GitHub user and rate quota
+	user := m.AuthUser
+	if user == "" {
+		user = m.CurrentOrg
+	}
+
+	reqsLastHour := 0
+	if m.RateLimit.Limit > 0 && m.RateLimit.Limit >= m.RateLimit.Remaining {
+		reqsLastHour = m.RateLimit.Limit - m.RateLimit.Remaining
+	}
+
+	var userItem string
+	if m.Width >= 110 {
+		userItem = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render("👤 @"+user) +
+			" " + MetaBarStyle.Render(fmt.Sprintf("(%d reqs/h)", reqsLastHour))
+	} else {
+		userItem = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render("👤 @" + user)
+	}
+
+	// Assemble header items evenly distributed across line 1
+	var items []string
+	if m.Width >= 100 {
+		items = []string{hobbitBadge, orgItem, squadItem, prItem, secItem, userItem}
+	} else {
+		items = []string{hobbitBadge, orgItem, prItem, secItem, userItem}
+	}
+
+	return distributeEvenly(items, m.Width)
+}
+
+func distributeEvenly(items []string, totalWidth int) string {
+	if len(items) == 0 {
+		return ""
+	}
+	if len(items) == 1 {
+		return items[0]
+	}
+
+	totalItemWidth := 0
+	for _, it := range items {
+		totalItemWidth += lipgloss.Width(it)
+	}
+
+	availSpace := totalWidth - totalItemWidth
+	numGaps := len(items) - 1
+
+	if availSpace < numGaps {
+		return strings.Join(items, " ")
+	}
+
+	baseGap := availSpace / numGaps
+	extra := availSpace % numGaps
+
+	var b strings.Builder
+	for i, it := range items {
+		b.WriteString(it)
+		if i < numGaps {
+			gap := baseGap
+			if i < extra {
+				gap++
+			}
+			b.WriteString(strings.Repeat(" ", gap))
+		}
+	}
+	return b.String()
 }
 
 func (m Model) renderTabBar() string {
+	unreadNotifs := 0
+	for _, n := range m.Notifications {
+		if n.Unread {
+			unreadNotifs++
+		}
+	}
+
 	tabs := []string{
 		"1: Repositories",
 		fmt.Sprintf("2: Pull Requests (%d)", len(m.PRs)),
 		"3: Squad Activity",
 		"4: Code Search",
-		"5: Security",
+		fmt.Sprintf("5: Notifications (%d)", unreadNotifs),
 	}
 
 	var renderedTabs []string
@@ -400,15 +617,15 @@ func (m Model) renderFooter() string {
 	var help string
 	switch m.ActiveTab {
 	case TabRepos:
-		help = "[g] Groups  [c] Clone  [e] Editor  [o] Browser  [u] Fast-forward  [r] Refresh  [?] Help  [q] Quit"
+		help = "[Enter] Open Web  [o] Submenu  [S] Security Tab  [g] Groups  [c] Clone  [e] Editor (nvim)  [t] Shell  [u] Fast-forward  [?] Help  [q] Quit"
 	case TabPRs:
 		help = "[o] Browser  [p] Trigger Copilot Review  [c] Checkout Branch  [r] Refresh  [?] Help  [q] Quit"
 	case TabSquad:
 		help = "[s] Switch Squad  [a] Add Member  [d] Remove Member  [r] Refresh  [?] Help  [q] Quit"
 	case TabSearch:
 		help = "[/] Query  [j/k] Nodes  [h/l/Space] Toggle  [Tab] Switch Viewport  [Enter] Open Editor  [?] Help"
-	case TabSecurity:
-		help = "[Enter] Drilldown  [o] Web Security  [r] Refresh  [?] Help  [q] Quit"
+	case TabNotifications:
+		help = "[Enter / o] Open in Browser  [m] Mark Read  [M] Mark All Read  [r] Refresh  [?] Help  [q] Quit"
 	}
 
 	toast := ""
@@ -423,19 +640,87 @@ func (m Model) renderFooter() string {
 // Helpers for opening in browser or editor
 
 func OpenBrowser(url string) error {
-	return exec.Command("open", url).Start()
+	return OpenInDedicatedBrowser(url)
 }
 
-func OpenInEditor(editor, path string, lineNum int) error {
+func OpenInITermNvim(dir string, filePath string, lineNum int) error {
+	if _, err := os.Stat("/Applications/iTerm.app"); err == nil {
+		var nvimCmd string
+		if filePath != "" && lineNum > 0 {
+			nvimCmd = fmt.Sprintf("cd %q && nvim +%d %q", dir, lineNum, filePath)
+		} else if filePath != "" {
+			nvimCmd = fmt.Sprintf("cd %q && nvim %q", dir, filePath)
+		} else {
+			nvimCmd = fmt.Sprintf("cd %q && nvim .", dir)
+		}
+
+		script := fmt.Sprintf(`
+tell application "iTerm"
+	activate
+	try
+		tell current window
+			create tab with default profile
+			tell current session
+				write text %q
+			end tell
+		end tell
+	on error
+		create window with default profile
+		tell current session of current window
+			write text %q
+		end tell
+	end try
+end tell`, nvimCmd, nvimCmd)
+
+		cmd := exec.Command("osascript", "-e", script)
+		return cmd.Run()
+	}
+
+	// Fallback if iTerm is not installed
+	editor := os.Getenv("EDITOR")
 	if editor == "" {
 		editor = "nvim"
 	}
-	var cmd *exec.Cmd
-	if strings.Contains(editor, "code") {
-		cmd = exec.Command(editor, "-g", fmt.Sprintf("%s:%d", path, lineNum))
-	} else {
-		// vim / nvim
-		cmd = exec.Command(editor, fmt.Sprintf("+%d", lineNum), path)
+	if filePath != "" && lineNum > 0 {
+		return exec.Command(editor, fmt.Sprintf("+%d", lineNum), filePath).Start()
 	}
-	return cmd.Start()
+	return exec.Command(editor, dir).Start()
+}
+
+func OpenInEditor(editor, path string, lineNum int) error {
+	dir := path
+	file := ""
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		dir = filepath.Dir(path)
+		file = path
+	}
+	return OpenInITermNvim(dir, file, lineNum)
+}
+
+func OpenInShell(dir string) error {
+	if _, err := os.Stat("/Applications/iTerm.app"); err == nil {
+		script := fmt.Sprintf(`
+tell application "iTerm"
+	activate
+	try
+		tell current window
+			create tab with default profile
+			tell current session
+				write text "cd %q && clear"
+			end tell
+		end tell
+	on error
+		create window with default profile
+		tell current session of current window
+			write text "cd %q && clear"
+		end tell
+	end try
+end tell`, dir, dir)
+		cmd := exec.Command("osascript", "-e", script)
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+		return exec.Command("open", "-a", "iTerm", dir).Start()
+	}
+	return exec.Command("open", "-a", "Terminal", dir).Start()
 }

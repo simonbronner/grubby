@@ -7,7 +7,9 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
+	"grubby/internal/config"
 	"grubby/internal/git"
 	"grubby/internal/github"
 )
@@ -22,6 +24,28 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.RepoCursor < len(m.Repos)-1 {
 			m.RepoCursor++
 		}
+	case "enter":
+		// Enter key opens repository root in dedicated browser
+		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
+			repo := m.Repos[m.RepoCursor]
+			_ = OpenBrowser(repo.URL)
+			return m, func() tea.Msg { return StatusToastMsg("Opened " + repo.Name + " in dedicated browser") }
+		}
+	case "o":
+		// 'o' opens the repo tabs submenu (issues, pull requests, actions, security, etc.)
+		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
+			m.ActiveModal = ModalRepoTabs
+			m.ModalCursor = 0
+			return m, nil
+		}
+	case "S":
+		// 'S' opens repository Security (Dependabot) directly in dedicated browser
+		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
+			repo := m.Repos[m.RepoCursor]
+			url := fmt.Sprintf("https://github.com/%s/security/dependabot", repo.FullName)
+			_ = OpenBrowser(url)
+			return m, func() tea.Msg { return StatusToastMsg("Opened Security tab for " + repo.Name) }
+		}
 	case "g":
 		// Open Groups modal for current repo
 		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
@@ -33,19 +57,33 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.SelectedRepoGroups[grp] = true
 			}
 		}
-	case "o":
-		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
-			repo := m.Repos[m.RepoCursor]
-			_ = OpenBrowser(repo.URL)
-			return m, func() tea.Msg { return StatusToastMsg("Opened " + repo.Name + " in browser") }
-		}
 	case "e":
 		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
 			repo := m.Repos[m.RepoCursor]
 			st := m.GitStatuses[repo.Name]
 			if st.IsCloned {
-				_ = OpenInEditor(m.Config.Editor, st.LocalPath, 1)
-				return m, func() tea.Msg { return StatusToastMsg("Opened " + repo.Name + " in editor") }
+				err := OpenInITermNvim(st.LocalPath, "", 0)
+				if err != nil {
+					return m, func() tea.Msg { return StatusToastMsg("Failed to open nvim: " + err.Error()) }
+				}
+				collapsed := config.CollapseHome(st.LocalPath)
+				return m, func() tea.Msg { return StatusToastMsg("Opened nvim in " + collapsed) }
+			} else {
+				return m, func() tea.Msg { return StatusToastMsg("Repo is not cloned yet! Press 'c' to clone.") }
+			}
+		}
+	case "t":
+		// Open repo in a new shell (iTerm2 on macOS)
+		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
+			repo := m.Repos[m.RepoCursor]
+			st := m.GitStatuses[repo.Name]
+			if st.IsCloned {
+				err := OpenInShell(st.LocalPath)
+				if err != nil {
+					return m, func() tea.Msg { return StatusToastMsg("Failed to open shell: " + err.Error()) }
+				}
+				collapsed := config.CollapseHome(st.LocalPath)
+				return m, func() tea.Msg { return StatusToastMsg("Opened iTerm at " + collapsed) }
 			} else {
 				return m, func() tea.Msg { return StatusToastMsg("Repo is not cloned yet! Press 'c' to clone.") }
 			}
@@ -66,7 +104,8 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if err != nil {
 					return StatusToastMsg("Clone failed: " + err.Error())
 				}
-				return StatusToastMsg("Successfully cloned " + repo.Name + " to " + targetDir)
+				collapsed := config.CollapseHome(targetDir)
+				return StatusToastMsg("Successfully cloned " + repo.Name + " to " + collapsed)
 			}
 		}
 	case "u":
@@ -98,16 +137,26 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) renderReposView() string {
-	if m.Loading {
-		return "\n  Fetching repositories from GitHub...\n"
+	if m.Loading && len(m.Repos) == 0 {
+		return fmt.Sprintf("\n  %s Fetching repositories from GitHub...\n", m.Spinner.View())
 	}
 	if len(m.Repos) == 0 {
 		return "\n  No repositories found for " + m.CurrentOrg + ".\n"
 	}
 
-	header := fmt.Sprintf("  %-25s %-22s %-16s %-12s %-18s %s",
-		"REPOSITORY", "GROUPS", "GIT STATUS", "BRANCH", "LAST PUSHED", "LOCAL PATH")
-	renderedHeader := TableHeaderStyle.Render(header)
+	cols := computeRepoColumns(m.Width)
+
+	headerRow := lipgloss.JoinHorizontal(lipgloss.Top,
+		cols.Cursor.Render(""),
+		cols.Name.Render("REPOSITORY"),
+		cols.Sec.Render("SECURITY"),
+		cols.Group.Render("GROUPS"),
+		cols.Git.Render("GIT STATUS"),
+		cols.Branch.Render("BRANCH"),
+		cols.Last.Render("LAST PUSHED"),
+		cols.Path.Render("LOCAL PATH"),
+	)
+	renderedHeader := TableHeaderStyle.Render(headerRow)
 
 	var rows []string
 	rows = append(rows, renderedHeader)
@@ -130,17 +179,74 @@ func (m Model) renderReposView() string {
 		r := m.Repos[i]
 		st := m.GitStatuses[r.Name]
 
-		// Format Groups
+		// 1. Calculate open PR count for this repository
+		prCount := 0
+		for _, pr := range m.PRs {
+			if strings.EqualFold(pr.Repo, r.Name) {
+				prCount++
+			}
+		}
+
+		maxRepoLen := cols.NameWidth - 7
+		if maxRepoLen < 6 {
+			maxRepoLen = 6
+		}
+		repoDisplayName := r.Name
+		if len(repoDisplayName) > maxRepoLen {
+			repoDisplayName = repoDisplayName[:maxRepoLen-1] + "…"
+		}
+
+		var nameColText string
+		if m.Loading {
+			nameColText = fmt.Sprintf("(%s) %s", m.Spinner.View(), repoDisplayName)
+		} else {
+			var prBadge string
+			if prCount > 0 {
+				prBadge = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render(fmt.Sprintf("(%d)", prCount))
+			} else {
+				prBadge = lipgloss.NewStyle().Foreground(MutedColor).Render("(0)")
+			}
+			nameColText = fmt.Sprintf("%s %s", prBadge, repoDisplayName)
+		}
+
+		// 2. Format Security Issues column: visual summary (crit) (high) (medium + the rest)
+		var secColText string
+		if m.Loading {
+			secColText = m.Spinner.View()
+		} else {
+			sum := m.SecuritySummaries[r.Name]
+			if sum.Total == 0 {
+				secColText = lipgloss.NewStyle().Foreground(SuccessColor).Render("0 [✓ clean]")
+			} else {
+				var parts []string
+				if sum.Critical > 0 {
+					parts = append(parts, lipgloss.NewStyle().Foreground(DangerColor).Bold(true).Render(fmt.Sprintf("(%dc)", sum.Critical)))
+				}
+				if sum.High > 0 {
+					parts = append(parts, lipgloss.NewStyle().Foreground(WarningColor).Bold(true).Render(fmt.Sprintf("(%dh)", sum.High)))
+				}
+				medRest := sum.Medium + sum.Low
+				if medRest > 0 {
+					parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("#E5C07B")).Render(fmt.Sprintf("(%dm+)", medRest)))
+				}
+				if len(parts) == 0 {
+					parts = append(parts, lipgloss.NewStyle().Foreground(WarningColor).Render(fmt.Sprintf("(%d)", sum.Total)))
+				}
+				secColText = strings.Join(parts, " ")
+			}
+		}
+
+		// 3. Format Groups
 		groups := m.Config.GetGroupsForRepo(r.Name)
 		groupText := "-"
 		if len(groups) > 0 {
 			groupText = strings.Join(groups, ", ")
 		}
-		if len(groupText) > 20 {
-			groupText = groupText[:17] + "..."
+		if len(groupText) > cols.GroupWidth-1 && cols.GroupWidth > 3 {
+			groupText = groupText[:cols.GroupWidth-4] + "..."
 		}
 
-		// Git badge
+		// 4. Git badge
 		gitBadge := st.Badge()
 		var styledBadge string
 		switch st.State {
@@ -160,17 +266,17 @@ func (m Model) renderReposView() string {
 		if branch == "" {
 			branch = r.DefaultBranch
 		}
-		if len(branch) > 10 {
-			branch = branch[:9] + "…"
+		if len(branch) > cols.BranchWidth-2 && cols.BranchWidth > 3 {
+			branch = branch[:cols.BranchWidth-3] + "…"
 		}
 
 		lastPushed := formatTimeAgo(r.PushedAt)
 
 		localPath := "-"
 		if st.IsCloned {
-			localPath = st.LocalPath
-			if len(localPath) > 35 {
-				localPath = "…" + localPath[len(localPath)-34:]
+			localPath = config.CollapseHome(st.LocalPath)
+			if len(localPath) > cols.PathWidth-2 && cols.PathWidth > 3 {
+				localPath = "…" + localPath[len(localPath)-(cols.PathWidth-3):]
 			}
 		}
 
@@ -179,13 +285,21 @@ func (m Model) renderReposView() string {
 			prefix = "▶ "
 		}
 
-		rowContent := fmt.Sprintf("%s%-23s %-22s %-26s %-12s %-18s %s",
-			prefix, r.Name, groupText, styledBadge, branch, lastPushed, localPath)
+		rowCells := lipgloss.JoinHorizontal(lipgloss.Top,
+			cols.Cursor.Render(prefix),
+			cols.Name.Render(nameColText),
+			cols.Sec.Render(secColText),
+			cols.Group.Render(groupText),
+			cols.Git.Render(styledBadge),
+			cols.Branch.Render(branch),
+			cols.Last.Render(lastPushed),
+			cols.Path.Render(localPath),
+		)
 
 		if i == m.RepoCursor {
-			rows = append(rows, SelectedRowStyle.Render(rowContent))
+			rows = append(rows, SelectedRowStyle.Render(rowCells))
 		} else {
-			rows = append(rows, NormalRowStyle.Render(rowContent))
+			rows = append(rows, NormalRowStyle.Render(rowCells))
 		}
 	}
 

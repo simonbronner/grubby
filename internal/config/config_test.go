@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -69,5 +70,12 @@ func TestConfigLoadAndSave(t *testing.T) {
 	reloadedGroups := cfgReloaded.GetGroupsForRepo("api-gateway")
 	if len(reloadedGroups) != 2 {
 		t.Errorf("expected 2 groups on reload, got %d", len(reloadedGroups))
+	}
+
+	// Test CollapseHome
+	home, _ := os.UserHomeDir()
+	collapsed := CollapseHome(filepath.Join(home, "workspaces", "grubby"))
+	if collapsed != "~/workspaces/grubby" {
+		t.Errorf("expected ~/workspaces/grubby, got %s", collapsed)
 	}
 }

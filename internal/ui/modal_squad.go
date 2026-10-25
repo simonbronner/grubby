@@ -18,6 +18,8 @@ func (m Model) handleModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleSelectSquadModalKeys(msg)
 	case ModalAddMember:
 		return m.handleAddMemberModalKeys(msg)
+	case ModalRepoTabs:
+		return m.handleRepoTabsModalKeys(msg)
 	case ModalHelp:
 		if msg.String() == "esc" || msg.String() == "q" || msg.String() == "?" {
 			m.ActiveModal = ModalNone
@@ -36,6 +38,8 @@ func (m Model) renderModalOverlay(baseView string) string {
 		modalContent = m.renderSelectSquadModal()
 	case ModalAddMember:
 		modalContent = m.renderAddMemberModal()
+	case ModalRepoTabs:
+		modalContent = m.renderRepoTabsModal()
 	case ModalHelp:
 		modalContent = m.renderHelpModal()
 	}
@@ -113,11 +117,12 @@ func (m Model) handleSelectSquadModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
-				events, _ := m.GHClient.FetchSquadActivity(ctx, selected.Members)
+				events, _ := m.GHClient.FetchSquadActivity(ctx, selected.Members, nil)
 				return DataLoadedMsg{
 					Repos:       m.Repos,
 					PRs:         m.PRs,
 					SquadEvents: events,
+					Security:    m.SecuritySummaries,
 					RateLimit:   m.GHClient.RateLimit(),
 				}
 			}
@@ -170,11 +175,12 @@ func (m Model) handleAddMemberModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if squad != nil {
 					members = squad.Members
 				}
-				events, _ := m.GHClient.FetchSquadActivity(ctx, members)
+				events, _ := m.GHClient.FetchSquadActivity(ctx, members, nil)
 				return DataLoadedMsg{
 					Repos:       m.Repos,
 					PRs:         m.PRs,
 					SquadEvents: events,
+					Security:    m.SecuritySummaries,
 					RateLimit:   m.GHClient.RateLimit(),
 				}
 			}
@@ -198,10 +204,13 @@ Global Navigation:
 
 Repositories Tab (1):
   [j/k] or [↑/↓]      Select repository
+  [Enter]             Open repo in dedicated browser
+  [o]                 Open GitHub Web Tabs Submenu (Issues, PRs, Actions, Security...)
+  [S]                 Open Security (Dependabot) tab directly in browser
   [g]                 Manage Groups (assign / create groups)
   [c]                 Clone repo to ~/workspaces/
   [e]                 Open in $EDITOR (Neovim/VS Code)
-  [o]                 Open repo in GitHub browser
+  [t]                 Open in shell (iTerm2 on macOS)
   [u]                 Fast-forward clean behind repo
 
 Pull Requests Tab (2):
@@ -222,6 +231,12 @@ Code Search Tab (4):
   [h/l] or [Space]    Expand / Collapse repo or file branch
   [Tab]               Toggle focus between Tree and Code Preview
   [Enter]             Open match in $EDITOR at exact line number
+
+Notifications Tab (5):
+  [j/k] or [↑/↓]      Select notification
+  [Enter] / [o]       Open in browser and mark as read
+  [m]                 Mark selected notification as read
+  [M]                 Mark all notifications as read
 
 Press [Esc] or [q] to close this help window.
 `

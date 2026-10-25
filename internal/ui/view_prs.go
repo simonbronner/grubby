@@ -71,9 +71,20 @@ func (m Model) renderPRsView() string {
 		return "\n  No open pull requests found.\n"
 	}
 
-	header := fmt.Sprintf("  %-6s %-18s %-32s %-12s %-8s %-14s %-12s %s",
-		"PR", "REPOSITORY", "TITLE", "AUTHOR", "AGE", "REVIEW", "COMMENTS", "LABELS")
-	renderedHeader := TableHeaderStyle.Render(header)
+	cols := computePRColumns(m.Width)
+
+	headerRow := lipgloss.JoinHorizontal(lipgloss.Top,
+		cols.Cursor.Render(""),
+		cols.Num.Render("PR"),
+		cols.Repo.Render("REPOSITORY"),
+		cols.Title.Render("TITLE"),
+		cols.Author.Render("AUTHOR"),
+		cols.Age.Render("AGE"),
+		cols.Review.Render("REVIEW"),
+		cols.Comments.Render("COMMENTS"),
+		cols.Labels.Render("LABELS"),
+	)
+	renderedHeader := TableHeaderStyle.Render(headerRow)
 
 	var rows []string
 	rows = append(rows, renderedHeader)
@@ -95,9 +106,14 @@ func (m Model) renderPRsView() string {
 	for i := start; i < end; i++ {
 		pr := m.PRs[i]
 
+		repoText := pr.Repo
+		if len(repoText) > cols.RepoWidth-2 && cols.RepoWidth > 3 {
+			repoText = repoText[:cols.RepoWidth-3] + "…"
+		}
+
 		title := pr.Title
-		if len(title) > 30 {
-			title = title[:27] + "..."
+		if len(title) > cols.TitleWidth-2 && cols.TitleWidth > 3 {
+			title = title[:cols.TitleWidth-3] + "…"
 		}
 
 		ageText := formatTimeAgo(pr.CreatedAt)
@@ -125,8 +141,8 @@ func (m Model) renderPRsView() string {
 		}
 
 		labelsText := strings.Join(pr.Labels, ", ")
-		if len(labelsText) > 20 {
-			labelsText = labelsText[:17] + "..."
+		if len(labelsText) > cols.LabelsWidth-2 && cols.LabelsWidth > 3 {
+			labelsText = labelsText[:cols.LabelsWidth-3] + "…"
 		}
 
 		prefix := "  "
@@ -134,13 +150,24 @@ func (m Model) renderPRsView() string {
 			prefix = "▶ "
 		}
 
-		rowContent := fmt.Sprintf("%s#%-4d %-18s %-32s %-12s %-18s %-20s %-12s %s",
-			prefix, pr.Number, pr.Repo, title, pr.Author, ageText, reviewBadge, commentsText, labelsText)
+		numText := fmt.Sprintf("#%-5d", pr.Number)
+
+		rowCells := lipgloss.JoinHorizontal(lipgloss.Top,
+			cols.Cursor.Render(prefix),
+			cols.Num.Render(numText),
+			cols.Repo.Render(repoText),
+			cols.Title.Render(title),
+			cols.Author.Render(pr.Author),
+			cols.Age.Render(ageText),
+			cols.Review.Render(reviewBadge),
+			cols.Comments.Render(commentsText),
+			cols.Labels.Render(labelsText),
+		)
 
 		if i == m.PRCursor {
-			rows = append(rows, SelectedRowStyle.Render(rowContent))
+			rows = append(rows, SelectedRowStyle.Render(rowCells))
 		} else {
-			rows = append(rows, NormalRowStyle.Render(rowContent))
+			rows = append(rows, NormalRowStyle.Render(rowCells))
 		}
 	}
 
