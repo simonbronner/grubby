@@ -20,6 +20,10 @@ func (m Model) handleModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleAddMemberModalKeys(msg)
 	case ModalRepoTabs:
 		return m.handleRepoTabsModalKeys(msg)
+	case ModalFilterGroup:
+		return m.handleFilterGroupModalKeys(msg)
+	case ModalFilterRepoName:
+		return m.handleFilterNameModalKeys(msg)
 	case ModalHelp:
 		if msg.String() == "esc" || msg.String() == "q" || msg.String() == "?" {
 			m.ActiveModal = ModalNone
@@ -40,6 +44,10 @@ func (m Model) renderModalOverlay(baseView string) string {
 		modalContent = m.renderAddMemberModal()
 	case ModalRepoTabs:
 		modalContent = m.renderRepoTabsModal()
+	case ModalFilterGroup:
+		modalContent = m.renderFilterGroupModal()
+	case ModalFilterRepoName:
+		modalContent = m.renderFilterNameModal()
 	case ModalHelp:
 		modalContent = m.renderHelpModal()
 	}
@@ -204,6 +212,10 @@ Global Navigation:
 
 Repositories Tab (1):
   [j/k] or [↑/↓]      Select repository
+  [v]                 View by Group (filter repositories by group)
+  [f]                 Filter repositories by name
+  [s]                 Sort by vulnerabilities (highest to lowest toggle)
+  [Esc]               Clear active group, name filters, and sorting
   [Enter]             Open repo in dedicated browser
   [o]                 Open GitHub Web Tabs Submenu (Issues, PRs, Actions, Security...)
   [S]                 Open Security (Dependabot) tab directly in browser

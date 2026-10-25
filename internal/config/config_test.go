@@ -41,6 +41,16 @@ func TestConfigLoadAndSave(t *testing.T) {
 		t.Errorf("expected 2 groups, got %d", len(groups))
 	}
 
+	if !cfg.IsRepoInGroup("backend", "api-gateway") {
+		t.Errorf("expected api-gateway to be in backend group")
+	}
+	if !cfg.IsRepoInGroup("core", "api-gateway") {
+		t.Errorf("expected api-gateway to be in core group")
+	}
+	if cfg.IsRepoInGroup("frontend", "api-gateway") {
+		t.Errorf("expected api-gateway NOT to be in frontend group")
+	}
+
 	// Test Squad operations
 	err = cfg.AddMemberToSquad("platform", "alice")
 	if err != nil {

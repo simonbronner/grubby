@@ -172,6 +172,35 @@ func (c *Config) GetAllGroupNames() []string {
 	return names
 }
 
+func (c *Config) IsRepoInGroup(groupName, repoName string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, g := range c.Groups {
+		if strings.EqualFold(g.Name, groupName) {
+			for _, r := range g.Repos {
+				if strings.EqualFold(r, repoName) {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	return false
+}
+
+func (c *Config) GetGroup(groupName string) *GroupConfig {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for i := range c.Groups {
+		if strings.EqualFold(c.Groups[i].Name, groupName) {
+			return &c.Groups[i]
+		}
+	}
+	return nil
+}
+
 func (c *Config) ToggleRepoInGroup(repoName, groupName string) (bool, error) {
 	c.mu.Lock()
 	groupIndex := -1

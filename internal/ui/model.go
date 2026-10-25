@@ -40,9 +40,18 @@ const (
 	ModalAddMember
 	ModalRepoTabs
 	ModalHelp
+	ModalFilterGroup
+	ModalFilterRepoName
 )
 
 // Async messages
+type RepoClonedMsg struct {
+	RepoName  string
+	TargetDir string
+	Status    git.RepoGitStatus
+	Err       error
+}
+
 type DataLoadedMsg struct {
 	AuthUser      string
 	Repos         []github.Repository
@@ -97,8 +106,11 @@ type Model struct {
 	LastRefreshTime     time.Time
 
 	// Navigation & Cursors
-	RepoCursor int
-	RepoFilter string
+	RepoCursor              int
+	RepoFilter              string
+	RepoGroupFilter         string
+	RepoSortVulnerabilities bool
+	RepoFilterInput         textinput.Model
 
 	PRCursor int
 	PRFilter string
@@ -144,6 +156,12 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 	mi.Placeholder = "Type here..."
 	mi.CharLimit = 50
 
+	rfi := textinput.New()
+	rfi.Placeholder = "Type repository name substring..."
+	rfi.Prompt = "🔍 "
+	rfi.CharLimit = 50
+	rfi.Width = 40
+
 	vp := viewport.New(60, 20)
 
 	sp := spinner.New()
@@ -166,6 +184,7 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 		LastRefreshTime:     time.Now(),
 		SearchInput:         si,
 		ModalInput:          mi,
+		RepoFilterInput:     rfi,
 		SearchPreview:       vp,
 		SelectedRepoGroups:  make(map[string]bool),
 		Spinner:             sp,
@@ -342,6 +361,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case GitStatusUpdatedMsg:
 		m.GitStatuses = msg.Statuses
+
+	case RepoClonedMsg:
+		if msg.Err != nil {
+			m.StatusMsg = "Clone failed: " + msg.Err.Error()
+			m.StatusMsgTimer = time.Now().Add(5 * time.Second)
+			return m, nil
+		}
+		m.GitStatuses[msg.RepoName] = msg.Status
+		collapsed := config.CollapseHome(msg.TargetDir)
+		m.StatusMsg = "Successfully cloned " + msg.RepoName + " to " + collapsed
+		m.StatusMsgTimer = time.Now().Add(4 * time.Second)
+		return m, nil
 
 	case SearchResultsMsg:
 		m.Searching = false
@@ -617,7 +648,11 @@ func (m Model) renderFooter() string {
 	var help string
 	switch m.ActiveTab {
 	case TabRepos:
-		help = "[Enter] Open Web  [o] Submenu  [S] Security Tab  [g] Groups  [c] Clone  [e] Editor (nvim)  [t] Shell  [u] Fast-forward  [?] Help  [q] Quit"
+		if m.RepoFilter != "" || m.RepoGroupFilter != "" || m.RepoSortVulnerabilities {
+			help = "[v] View Group  [f] Filter  [s] Sort Vulns  [Esc] Clear Filter  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [e] Editor  [t] Shell  [?] Help"
+		} else {
+			help = "[v] View Group  [f] Filter  [s] Sort Vulns  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [e] Editor  [t] Shell  [u] Sync  [?] Help"
+		}
 	case TabPRs:
 		help = "[o] Browser  [p] Trigger Copilot Review  [c] Checkout Branch  [r] Refresh  [?] Help  [q] Quit"
 	case TabSquad:
