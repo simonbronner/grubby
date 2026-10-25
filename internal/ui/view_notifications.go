@@ -25,7 +25,6 @@ func (m Model) handleNotificationsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.Notifications) > 0 && m.NotifCursor < len(m.Notifications) {
 			n := m.Notifications[m.NotifCursor]
 			_ = OpenBrowser(n.URL)
-			SendNativeNotification("Grubby • Browser", n.Repository, n.Title)
 
 			// Mark as read locally
 			m.Notifications[m.NotifCursor].Unread = false

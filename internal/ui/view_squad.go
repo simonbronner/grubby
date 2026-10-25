@@ -41,7 +41,6 @@ func (m Model) handleSquadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			ev := m.SquadEvents[m.SquadCursor]
 			url := fmt.Sprintf("https://github.com/%s", ev.Repo)
 			_ = OpenBrowser(url)
-			SendNativeNotification("Grubby • Browser", "Squad Activity", ev.Repo)
 			return m, func() tea.Msg { return StatusToastMsg("Opened " + ev.Repo + " in browser") }
 		}
 	}

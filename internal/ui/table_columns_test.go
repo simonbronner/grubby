@@ -99,3 +99,27 @@ func TestComputeNotificationColumns(t *testing.T) {
 		}
 	}
 }
+
+func TestDistributeEvenly(t *testing.T) {
+	items := []string{"[Mascot]", "🏢 Org", "👥 Squad", "⑂ 2 PRs", "🛡️ Clean", "👤 @user"}
+
+	// Test wide width
+	renderedWide := distributeEvenly(items, 140)
+	if len(renderedWide) < 100 {
+		t.Errorf("Expected wide rendering, got %q", renderedWide)
+	}
+
+	// Test narrow width
+	renderedNarrow := distributeEvenly(items, 60)
+	if renderedNarrow == "" {
+		t.Errorf("Expected fallback string, got empty")
+	}
+
+	// Test edge cases
+	if distributeEvenly(nil, 100) != "" {
+		t.Errorf("Expected empty string for nil items")
+	}
+	if distributeEvenly([]string{"Solo"}, 100) != "Solo" {
+		t.Errorf("Expected single item unchanged")
+	}
+}

@@ -92,7 +92,6 @@ func (m Model) handleSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, func() tea.Msg { return StatusToastMsg("Failed to open nvim: " + err.Error()) }
 			}
 			collapsed := config.CollapseHome(node.AbsPath)
-			SendNativeNotification("Grubby • Editor", fmt.Sprintf("Line %d", lineNum), collapsed)
 			return m, func() tea.Msg {
 				return StatusToastMsg(fmt.Sprintf("Opened nvim at %s:%d", collapsed, lineNum))
 			}

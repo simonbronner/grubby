@@ -25,7 +25,6 @@ func (m Model) handlePRsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.PRs) > 0 && m.PRCursor < len(m.PRs) {
 			pr := m.PRs[m.PRCursor]
 			_ = OpenBrowser(pr.URL)
-			SendNativeNotification("Grubby • Browser", fmt.Sprintf("PR #%d", pr.Number), pr.Title)
 			return m, func() tea.Msg { return StatusToastMsg(fmt.Sprintf("Opened PR #%d in browser", pr.Number)) }
 		}
 	case "p":

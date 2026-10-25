@@ -29,7 +29,6 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
 			repo := m.Repos[m.RepoCursor]
 			_ = OpenBrowser(repo.URL)
-			SendNativeNotification("Grubby • Browser", "Opened Repository", repo.FullName)
 			return m, func() tea.Msg { return StatusToastMsg("Opened " + repo.Name + " in dedicated browser") }
 		}
 	case "o":
@@ -45,7 +44,6 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			repo := m.Repos[m.RepoCursor]
 			url := fmt.Sprintf("https://github.com/%s/security/dependabot", repo.FullName)
 			_ = OpenBrowser(url)
-			SendNativeNotification("Grubby • Browser", "Security Dependabot", repo.FullName)
 			return m, func() tea.Msg { return StatusToastMsg("Opened Security tab for " + repo.Name) }
 		}
 	case "g":
@@ -69,7 +67,6 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return m, func() tea.Msg { return StatusToastMsg("Failed to open nvim: " + err.Error()) }
 				}
 				collapsed := config.CollapseHome(st.LocalPath)
-				SendNativeNotification("Grubby • Editor", "Opened Neovim", collapsed)
 				return m, func() tea.Msg { return StatusToastMsg("Opened nvim in " + collapsed) }
 			} else {
 				return m, func() tea.Msg { return StatusToastMsg("Repo is not cloned yet! Press 'c' to clone.") }
@@ -86,7 +83,6 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return m, func() tea.Msg { return StatusToastMsg("Failed to open shell: " + err.Error()) }
 				}
 				collapsed := config.CollapseHome(st.LocalPath)
-				SendNativeNotification("Grubby • Terminal", "Opened iTerm2", collapsed)
 				return m, func() tea.Msg { return StatusToastMsg("Opened iTerm at " + collapsed) }
 			} else {
 				return m, func() tea.Msg { return StatusToastMsg("Repo is not cloned yet! Press 'c' to clone.") }
@@ -109,7 +105,6 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return StatusToastMsg("Clone failed: " + err.Error())
 				}
 				collapsed := config.CollapseHome(targetDir)
-				SendNativeNotification("Grubby • Git Clone", "Cloned successfully", repo.FullName)
 				return StatusToastMsg("Successfully cloned " + repo.Name + " to " + collapsed)
 			}
 		}
@@ -134,7 +129,6 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if err != nil {
 					return StatusToastMsg("Fast-forward error: " + err.Error())
 				}
-				SendNativeNotification("Grubby • Fast-Forward", "Branch updated", repo.Name)
 				return StatusToastMsg("Successfully fast-forwarded " + repo.Name)
 			}
 		}

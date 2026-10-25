@@ -440,19 +440,29 @@ func (m Model) View() string {
 }
 
 func (m Model) renderHeader() string {
-	// 1. Top-left: cute grubby hobbit avatar badge replacing "GRUBBY"
+	// 1. Hobbit avatar mascot replacing "GRUBBY"
 	hobbitBadge := HeaderStyle.Render(" ᘛ( ᵔ ᴗ ᵔ*)ᘚ ")
 
-	// 2. Summary of total open pull requests
+	// 2. Organization with icon
+	orgItem := MetaBarStyle.Render("🏢 " + m.CurrentOrg)
+
+	// 3. Squad with icon
+	watchedSquad := "None"
+	if s := m.Config.GetActiveSquad(); s != nil {
+		watchedSquad = s.DisplayName
+	}
+	squadItem := MetaBarStyle.Render("👥 " + watchedSquad)
+
+	// 4. Summary of total open pull requests
 	prCount := len(m.PRs)
-	var prSummary string
+	var prItem string
 	if prCount > 0 {
-		prSummary = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render(fmt.Sprintf("⑂ %d Open PRs", prCount))
+		prItem = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render(fmt.Sprintf("⑂ %d Open PRs", prCount))
 	} else {
-		prSummary = lipgloss.NewStyle().Foreground(MutedColor).Render("⑂ 0 PRs")
+		prItem = lipgloss.NewStyle().Foreground(MutedColor).Render("⑂ 0 PRs")
 	}
 
-	// 3. Summary of total outstanding security issues
+	// 5. Summary of total outstanding security issues across all repos
 	totalCrit := 0
 	totalHigh := 0
 	totalMedRest := 0
@@ -464,76 +474,83 @@ func (m Model) renderHeader() string {
 		totalAlerts += sum.Total
 	}
 
-	var secSummary string
+	var secItem string
 	if totalAlerts == 0 {
-		secSummary = lipgloss.NewStyle().Foreground(SuccessColor).Render("🛡️ 0 Alerts [✓ clean]")
+		secItem = lipgloss.NewStyle().Foreground(SuccessColor).Render("🛡️ 0 Alerts [✓ clean]")
 	} else {
 		var parts []string
 		if totalCrit > 0 {
-			parts = append(parts, lipgloss.NewStyle().Foreground(DangerColor).Bold(true).Render(fmt.Sprintf("%d crit", totalCrit)))
+			parts = append(parts, lipgloss.NewStyle().Foreground(DangerColor).Bold(true).Render(fmt.Sprintf("%dc", totalCrit)))
 		}
 		if totalHigh > 0 {
-			parts = append(parts, lipgloss.NewStyle().Foreground(WarningColor).Bold(true).Render(fmt.Sprintf("%d high", totalHigh)))
+			parts = append(parts, lipgloss.NewStyle().Foreground(WarningColor).Bold(true).Render(fmt.Sprintf("%dh", totalHigh)))
 		}
 		if totalMedRest > 0 {
-			parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("#E5C07B")).Render(fmt.Sprintf("%d med+", totalMedRest)))
+			parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("#E5C07B")).Render(fmt.Sprintf("%dm+", totalMedRest)))
 		}
-		secSummary = "🛡️ " + strings.Join(parts, " ")
+		secItem = "🛡️ " + strings.Join(parts, " ")
 	}
 
-	// 4. Notification bubble
-	unreadNotifs := 0
-	for _, n := range m.Notifications {
-		if n.Unread {
-			unreadNotifs++
-		}
-	}
-
-	var notifBadge string
-	if unreadNotifs > 0 {
-		notifBadge = lipgloss.NewStyle().
-			Background(WarningColor).
-			Foreground(lipgloss.Color("#000000")).
-			Bold(true).
-			Padding(0, 1).
-			Render(fmt.Sprintf("🔔 %d unread", unreadNotifs))
-	} else {
-		notifBadge = lipgloss.NewStyle().
-			Foreground(MutedColor).
-			Render("🔔 0")
-	}
-
-	watchedSquad := "None"
-	if s := m.Config.GetActiveSquad(); s != nil {
-		watchedSquad = s.DisplayName
-	}
-
-	// 5. Far right: icon and name of the logged-in GitHub user + API quota
+	// 6. Logged-in GitHub user and rate quota
 	user := m.AuthUser
 	if user == "" {
 		user = m.CurrentOrg
 	}
-	userBadge := lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render("👤 @" + user)
-	rateInfo := MetaBarStyle.Render(fmt.Sprintf("(%d/%d API)", m.RateLimit.Remaining, m.RateLimit.Limit))
-	right := userBadge + "  " + rateInfo
 
-	// Construct left & middle components adapting to terminal width
-	var left string
-	if m.Width >= 135 {
-		metaInfo := MetaBarStyle.Render(fmt.Sprintf("Org: %s  |  Squad: %s", m.CurrentOrg, watchedSquad))
-		left = hobbitBadge + "  " + metaInfo + "  |  " + prSummary + "  |  " + secSummary + "  |  " + notifBadge
-	} else if m.Width >= 105 {
-		left = hobbitBadge + "  " + prSummary + "  |  " + secSummary + "  |  " + notifBadge
+	var userItem string
+	if m.Width >= 110 {
+		userItem = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render("👤 @"+user) +
+			" " + MetaBarStyle.Render(fmt.Sprintf("(%d/%d API)", m.RateLimit.Remaining, m.RateLimit.Limit))
 	} else {
-		left = hobbitBadge + "  " + prSummary + "  |  " + notifBadge
+		userItem = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render("👤 @" + user)
 	}
 
-	space := m.Width - lipgloss.Width(left) - lipgloss.Width(right)
-	if space < 1 {
-		space = 1
+	// Assemble header items evenly distributed across line 1
+	var items []string
+	if m.Width >= 100 {
+		items = []string{hobbitBadge, orgItem, squadItem, prItem, secItem, userItem}
+	} else {
+		items = []string{hobbitBadge, orgItem, prItem, secItem, userItem}
 	}
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", space), right)
+	return distributeEvenly(items, m.Width)
+}
+
+func distributeEvenly(items []string, totalWidth int) string {
+	if len(items) == 0 {
+		return ""
+	}
+	if len(items) == 1 {
+		return items[0]
+	}
+
+	totalItemWidth := 0
+	for _, it := range items {
+		totalItemWidth += lipgloss.Width(it)
+	}
+
+	availSpace := totalWidth - totalItemWidth
+	numGaps := len(items) - 1
+
+	if availSpace < numGaps {
+		return strings.Join(items, " ")
+	}
+
+	baseGap := availSpace / numGaps
+	extra := availSpace % numGaps
+
+	var b strings.Builder
+	for i, it := range items {
+		b.WriteString(it)
+		if i < numGaps {
+			gap := baseGap
+			if i < extra {
+				gap++
+			}
+			b.WriteString(strings.Repeat(" ", gap))
+		}
+	}
+	return b.String()
 }
 
 func (m Model) renderTabBar() string {

@@ -79,7 +79,6 @@ func (m Model) handleRepoTabsModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.ActiveModal = ModalNone
 			url := fmt.Sprintf("https://github.com/%s%s", repo.FullName, opt.Path)
 			_ = OpenBrowser(url)
-			SendNativeNotification("Grubby • Browser", opt.Name, repo.FullName)
 			return m, func() tea.Msg {
 				return StatusToastMsg(fmt.Sprintf("Opened %s %s in dedicated browser", repo.Name, opt.Name))
 			}
@@ -90,7 +89,6 @@ func (m Model) handleRepoTabsModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.ActiveModal = ModalNone
 			url := fmt.Sprintf("https://github.com/%s%s", repo.FullName, opt.Path)
 			_ = OpenBrowser(url)
-			SendNativeNotification("Grubby • Browser", opt.Name, repo.FullName)
 			return m, func() tea.Msg {
 				return StatusToastMsg(fmt.Sprintf("Opened %s %s in dedicated browser", repo.Name, opt.Name))
 			}
