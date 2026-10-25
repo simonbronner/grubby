@@ -277,6 +277,7 @@ func (m Model) renderReposView() string {
 	}
 
 	cols := computeRepoColumns(m.Width)
+	tmuxSessions := GetTmuxSessionsMap()
 
 	headerRow := lipgloss.JoinHorizontal(lipgloss.Top,
 		cols.Cursor.Render(""),
@@ -284,7 +285,7 @@ func (m Model) renderReposView() string {
 		cols.Sec.Render("SECURITY"),
 		cols.Group.Render("GROUPS"),
 		cols.Git.Render("GIT STATUS"),
-		cols.Branch.Render("BRANCH"),
+		cols.Session.Render("TMUX"),
 		cols.Last.Render("LAST PUSHED"),
 		cols.Path.Render("LOCAL PATH"),
 	)
@@ -416,12 +417,16 @@ func (m Model) renderReposView() string {
 			styledBadge = gitBadge
 		}
 
-		branch := st.Branch
-		if branch == "" {
-			branch = r.DefaultBranch
-		}
-		if len(branch) > cols.BranchWidth-2 && cols.BranchWidth > 3 {
-			branch = branch[:cols.BranchWidth-3] + "…"
+		sessionName := SanitizeTmuxSessionName(r.Name)
+		var sessionColText string
+		if winCount, ok := tmuxSessions[sessionName]; ok && winCount > 0 {
+			plural := "win"
+			if winCount > 1 {
+				plural = "wins"
+			}
+			sessionColText = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render(fmt.Sprintf("● %d %s", winCount, plural))
+		} else {
+			sessionColText = lipgloss.NewStyle().Foreground(lipgloss.Color("#505565")).Render("○ none")
 		}
 
 		lastPushed := formatTimeAgo(r.PushedAt)
@@ -445,7 +450,7 @@ func (m Model) renderReposView() string {
 			cols.Sec.Render(secColText),
 			cols.Group.Render(groupText),
 			cols.Git.Render(styledBadge),
-			cols.Branch.Render(branch),
+			cols.Session.Render(sessionColText),
 			cols.Last.Render(lastPushed),
 			cols.Path.Render(localPath),
 		)

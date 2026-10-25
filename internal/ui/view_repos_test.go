@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -229,5 +230,21 @@ func TestReposKeyHandling_FilterAndSortKeys(t *testing.T) {
 	m = updated.(Model)
 	if m.RepoSortVulnerabilities {
 		t.Errorf("expected RepoSortVulnerabilities=false")
+	}
+}
+
+func TestRenderReposView_TmuxSessionColumn(t *testing.T) {
+	m := createTestModel()
+	m.Width = 120
+	m.Height = 25
+
+	rendered := m.renderReposView()
+
+	// Verify TMUX column is present and BRANCH is dropped
+	if !strings.Contains(rendered, "TMUX") {
+		t.Errorf("expected rendered repos view to contain 'TMUX' header column, got:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "BRANCH") {
+		t.Errorf("expected rendered repos view to drop 'BRANCH' column")
 	}
 }

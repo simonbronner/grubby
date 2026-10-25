@@ -22,15 +22,19 @@ func BuildITerm2ImageSequence(b64Data string, width, height int) string {
 	return seq
 }
 
-// EmitITerm2ImageCmd outputs the native iTerm2 inline image sequence directly to the terminal.
+// EmitITerm2ImageCmd outputs the native iTerm2 inline image sequence directly to the terminal at (row, col).
 // It is triggered as a tea.Cmd, keeping the model's View() clean of escape sequences and base64 payloads.
-func EmitITerm2ImageCmd(rawBytes []byte, width, height int) tea.Cmd {
+func EmitITerm2ImageCmd(rawBytes []byte, row, col, width, height int) tea.Cmd {
 	return func() tea.Msg {
 		if len(rawBytes) == 0 {
 			return nil
 		}
 		b64 := base64.StdEncoding.EncodeToString(rawBytes)
 		seq := BuildITerm2ImageSequence(b64, width, height)
+		if row > 0 && col > 0 {
+			// Save cursor (DEC \x1b7), jump to (row, col), write image, restore cursor (DEC \x1b8)
+			seq = fmt.Sprintf("\x1b7\x1b[%d;%dH%s\x1b8", row, col, seq)
+		}
 		_, _ = os.Stdout.WriteString(seq)
 		return nil
 	}

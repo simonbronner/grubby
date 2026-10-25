@@ -397,6 +397,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmds []tea.Cmd
 		cmds = append(cmds, autoRefreshTickCmd())
 
+		if m.ActiveTab == TabSquad {
+			cmds = append(cmds, m.emitSquadMemberAvatarsCmd())
+		}
+
 		// Poll GitHub Status every 60 seconds
 		if time.Since(m.LastStatusCheck) >= 60*time.Second {
 			m.LastStatusCheck = time.Now()
@@ -547,6 +551,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(squadLogins) > 0 && m.GHClient != nil {
 			cmds = append(cmds, m.fetchSquadAvatarsCmd(squadLogins))
 		}
+		if m.ActiveTab == TabSquad {
+			cmds = append(cmds, m.emitSquadMemberAvatarsCmd())
+		}
 
 	case AvatarLoadedMsg:
 		if len(msg.RawData) > 0 {
@@ -554,7 +561,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.RawAvatarCache = make(map[string][]byte)
 			}
 			m.RawAvatarCache[strings.ToLower(msg.Login)] = msg.RawData
-			return m, EmitITerm2ImageCmd(msg.RawData, 8, 4)
+			if m.ActiveTab == TabSquad {
+				return m, m.emitSquadMemberAvatarsCmd()
+			}
 		}
 		return m, nil
 
@@ -623,7 +632,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "3":
 			m.ActiveTab = TabSquad
-			return m, nil
+			return m, m.emitSquadMemberAvatarsCmd()
 		case "4":
 			m.ActiveTab = TabSearch
 			return m, nil
@@ -635,9 +644,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "tab":
 			m.ActiveTab = (m.ActiveTab + 1) % 6
+			if m.ActiveTab == TabSquad {
+				return m, m.emitSquadMemberAvatarsCmd()
+			}
 			return m, nil
 		case "shift+tab":
 			m.ActiveTab = (m.ActiveTab + 5) % 6
+			if m.ActiveTab == TabSquad {
+				return m, m.emitSquadMemberAvatarsCmd()
+			}
 			return m, nil
 		case "?":
 			m.ActiveModal = ModalHelp

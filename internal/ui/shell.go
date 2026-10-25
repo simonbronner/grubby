@@ -48,6 +48,27 @@ func TmuxHasAttachedClients() bool {
 	return len(strings.TrimSpace(string(out))) > 0
 }
 
+// GetTmuxSessionsMap returns a map of sessionName -> windowCount for all active tmux sessions.
+func GetTmuxSessionsMap() map[string]int {
+	sessions := make(map[string]int)
+	if !HasTmux() {
+		return sessions
+	}
+	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}:#{session_windows}").Output()
+	if err != nil {
+		return sessions
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) == 2 {
+			var count int
+			_, _ = fmt.Sscanf(parts[1], "%d", &count)
+			sessions[parts[0]] = count
+		}
+	}
+	return sessions
+}
+
 // activateOrOpenGrubbyITermWindow ensures a single dedicated iTerm2 window (tagged as "Grubby")
 // is either activated if it exists or created if it does not.
 // If writeCmd is non-empty, it sends that command string into the window's current session.
@@ -55,9 +76,6 @@ func activateOrOpenGrubbyITermWindow(writeCmd string) error {
 	if _, err := os.Stat("/Applications/iTerm.app"); err != nil {
 		return fmt.Errorf("iTerm not installed")
 	}
-
-	escapedCmd := strings.ReplaceAll(writeCmd, `\`, `\\`)
-	escapedCmd = strings.ReplaceAll(escapedCmd, `"`, `\"`)
 
 	script := fmt.Sprintf(`
 tell application "iTerm"
@@ -90,7 +108,7 @@ tell application "iTerm"
 			end if
 		end tell
 	end if
-end tell`, escapedCmd, escapedCmd, escapedCmd, escapedCmd)
+end tell`, writeCmd, writeCmd, writeCmd, writeCmd)
 
 	cmd := exec.Command("osascript", "-e", script)
 	return cmd.Run()
@@ -108,9 +126,9 @@ end tell`, shellCommand)
 }
 
 // OpenRepoShell opens a terminal shell for a repository:
-// - If the tmux session for that repo already exists, it emits a command to create a new window in that session.
-// - If the session does not exist, it creates a new named session (named after the repo).
-// - Focuses the dedicated Grubby iTerm window.
+// - If the session exists, it emits a command to create a new window in that session at repoDir.
+// - If the session does not exist, it creates the session in repoDir.
+// - Ensures the session is displayed in the dedicated Grubby iTerm window.
 func OpenRepoShell(repoName, repoDir string) (string, error) {
 	sessionName := SanitizeTmuxSessionName(repoName)
 	tmuxInstalled := HasTmux()
@@ -125,45 +143,40 @@ func OpenRepoShell(repoName, repoDir string) (string, error) {
 		return fmt.Sprintf("Opened shell at %s (tip: install tmux for persistent sessions)", collapsed), err
 	}
 
-	sessionExists := TmuxSessionExists(sessionName)
-	hasClients := TmuxHasAttachedClients()
+	sessionAlreadyExisted := TmuxSessionExists(sessionName)
 
-	if sessionExists {
-		// Create a new window in that existing session
-		_ = exec.Command("tmux", "new-window", "-t", sessionName, "-c", repoDir).Run()
-
-		if hasClients {
-			_ = exec.Command("tmux", "switch-client", "-t", sessionName).Run()
-			_ = activateOrOpenGrubbyITermWindow("")
-		} else {
-			// No client attached: attach in the Grubby window
-			attachCmd := fmt.Sprintf("tmux attach-session -t %q", sessionName)
-			err := activateOrOpenGrubbyITermWindow(attachCmd)
-			if err != nil {
-				_ = activateOrOpenTerminalApp(attachCmd)
-			}
+	if !sessionAlreadyExisted {
+		// Create session directly via Go exec.Command to guarantee exact repoDir and unquoted session name
+		cmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", repoDir)
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("failed to create tmux session: %w", err)
 		}
-		return fmt.Sprintf("Created new window in tmux session '%s'", sessionName), nil
+	} else {
+		// Session already exists: create a new window inside this session at repoDir
+		_ = exec.Command("tmux", "new-window", "-t", sessionName, "-c", repoDir).Run()
 	}
 
-	// Session does not exist yet: create it
-	if hasClients {
-		_ = exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", repoDir).Run()
+	// Connect client in Grubby iTerm window
+	if TmuxHasAttachedClients() {
 		_ = exec.Command("tmux", "switch-client", "-t", sessionName).Run()
 		_ = activateOrOpenGrubbyITermWindow("")
 	} else {
-		createCmd := fmt.Sprintf("tmux new-session -s %q -c %q", sessionName, repoDir)
-		err := activateOrOpenGrubbyITermWindow(createCmd)
+		attachCmd := fmt.Sprintf("tmux attach-session -t %s", sessionName)
+		err := activateOrOpenGrubbyITermWindow(attachCmd)
 		if err != nil {
-			_ = activateOrOpenTerminalApp(createCmd)
+			_ = activateOrOpenTerminalApp(attachCmd)
 		}
+	}
+
+	if sessionAlreadyExisted {
+		return fmt.Sprintf("Created new window in tmux session '%s'", sessionName), nil
 	}
 	return fmt.Sprintf("Created tmux session '%s'", sessionName), nil
 }
 
 // GoToRepoSession switches to the existing tmux session for a repository:
 // - If the session exists, it switches to it without creating a new window.
-// - If the session does not exist, it creates it and switches to it.
+// - If the session does not exist, it creates it in repoDir and switches to it.
 // - Focuses the dedicated Grubby iTerm window.
 func GoToRepoSession(repoName, repoDir string) (string, error) {
 	sessionName := SanitizeTmuxSessionName(repoName)
@@ -179,34 +192,30 @@ func GoToRepoSession(repoName, repoDir string) (string, error) {
 		return fmt.Sprintf("Opened shell at %s", collapsed), err
 	}
 
-	sessionExists := TmuxSessionExists(sessionName)
-	hasClients := TmuxHasAttachedClients()
+	sessionAlreadyExisted := TmuxSessionExists(sessionName)
 
-	if sessionExists {
-		if hasClients {
-			_ = exec.Command("tmux", "switch-client", "-t", sessionName).Run()
-			_ = activateOrOpenGrubbyITermWindow("")
-		} else {
-			attachCmd := fmt.Sprintf("tmux attach-session -t %q", sessionName)
-			err := activateOrOpenGrubbyITermWindow(attachCmd)
-			if err != nil {
-				_ = activateOrOpenTerminalApp(attachCmd)
-			}
+	if !sessionAlreadyExisted {
+		// Create session directly via Go exec.Command to guarantee exact repoDir
+		cmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", repoDir)
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("failed to create tmux session: %w", err)
 		}
-		return fmt.Sprintf("Switched to session '%s'", sessionName), nil
 	}
 
-	// Session does not exist yet: create and switch
-	if hasClients {
-		_ = exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", repoDir).Run()
+	// Connect client in Grubby iTerm window
+	if TmuxHasAttachedClients() {
 		_ = exec.Command("tmux", "switch-client", "-t", sessionName).Run()
 		_ = activateOrOpenGrubbyITermWindow("")
 	} else {
-		createCmd := fmt.Sprintf("tmux new-session -s %q -c %q", sessionName, repoDir)
-		err := activateOrOpenGrubbyITermWindow(createCmd)
+		attachCmd := fmt.Sprintf("tmux attach-session -t %s", sessionName)
+		err := activateOrOpenGrubbyITermWindow(attachCmd)
 		if err != nil {
-			_ = activateOrOpenTerminalApp(createCmd)
+			_ = activateOrOpenTerminalApp(attachCmd)
 		}
+	}
+
+	if sessionAlreadyExisted {
+		return fmt.Sprintf("Switched to session '%s'", sessionName), nil
 	}
 	return fmt.Sprintf("Created and switched to session '%s'", sessionName), nil
 }

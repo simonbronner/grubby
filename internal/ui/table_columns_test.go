@@ -10,7 +10,7 @@ func TestComputeRepoColumns(t *testing.T) {
 	for _, w := range widths {
 		cols := computeRepoColumns(w)
 
-		if cols.NameWidth <= 0 || cols.GroupWidth <= 0 || cols.PathWidth <= 0 || cols.BranchWidth <= 0 {
+		if cols.NameWidth <= 0 || cols.GroupWidth <= 0 || cols.PathWidth <= 0 || cols.SessionWidth <= 0 {
 			t.Fatalf("Width %d produced invalid column width: %+v", w, cols)
 		}
 
