@@ -44,12 +44,13 @@ const (
 
 // Async messages
 type DataLoadedMsg struct {
-	Repos       []github.Repository
-	PRs         []github.PullRequest
-	SquadEvents []github.SquadEvent
-	Security    map[string]github.SecurityAlertSummary
-	RateLimit   github.RateLimitInfo
-	Err         error
+	Repos         []github.Repository
+	PRs           []github.PullRequest
+	SquadEvents   []github.SquadEvent
+	Security      map[string]github.SecurityAlertSummary
+	Notifications []github.Notification
+	RateLimit     github.RateLimitInfo
+	Err           error
 }
 
 type GitStatusUpdatedMsg struct {
@@ -72,14 +73,16 @@ type Model struct {
 	SearchEng search.Engine
 
 	// Data
-	CurrentOrg        string
-	Repos             []github.Repository
-	PRs               []github.PullRequest
-	SquadEvents       []github.SquadEvent
-	SecuritySummaries map[string]github.SecurityAlertSummary
-	GitStatuses       map[string]git.RepoGitStatus
-	RateLimit         github.RateLimitInfo
-	Loading           bool
+	CurrentOrg          string
+	Repos               []github.Repository
+	PRs                 []github.PullRequest
+	SquadEvents         []github.SquadEvent
+	SecuritySummaries   map[string]github.SecurityAlertSummary
+	Notifications       []github.Notification
+	SeenNotificationIDs map[string]bool
+	GitStatuses         map[string]git.RepoGitStatus
+	RateLimit           github.RateLimitInfo
+	Loading             bool
 
 	// Navigation & Cursors
 	RepoCursor int
@@ -134,20 +137,21 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 	sp.Style = lipgloss.NewStyle().Foreground(SecondaryColor)
 
 	m := Model{
-		ActiveTab:          TabRepos,
-		Config:             cfg,
-		GHClient:           gh,
-		GitMgr:             gitMgr,
-		SearchEng:          search.NewRipgrepEngine(),
-		CurrentOrg:         org,
-		GitStatuses:        make(map[string]git.RepoGitStatus),
-		SecuritySummaries:  make(map[string]github.SecurityAlertSummary),
-		Loading:            true,
-		SearchInput:        si,
-		ModalInput:         mi,
-		SearchPreview:      vp,
-		SelectedRepoGroups: make(map[string]bool),
-		Spinner:            sp,
+		ActiveTab:           TabRepos,
+		Config:              cfg,
+		GHClient:            gh,
+		GitMgr:              gitMgr,
+		SearchEng:           search.NewRipgrepEngine(),
+		CurrentOrg:          org,
+		GitStatuses:         make(map[string]git.RepoGitStatus),
+		SecuritySummaries:   make(map[string]github.SecurityAlertSummary),
+		SeenNotificationIDs: make(map[string]bool),
+		Loading:             true,
+		SearchInput:         si,
+		ModalInput:          mi,
+		SearchPreview:       vp,
+		SelectedRepoGroups:  make(map[string]bool),
+		Spinner:             sp,
 	}
 
 	return m
@@ -183,12 +187,16 @@ func (m Model) loadDataCmd() tea.Cmd {
 		}
 		events, _ := m.GHClient.FetchSquadActivity(ctx, members, commitEvents)
 
+		// Fetch notifications
+		notifs, _ := m.GHClient.FetchNotifications(ctx)
+
 		return DataLoadedMsg{
-			Repos:       repos,
-			PRs:         prs,
-			SquadEvents: events,
-			Security:    secAlerts,
-			RateLimit:   m.GHClient.RateLimit(),
+			Repos:         repos,
+			PRs:           prs,
+			SquadEvents:   events,
+			Security:      secAlerts,
+			Notifications: notifs,
+			RateLimit:     m.GHClient.RateLimit(),
 		}
 	}
 }
@@ -246,6 +254,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.SquadEvents = msg.SquadEvents
 		m.SecuritySummaries = msg.Security
 		m.RateLimit = msg.RateLimit
+
+		// Process notifications and alert for new unread items
+		var newNotifs []github.Notification
+		for _, n := range msg.Notifications {
+			if n.Unread && !m.SeenNotificationIDs[n.ID] {
+				newNotifs = append(newNotifs, n)
+				m.SeenNotificationIDs[n.ID] = true
+			}
+		}
+		m.Notifications = msg.Notifications
+
+		if len(newNotifs) > 0 {
+			if len(newNotifs) == 1 {
+				n := newNotifs[0]
+				SendNativeNotification("Grubby • GitHub Notification", n.Repository, fmt.Sprintf("[%s] %s", n.Type, n.Title))
+			} else {
+				first := newNotifs[0]
+				SendNativeNotification("Grubby • GitHub Notifications", fmt.Sprintf("%d New Notifications", len(newNotifs)), fmt.Sprintf("%s: %s", first.Repository, first.Title))
+			}
+		}
+
 		m.StatusMsg = "Refreshed data from GitHub"
 		m.StatusMsgTimer = time.Now().Add(4 * time.Second)
 
@@ -390,7 +419,28 @@ func (m Model) renderHeader() string {
 	}
 	squadInfo := fmt.Sprintf("Watched Squad: %s", watchedSquad)
 
-	left := HeaderStyle.Render("GRUBBY") + "  " + MetaBarStyle.Render(orgInfo+"  |  "+squadInfo)
+	unreadNotifs := 0
+	for _, n := range m.Notifications {
+		if n.Unread {
+			unreadNotifs++
+		}
+	}
+
+	var notifBadge string
+	if unreadNotifs > 0 {
+		notifBadge = lipgloss.NewStyle().
+			Background(WarningColor).
+			Foreground(lipgloss.Color("#000000")).
+			Bold(true).
+			Padding(0, 1).
+			Render(fmt.Sprintf("🔔 %d unread", unreadNotifs))
+	} else {
+		notifBadge = lipgloss.NewStyle().
+			Foreground(MutedColor).
+			Render("🔔 0")
+	}
+
+	left := HeaderStyle.Render("GRUBBY") + "  " + MetaBarStyle.Render(orgInfo+"  |  "+squadInfo+"  |  ") + notifBadge
 	right := MetaBarStyle.Render(rateInfo)
 
 	space := m.Width - lipgloss.Width(left) - lipgloss.Width(right)

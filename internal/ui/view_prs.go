@@ -11,18 +11,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-var (
-	prColCursor   = lipgloss.NewStyle().Width(3)
-	prColNum      = lipgloss.NewStyle().Width(7)
-	prColRepo     = lipgloss.NewStyle().Width(18)
-	prColTitle    = lipgloss.NewStyle().Width(32)
-	prColAuthor   = lipgloss.NewStyle().Width(12)
-	prColAge      = lipgloss.NewStyle().Width(12)
-	prColReview   = lipgloss.NewStyle().Width(16)
-	prColComments = lipgloss.NewStyle().Width(12)
-	prColLabels   = lipgloss.NewStyle().Width(20)
-)
-
 func (m Model) handlePRsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
@@ -37,6 +25,7 @@ func (m Model) handlePRsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.PRs) > 0 && m.PRCursor < len(m.PRs) {
 			pr := m.PRs[m.PRCursor]
 			_ = OpenBrowser(pr.URL)
+			SendNativeNotification("Grubby • Browser", fmt.Sprintf("PR #%d", pr.Number), pr.Title)
 			return m, func() tea.Msg { return StatusToastMsg(fmt.Sprintf("Opened PR #%d in browser", pr.Number)) }
 		}
 	case "p":
@@ -83,16 +72,18 @@ func (m Model) renderPRsView() string {
 		return "\n  No open pull requests found.\n"
 	}
 
+	cols := computePRColumns(m.Width)
+
 	headerRow := lipgloss.JoinHorizontal(lipgloss.Top,
-		prColCursor.Render(""),
-		prColNum.Render("PR"),
-		prColRepo.Render("REPOSITORY"),
-		prColTitle.Render("TITLE"),
-		prColAuthor.Render("AUTHOR"),
-		prColAge.Render("AGE"),
-		prColReview.Render("REVIEW"),
-		prColComments.Render("COMMENTS"),
-		prColLabels.Render("LABELS"),
+		cols.Cursor.Render(""),
+		cols.Num.Render("PR"),
+		cols.Repo.Render("REPOSITORY"),
+		cols.Title.Render("TITLE"),
+		cols.Author.Render("AUTHOR"),
+		cols.Age.Render("AGE"),
+		cols.Review.Render("REVIEW"),
+		cols.Comments.Render("COMMENTS"),
+		cols.Labels.Render("LABELS"),
 	)
 	renderedHeader := TableHeaderStyle.Render(headerRow)
 
@@ -116,9 +107,14 @@ func (m Model) renderPRsView() string {
 	for i := start; i < end; i++ {
 		pr := m.PRs[i]
 
+		repoText := pr.Repo
+		if len(repoText) > cols.RepoWidth-2 && cols.RepoWidth > 3 {
+			repoText = repoText[:cols.RepoWidth-3] + "…"
+		}
+
 		title := pr.Title
-		if len(title) > 30 {
-			title = title[:27] + "..."
+		if len(title) > cols.TitleWidth-2 && cols.TitleWidth > 3 {
+			title = title[:cols.TitleWidth-3] + "…"
 		}
 
 		ageText := formatTimeAgo(pr.CreatedAt)
@@ -146,8 +142,8 @@ func (m Model) renderPRsView() string {
 		}
 
 		labelsText := strings.Join(pr.Labels, ", ")
-		if len(labelsText) > 18 {
-			labelsText = labelsText[:15] + "..."
+		if len(labelsText) > cols.LabelsWidth-2 && cols.LabelsWidth > 3 {
+			labelsText = labelsText[:cols.LabelsWidth-3] + "…"
 		}
 
 		prefix := "  "
@@ -158,15 +154,15 @@ func (m Model) renderPRsView() string {
 		numText := fmt.Sprintf("#%-5d", pr.Number)
 
 		rowCells := lipgloss.JoinHorizontal(lipgloss.Top,
-			prColCursor.Render(prefix),
-			prColNum.Render(numText),
-			prColRepo.Render(pr.Repo),
-			prColTitle.Render(title),
-			prColAuthor.Render(pr.Author),
-			prColAge.Render(ageText),
-			prColReview.Render(reviewBadge),
-			prColComments.Render(commentsText),
-			prColLabels.Render(labelsText),
+			cols.Cursor.Render(prefix),
+			cols.Num.Render(numText),
+			cols.Repo.Render(repoText),
+			cols.Title.Render(title),
+			cols.Author.Render(pr.Author),
+			cols.Age.Render(ageText),
+			cols.Review.Render(reviewBadge),
+			cols.Comments.Render(commentsText),
+			cols.Labels.Render(labelsText),
 		)
 
 		if i == m.PRCursor {

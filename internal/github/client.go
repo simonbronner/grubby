@@ -681,6 +681,77 @@ func (c *Client) TriggerCopilotReview(ctx context.Context, owner, repo string, p
 	return nil
 }
 
+// FetchNotifications retrieves unread GitHub notifications for the authenticated user
+func (c *Client) FetchNotifications(ctx context.Context) ([]Notification, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://api.github.com/notifications", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	c.updateRateLimits(resp)
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch notifications: HTTP %d", resp.StatusCode)
+	}
+
+	var rawList []struct {
+		ID        string    `json:"id"`
+		Unread    bool      `json:"unread"`
+		Reason    string    `json:"reason"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Subject   struct {
+			Title string `json:"title"`
+			URL   string `json:"url"`
+			Type  string `json:"type"`
+		} `json:"subject"`
+		Repository struct {
+			Name     string `json:"name"`
+			FullName string `json:"full_name"`
+			HTMLURL  string `json:"html_url"`
+		} `json:"repository"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&rawList); err != nil {
+		return nil, err
+	}
+
+	notifications := make([]Notification, 0, len(rawList))
+	for _, raw := range rawList {
+		webURL := formatNotificationWebURL(raw.Subject.URL, raw.Repository.HTMLURL)
+
+		notifications = append(notifications, Notification{
+			ID:         raw.ID,
+			Unread:     raw.Unread,
+			Reason:     raw.Reason,
+			UpdatedAt:  raw.UpdatedAt,
+			Repository: raw.Repository.FullName,
+			RepoURL:    raw.Repository.HTMLURL,
+			Title:      raw.Subject.Title,
+			Type:       raw.Subject.Type,
+			URL:        webURL,
+		})
+	}
+
+	return notifications, nil
+}
+
+func formatNotificationWebURL(apiURL, repoHTMLURL string) string {
+	if apiURL != "" && strings.Contains(apiURL, "api.github.com/repos/") {
+		webURL := strings.Replace(apiURL, "https://api.github.com/repos/", "https://github.com/", 1)
+		webURL = strings.Replace(webURL, "/pulls/", "/pull/", 1)
+		return webURL
+	}
+	return repoHTMLURL
+}
+
 // CloneRepo clones a repository into targetDir
 func CloneRepo(ctx context.Context, repoFullName, targetDir string) error {
 	parentDir := targetDir

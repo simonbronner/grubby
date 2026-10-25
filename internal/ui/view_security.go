@@ -11,17 +11,6 @@ import (
 	"grubby/internal/github"
 )
 
-var (
-	secColCursor = lipgloss.NewStyle().Width(3)
-	secColRepo   = lipgloss.NewStyle().Width(24)
-	secColCrit   = lipgloss.NewStyle().Width(12)
-	secColHigh   = lipgloss.NewStyle().Width(12)
-	secColMed    = lipgloss.NewStyle().Width(10)
-	secColLow    = lipgloss.NewStyle().Width(10)
-	secColTotal  = lipgloss.NewStyle().Width(14)
-	secColStatus = lipgloss.NewStyle().Width(32)
-)
-
 func (m Model) handleSecurityKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	sortedRepos := m.getSecuritySortedRepos()
 	switch msg.String() {
@@ -38,6 +27,7 @@ func (m Model) handleSecurityKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			repo := sortedRepos[m.RepoCursor]
 			url := fmt.Sprintf("https://github.com/%s/security/dependabot", repo.FullName)
 			_ = OpenBrowser(url)
+			SendNativeNotification("Grubby • Browser", "Dependabot Alerts", repo.FullName)
 			return m, func() tea.Msg { return StatusToastMsg("Opened Dependabot alerts for " + repo.Name) }
 		}
 	}
@@ -74,15 +64,17 @@ func (m Model) renderSecurityView() string {
 		return "\n  No repositories loaded.\n"
 	}
 
+	cols := computeSecurityColumns(m.Width)
+
 	headerRow := lipgloss.JoinHorizontal(lipgloss.Top,
-		secColCursor.Render(""),
-		secColRepo.Render("REPOSITORY"),
-		secColCrit.Render("CRITICAL"),
-		secColHigh.Render("HIGH"),
-		secColMed.Render("MEDIUM"),
-		secColLow.Render("LOW"),
-		secColTotal.Render("TOTAL"),
-		secColStatus.Render("PACKAGES / STATUS"),
+		cols.Cursor.Render(""),
+		cols.Repo.Render("REPOSITORY"),
+		cols.Crit.Render("CRITICAL"),
+		cols.High.Render("HIGH"),
+		cols.Med.Render("MEDIUM"),
+		cols.Low.Render("LOW"),
+		cols.Total.Render("TOTAL"),
+		cols.Status.Render("PACKAGES / STATUS"),
 	)
 	renderedHeader := TableHeaderStyle.Render(headerRow)
 
@@ -141,25 +133,25 @@ func (m Model) renderSecurityView() string {
 		statusText := "No alerts"
 		if len(sum.Packages) > 0 {
 			statusText = strings.Join(sum.Packages, ", ")
-			if len(statusText) > 29 {
-				statusText = statusText[:26] + "..."
+			if len(statusText) > cols.StatusWidth-2 && cols.StatusWidth > 3 {
+				statusText = statusText[:cols.StatusWidth-3] + "…"
 			}
 		}
 
 		repoName := r.Name
-		if len(repoName) > 22 {
-			repoName = repoName[:20] + "…"
+		if len(repoName) > cols.RepoWidth-2 && cols.RepoWidth > 3 {
+			repoName = repoName[:cols.RepoWidth-3] + "…"
 		}
 
 		rowCells := lipgloss.JoinHorizontal(lipgloss.Top,
-			secColCursor.Render(prefix),
-			secColRepo.Render(repoName),
-			secColCrit.Render(critText),
-			secColHigh.Render(highText),
-			secColMed.Render(medText),
-			secColLow.Render(lowText),
-			secColTotal.Render(totalText),
-			secColStatus.Render(statusText),
+			cols.Cursor.Render(prefix),
+			cols.Repo.Render(repoName),
+			cols.Crit.Render(critText),
+			cols.High.Render(highText),
+			cols.Med.Render(medText),
+			cols.Low.Render(lowText),
+			cols.Total.Render(totalText),
+			cols.Status.Render(statusText),
 		)
 
 		if i == m.RepoCursor {

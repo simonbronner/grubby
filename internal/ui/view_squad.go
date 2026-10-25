@@ -8,15 +8,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-var (
-	squadColCursor  = lipgloss.NewStyle().Width(3)
-	squadColTime    = lipgloss.NewStyle().Width(12)
-	squadColActor   = lipgloss.NewStyle().Width(16)
-	squadColAction  = lipgloss.NewStyle().Width(18)
-	squadColTarget  = lipgloss.NewStyle().Width(28)
-	squadColDetails = lipgloss.NewStyle().Width(45)
-)
-
 func (m Model) handleSquadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
@@ -50,6 +41,7 @@ func (m Model) handleSquadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			ev := m.SquadEvents[m.SquadCursor]
 			url := fmt.Sprintf("https://github.com/%s", ev.Repo)
 			_ = OpenBrowser(url)
+			SendNativeNotification("Grubby • Browser", "Squad Activity", ev.Repo)
 			return m, func() tea.Msg { return StatusToastMsg("Opened " + ev.Repo + " in browser") }
 		}
 	}
@@ -78,13 +70,15 @@ func (m Model) renderSquadView() string {
 		return banner + "\n  No recent activity recorded for squad members.\n  Press 'a' to add members to this squad, or 's' to switch squads.\n"
 	}
 
+	cols := computeSquadColumns(m.Width)
+
 	headerRow := lipgloss.JoinHorizontal(lipgloss.Top,
-		squadColCursor.Render(""),
-		squadColTime.Render("TIME"),
-		squadColActor.Render("ACTOR"),
-		squadColAction.Render("ACTION"),
-		squadColTarget.Render("TARGET"),
-		squadColDetails.Render("DETAILS"),
+		cols.Cursor.Render(""),
+		cols.Time.Render("TIME"),
+		cols.Actor.Render("ACTOR"),
+		cols.Action.Render("ACTION"),
+		cols.Target.Render("TARGET"),
+		cols.Details.Render("DETAILS"),
 	)
 	renderedHeader := TableHeaderStyle.Render(headerRow)
 
@@ -115,22 +109,22 @@ func (m Model) renderSquadView() string {
 		}
 
 		target := ev.Target
-		if len(target) > 26 {
-			target = target[:24] + "…"
+		if len(target) > cols.TargetWidth-2 && cols.TargetWidth > 3 {
+			target = target[:cols.TargetWidth-3] + "…"
 		}
 
 		details := ev.Details
-		if len(details) > 42 {
-			details = details[:39] + "..."
+		if len(details) > cols.DetailsWidth-2 && cols.DetailsWidth > 3 {
+			details = details[:cols.DetailsWidth-3] + "…"
 		}
 
 		rowCells := lipgloss.JoinHorizontal(lipgloss.Top,
-			squadColCursor.Render(prefix),
-			squadColTime.Render(timeAgo),
-			squadColActor.Render(ev.Actor),
-			squadColAction.Render(ev.Action),
-			squadColTarget.Render(target),
-			squadColDetails.Render(details),
+			cols.Cursor.Render(prefix),
+			cols.Time.Render(timeAgo),
+			cols.Actor.Render(ev.Actor),
+			cols.Action.Render(ev.Action),
+			cols.Target.Render(target),
+			cols.Details.Render(details),
 		)
 
 		if i == m.SquadCursor {
