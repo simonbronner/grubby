@@ -22,20 +22,30 @@ echo " Syncing Homebrew Tap: simonbronner/homebrew-tap"
 echo " Target Tag: ${TAG}"
 echo "=================================================="
 
-# Check if formula exists locally in Formula/grubby.rb or dist/grubby.rb
+# Check if formula can be fetched directly from GitHub Release
 FORMULA_SOURCE=""
-if [ -f "${PROJECT_ROOT}/dist/grubby.rb" ]; then
-  FORMULA_SOURCE="${PROJECT_ROOT}/dist/grubby.rb"
-elif [ -f "${PROJECT_ROOT}/Formula/grubby.rb" ]; then
-  FORMULA_SOURCE="${PROJECT_ROOT}/Formula/grubby.rb"
-else
-  echo "--> Formula not found locally. Building release artifacts for ${TAG}..."
-  "${PROJECT_ROOT}/scripts/build-all.sh" "${TAG}"
-  FORMULA_SOURCE="${PROJECT_ROOT}/dist/grubby.rb"
+TEMP_FETCH_DIR=$(mktemp -d)
+if command -v gh >/dev/null 2>&1 && gh release view "${TAG}" >/dev/null 2>&1; then
+  echo "--> Downloading published formula from GitHub Release ${TAG}..."
+  if gh release download "${TAG}" -p "grubby.rb" -D "${TEMP_FETCH_DIR}" --clobber 2>/dev/null; then
+    FORMULA_SOURCE="${TEMP_FETCH_DIR}/grubby.rb"
+  fi
+fi
+
+if [ -z "${FORMULA_SOURCE}" ]; then
+  if [ -f "${PROJECT_ROOT}/Formula/grubby.rb" ]; then
+    FORMULA_SOURCE="${PROJECT_ROOT}/Formula/grubby.rb"
+  elif [ -f "${PROJECT_ROOT}/dist/grubby.rb" ]; then
+    FORMULA_SOURCE="${PROJECT_ROOT}/dist/grubby.rb"
+  else
+    echo "--> Formula not found. Building release artifacts for ${TAG}..."
+    "${PROJECT_ROOT}/scripts/build-all.sh" "${TAG}"
+    FORMULA_SOURCE="${PROJECT_ROOT}/dist/grubby.rb"
+  fi
 fi
 
 TAP_DIR=$(mktemp -d)
-trap 'rm -rf "${TAP_DIR}"' EXIT
+trap 'rm -rf "${TAP_DIR}" "${TEMP_FETCH_DIR}"' EXIT
 
 echo "--> Cloning simonbronner/homebrew-tap..."
 git clone https://github.com/simonbronner/homebrew-tap.git "${TAP_DIR}"
