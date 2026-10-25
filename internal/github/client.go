@@ -651,6 +651,9 @@ query($searchQuery: String!) {
 
 	if prErr := c.queryGraphQL(ctx, prSearchQuery, map[string]interface{}{"searchQuery": searchString}, &prResp); prErr == nil {
 		for _, p := range prResp.Search.Nodes {
+			if p.Number == 0 || p.Repository.Name == "" {
+				continue
+			}
 			author := "unknown"
 			if p.Author != nil {
 				author = p.Author.Login

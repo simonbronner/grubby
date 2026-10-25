@@ -2,6 +2,7 @@ package ui
 
 import (
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -135,5 +136,42 @@ func TestOrgMemberFiltering(t *testing.T) {
 	filtered = m.getFilteredOrgMembers()
 	if len(filtered) != 1 || filtered[0].Login != "charlie" {
 		t.Fatalf("expected charlie, got %+v", filtered)
+	}
+}
+
+func TestPRRowRendering_AgeAndAlignment(t *testing.T) {
+	m := createTestPRModel()
+	// Add PR with zero CreatedAt
+	m.PRs = append(m.PRs, github.PullRequest{
+		Number:         101,
+		Repo:           "corp-repo",
+		Title:          "PR with zero time",
+		Author:         "developer",
+		ReviewDecision: "APPROVED",
+	})
+
+	// Add PR with stale age
+	m.PRs = append(m.PRs, github.PullRequest{
+		Number:         102,
+		Repo:           "corp-repo",
+		Title:          "Stale PR",
+		Author:         "dependabot",
+		ReviewDecision: "CHANGES_REQUESTED",
+	})
+
+	output := m.renderPRsView()
+	if output == "" {
+		t.Fatalf("expected non-empty output")
+	}
+
+	// Verify that formatTimeAgo handles zero time gracefully
+	if got := formatTimeAgo(time.Time{}); got != "-" {
+		t.Errorf("expected '-' for zero time, got %q", got)
+	}
+
+	// Verify DaysStale handles zero time gracefully
+	zeroPR := github.PullRequest{}
+	if got := zeroPR.DaysStale(); got != 0 {
+		t.Errorf("expected 0 for zero PR DaysStale, got %d", got)
 	}
 }

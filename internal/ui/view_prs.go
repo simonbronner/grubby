@@ -184,30 +184,53 @@ func (m Model) renderPRsView() string {
 		pr := displayPRs[i]
 
 		repoText := pr.Repo
-		if len(repoText) > cols.RepoWidth-2 && cols.RepoWidth > 3 {
+		if repoText == "" {
+			repoText = "-"
+		} else if len(repoText) > cols.RepoWidth-2 && cols.RepoWidth > 3 {
 			repoText = repoText[:cols.RepoWidth-3] + "…"
 		}
 
 		title := strings.ReplaceAll(strings.ReplaceAll(pr.Title, "\r", " "), "\n", " ")
-		if len(title) > cols.TitleWidth-2 && cols.TitleWidth > 3 {
+		if title == "" {
+			title = "(no title)"
+		} else if len(title) > cols.TitleWidth-2 && cols.TitleWidth > 3 {
 			title = title[:cols.TitleWidth-3] + "…"
 		}
 
 		authorText := pr.Author
-		if len(authorText) > cols.AuthorWidth-1 && cols.AuthorWidth > 2 {
+		if authorText == "" {
+			authorText = "-"
+		} else if len(authorText) > cols.AuthorWidth-1 && cols.AuthorWidth > 2 {
 			authorText = authorText[:cols.AuthorWidth-2] + "…"
 		}
 
-		ageText := formatTimeAgo(pr.CreatedAt)
-		if pr.DaysStale() >= 3 {
-			ageText = StaleBadge.Render(fmt.Sprintf("%dd [!]", pr.DaysStale()))
+		// Calculate raw unstyled age string first
+		var rawAge string
+		if pr.CreatedAt.IsZero() {
+			rawAge = "-"
+		} else if pr.DaysStale() >= 3 {
+			rawAge = fmt.Sprintf("%dd [!]", pr.DaysStale())
+		} else {
+			rawAge = formatTimeAgo(pr.CreatedAt)
 		}
-		if len(ageText) > cols.AgeWidth && cols.AgeWidth > 2 {
-			ageText = ageText[:cols.AgeWidth-1]
+		if rawAge == "" {
+			rawAge = "-"
+		}
+
+		// Truncate plain text string BEFORE applying ANSI styling
+		if len(rawAge) > cols.AgeWidth && cols.AgeWidth > 2 {
+			rawAge = rawAge[:cols.AgeWidth-1]
+		}
+
+		var ageText string
+		if pr.DaysStale() >= 3 && !pr.CreatedAt.IsZero() {
+			ageText = StaleBadge.Render(rawAge)
+		} else {
+			ageText = rawAge
 		}
 
 		// Review Decision Badge
-		reviewBadge := pr.ReviewDecision
+		var reviewBadge string
 		switch pr.ReviewDecision {
 		case "APPROVED":
 			reviewBadge = ApprovedBadge.Render("APPROVED")
@@ -218,6 +241,9 @@ func (m Model) renderPRsView() string {
 		default:
 			reviewBadge = "-"
 		}
+		if reviewBadge == "" {
+			reviewBadge = "-"
+		}
 
 		// Comments & Unresolved
 		commentsText := fmt.Sprintf("💬 %d/%d", pr.UnresolvedComments, pr.TotalComments)
@@ -225,7 +251,10 @@ func (m Model) renderPRsView() string {
 			commentsText = lipgloss.NewStyle().Foreground(WarningColor).Render(commentsText)
 		}
 
-		labelsText := strings.Join(pr.Labels, ", ")
+		labelsText := "-"
+		if len(pr.Labels) > 0 {
+			labelsText = strings.Join(pr.Labels, ", ")
+		}
 		if len(labelsText) > cols.LabelsWidth-2 && cols.LabelsWidth > 3 {
 			labelsText = labelsText[:cols.LabelsWidth-3] + "…"
 		}
