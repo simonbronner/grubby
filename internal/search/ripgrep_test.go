@@ -74,4 +74,13 @@ func ValidateToken() bool {
 	if len(flatCollapsed) != 2 {
 		t.Errorf("expected 2 flat nodes when file collapsed, got %d", len(flatCollapsed))
 	}
+
+	// Test RenderPreview
+	preview, err := RenderPreview(testFile, 3)
+	if err != nil {
+		t.Fatalf("render preview failed: %v", err)
+	}
+	if len(preview) == 0 {
+		t.Errorf("expected non-empty preview output")
+	}
 }

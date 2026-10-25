@@ -41,6 +41,7 @@ type SearchNode struct {
 	Depth    int
 	Expanded bool
 	RepoName string
+	RepoPath string
 	FilePath string
 	AbsPath  string
 	Match    *LineMatch
@@ -57,6 +58,7 @@ func BuildTree(repos []RepoMatches) []*SearchNode {
 			Depth:    0,
 			Expanded: true,
 			RepoName: r.RepoName,
+			RepoPath: r.RepoPath,
 		}
 
 		for _, f := range r.FileMatches {
@@ -66,6 +68,7 @@ func BuildTree(repos []RepoMatches) []*SearchNode {
 				Depth:    1,
 				Expanded: true,
 				RepoName: r.RepoName,
+				RepoPath: r.RepoPath,
 				FilePath: f.RelPath,
 				AbsPath:  f.AbsPath,
 			}
@@ -77,6 +80,7 @@ func BuildTree(repos []RepoMatches) []*SearchNode {
 					Title:    m.LineText,
 					Depth:    2,
 					RepoName: r.RepoName,
+					RepoPath: r.RepoPath,
 					FilePath: f.RelPath,
 					AbsPath:  f.AbsPath,
 					Match:    &matchCopy,

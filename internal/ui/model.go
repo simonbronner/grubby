@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -435,21 +436,61 @@ func (m Model) renderFooter() string {
 // Helpers for opening in browser or editor
 
 func OpenBrowser(url string) error {
-	return exec.Command("open", url).Start()
+	return OpenInDedicatedBrowser(url)
 }
 
-func OpenInEditor(editor, path string, lineNum int) error {
+func OpenInITermNvim(dir string, filePath string, lineNum int) error {
+	if _, err := os.Stat("/Applications/iTerm.app"); err == nil {
+		var nvimCmd string
+		if filePath != "" && lineNum > 0 {
+			nvimCmd = fmt.Sprintf("cd %q && nvim +%d %q", dir, lineNum, filePath)
+		} else if filePath != "" {
+			nvimCmd = fmt.Sprintf("cd %q && nvim %q", dir, filePath)
+		} else {
+			nvimCmd = fmt.Sprintf("cd %q && nvim .", dir)
+		}
+
+		script := fmt.Sprintf(`
+tell application "iTerm"
+	activate
+	try
+		tell current window
+			create tab with default profile
+			tell current session
+				write text %q
+			end tell
+		end tell
+	on error
+		create window with default profile
+		tell current session of current window
+			write text %q
+		end tell
+	end try
+end tell`, nvimCmd, nvimCmd)
+
+		cmd := exec.Command("osascript", "-e", script)
+		return cmd.Run()
+	}
+
+	// Fallback if iTerm is not installed
+	editor := os.Getenv("EDITOR")
 	if editor == "" {
 		editor = "nvim"
 	}
-	var cmd *exec.Cmd
-	if strings.Contains(editor, "code") {
-		cmd = exec.Command(editor, "-g", fmt.Sprintf("%s:%d", path, lineNum))
-	} else {
-		// vim / nvim
-		cmd = exec.Command(editor, fmt.Sprintf("+%d", lineNum), path)
+	if filePath != "" && lineNum > 0 {
+		return exec.Command(editor, fmt.Sprintf("+%d", lineNum), filePath).Start()
 	}
-	return cmd.Start()
+	return exec.Command(editor, dir).Start()
+}
+
+func OpenInEditor(editor, path string, lineNum int) error {
+	dir := path
+	file := ""
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		dir = filepath.Dir(path)
+		file = path
+	}
+	return OpenInITermNvim(dir, file, lineNum)
 }
 
 func OpenInShell(dir string) error {

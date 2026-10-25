@@ -56,8 +56,12 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			repo := m.Repos[m.RepoCursor]
 			st := m.GitStatuses[repo.Name]
 			if st.IsCloned {
-				_ = OpenInEditor(m.Config.Editor, st.LocalPath, 1)
-				return m, func() tea.Msg { return StatusToastMsg("Opened " + repo.Name + " in editor") }
+				err := OpenInITermNvim(st.LocalPath, "", 0)
+				if err != nil {
+					return m, func() tea.Msg { return StatusToastMsg("Failed to open nvim: " + err.Error()) }
+				}
+				collapsed := config.CollapseHome(st.LocalPath)
+				return m, func() tea.Msg { return StatusToastMsg("Opened nvim in " + collapsed) }
 			} else {
 				return m, func() tea.Msg { return StatusToastMsg("Repo is not cloned yet! Press 'c' to clone.") }
 			}
