@@ -196,23 +196,31 @@ func TestTopBarAndFooterRendering(t *testing.T) {
 	if (!strings.Contains(topBar, "1: Repos") && !strings.Contains(topBar, "1: Repositories")) || !strings.Contains(topBar, "6: Status") {
 		t.Errorf("expected topBar to contain tabs, got:\n%s", topBar)
 	}
-	// Must contain live refresh indicator
-	if !strings.Contains(topBar, "⟳") || !strings.Contains(topBar, "next in") {
-		t.Errorf("expected topBar to contain refresh indicator, got:\n%s", topBar)
+	// Must contain status healthy dot (green)
+	if !strings.Contains(topBar, "●") {
+		t.Errorf("expected topBar to contain status healthy dot ●, got:\n%s", topBar)
+	}
+	// Must contain security vulnerabilities indicator in top bar
+	if !strings.Contains(topBar, "🛡️ Clean") {
+		t.Errorf("expected topBar to contain security summary, got:\n%s", topBar)
+	}
+	// Must contain consolidated refresh & rate limit
+	if !strings.Contains(topBar, "⟳") || (!strings.Contains(topBar, "reqs/h") && !strings.Contains(topBar, "/h")) {
+		t.Errorf("expected topBar to contain consolidated refresh & rate indicator, got:\n%s", topBar)
 	}
 
 	footer := m.renderFooter()
-	// Line 1: Must contain Metadata bar with purely Squad terminology
-	if !strings.Contains(footer, "🏢 my-org") || !strings.Contains(footer, "👥 Squad: backend") {
-		t.Errorf("expected footer to contain metadata with pure squad language, got:\n%s", footer)
-	}
-	// Must NOT contain "Group" in squad context
-	if strings.Contains(footer, "👥 Group:") {
-		t.Errorf("footer should use pure 'Squad' terminology, not 'Group'")
-	}
-	// Line 2: Must contain Squad help shortcuts
+	// Single-line footer: Must contain Squad help shortcuts on left
 	if !strings.Contains(footer, "[m] Manage Squad") {
 		t.Errorf("expected footer to contain [m] Manage Squad help key")
+	}
+	// Right side: Must contain consolidated identity '{username} @ {org} in {squad}'
+	if !strings.Contains(footer, "tester @ my-org in backend") {
+		t.Errorf("expected footer to contain consolidated identity 'tester @ my-org in backend', got:\n%s", footer)
+	}
+	// The separate metadata bar line must be gone (single-line footer, no newline)
+	if strings.Contains(footer, "\n") {
+		t.Errorf("expected single-line footer without separate metadata bar, got multiline footer:\n%s", footer)
 	}
 }
 

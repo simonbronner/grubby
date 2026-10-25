@@ -93,6 +93,22 @@ var (
 			Foreground(DangerColor).
 			Bold(true)
 
+	// Status Dots for Tabs
+	StatusHealthyDot = lipgloss.NewStyle().
+				Foreground(SuccessColor).
+				Bold(true)
+
+	StatusDegradedDot = lipgloss.NewStyle().
+				Foreground(WarningColor).
+				Bold(true)
+
+	StatusOutageDot = lipgloss.NewStyle().
+			Foreground(DangerColor).
+			Bold(true)
+
+	StatusUnknownDot = lipgloss.NewStyle().
+				Foreground(MutedColor)
+
 	GroupTagBadge = lipgloss.NewStyle().
 			Background(lipgloss.Color("#302B4B")).
 			Foreground(SecondaryColor).

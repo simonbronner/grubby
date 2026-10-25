@@ -648,29 +648,53 @@ func (m Model) renderTopBar() string {
 		}
 	}
 
-	statusIndicator := "●"
-	if m.GitHubStatus != nil && m.GitHubStatus.Status.Indicator != "none" && m.GitHubStatus.Status.Indicator != "" {
-		statusIndicator = "[!]"
+	// Status dot conveying health: Healthy (green ●) vs Degraded (amber ▲) vs Unavailable (red ✖)
+	var statusDot string
+	if m.GitHubStatus == nil {
+		statusDot = StatusUnknownDot.Render("○")
+	} else {
+		switch m.GitHubStatus.Status.Indicator {
+		case "none", "":
+			statusDot = StatusHealthyDot.Render("●")
+		case "minor":
+			statusDot = StatusDegradedDot.Render("▲")
+		case "major", "critical":
+			statusDot = StatusOutageDot.Render("✖")
+		default:
+			statusDot = StatusDegradedDot.Render("▲")
+		}
 	}
 
 	var tabs []string
-	if m.Width >= 135 {
+	if m.Width >= 140 {
 		tabs = []string{
 			"1: Repositories",
 			fmt.Sprintf("2: Pull Requests (%d)", len(m.PRs)),
 			"3: Squad Activity",
 			"4: Code Search",
 			fmt.Sprintf("5: Notifications (%d)", unreadNotifs),
-			fmt.Sprintf("6: Status %s", statusIndicator),
+			fmt.Sprintf("6: Status %s", statusDot),
+		}
+	} else if m.Width >= 115 {
+		prCountStr := ""
+		if len(m.PRs) > 0 {
+			prCountStr = fmt.Sprintf(" (%d)", len(m.PRs))
+		}
+		notifCountStr := ""
+		if unreadNotifs > 0 {
+			notifCountStr = fmt.Sprintf(" (%d)", unreadNotifs)
+		}
+		tabs = []string{
+			"1: Repos",
+			fmt.Sprintf("2: PRs%s", prCountStr),
+			"3: Squad",
+			"4: Search",
+			fmt.Sprintf("5: Notifs%s", notifCountStr),
+			fmt.Sprintf("6: Status %s", statusDot),
 		}
 	} else {
 		tabs = []string{
-			"1: Repos",
-			fmt.Sprintf("2: PRs (%d)", len(m.PRs)),
-			"3: Squad",
-			"4: Search",
-			fmt.Sprintf("5: Notifs (%d)", unreadNotifs),
-			fmt.Sprintf("6: Status %s", statusIndicator),
+			"1: Repos", "2: PRs", "3: Squad", "4: Search", "5: Notifs", fmt.Sprintf("6: %s", statusDot),
 		}
 	}
 
@@ -684,68 +708,9 @@ func (m Model) renderTopBar() string {
 	}
 
 	tabsRow := lipgloss.JoinHorizontal(lipgloss.Top, renderedTabs...)
-
-	// 3. Live count-up and countdown to next auto-refresh on the right
-	var refreshText string
-	if m.Loading {
-		refreshText = lipgloss.NewStyle().Foreground(WarningColor).Render("⟳ Refreshing...")
-	} else if !m.LastRefreshTime.IsZero() {
-		sinceLast := time.Since(m.LastRefreshTime)
-		const autoInterval = 5 * time.Minute
-		untilNext := autoInterval - sinceLast
-		if untilNext < 0 {
-			untilNext = 0
-		}
-
-		var sinceStr string
-		if sinceLast < time.Minute {
-			sinceStr = fmt.Sprintf("%ds ago", int(sinceLast.Seconds()))
-		} else {
-			sinceStr = fmt.Sprintf("%dm ago", int(sinceLast.Minutes()))
-		}
-
-		mins := int(untilNext.Minutes())
-		secs := int(untilNext.Seconds()) % 60
-		untilStr := fmt.Sprintf("%d:%02d", mins, secs)
-
-		refreshText = lipgloss.NewStyle().Foreground(MutedColor).Render(fmt.Sprintf("⟳ %s (next in %s)", sinceStr, untilStr))
-	}
-
 	leftPart := lipgloss.JoinHorizontal(lipgloss.Top, hobbitBadge, "  ", tabsRow)
-	leftWidth := lipgloss.Width(leftPart)
-	rightWidth := lipgloss.Width(refreshText)
 
-	var fullLine string
-	if m.Width >= leftWidth+rightWidth+1 {
-		padding := m.Width - leftWidth - rightWidth
-		fullLine = leftPart + strings.Repeat(" ", padding) + refreshText
-	} else if rightWidth > 0 && m.Width >= leftWidth+rightWidth {
-		fullLine = leftPart + refreshText
-	} else {
-		fullLine = leftPart
-	}
-
-	return TabBarBorder.Render(fullLine)
-}
-
-func (m Model) renderFooter() string {
-	// Line 1: Metadata row (moved from formerly busy top row)
-	orgItem := MetaBarStyle.Render("🏢 " + m.CurrentOrg)
-
-	watchedSquad := "None"
-	if s := m.Config.GetActiveSquad(); s != nil {
-		watchedSquad = s.DisplayName
-	}
-	squadItem := MetaBarStyle.Render("👥 Squad: " + watchedSquad)
-
-	prCount := len(m.PRs)
-	var prItem string
-	if prCount > 0 {
-		prItem = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render(fmt.Sprintf("⑂ %d Open PRs", prCount))
-	} else {
-		prItem = lipgloss.NewStyle().Foreground(MutedColor).Render("⑂ 0 PRs")
-	}
-
+	// 3. Security vulnerabilities indicator placed between tabs and refresh
 	totalCrit := 0
 	totalHigh := 0
 	totalMedRest := 0
@@ -759,7 +724,7 @@ func (m Model) renderFooter() string {
 
 	var secItem string
 	if totalAlerts == 0 {
-		secItem = lipgloss.NewStyle().Foreground(SuccessColor).Render("🛡️ 0 Alerts [✓ clean]")
+		secItem = lipgloss.NewStyle().Foreground(SuccessColor).Render("🛡️ Clean")
 	} else {
 		var parts []string
 		if totalCrit > 0 {
@@ -774,40 +739,86 @@ func (m Model) renderFooter() string {
 		secItem = "🛡️ " + strings.Join(parts, " ")
 	}
 
-	user := m.AuthUser
-	if user == "" {
-		user = m.CurrentOrg
-	}
-
+	// 4. Consolidated Refresh + Requests Per Hour on the far right
 	reqsLastHour := 0
 	if m.RateLimit.Limit > 0 && m.RateLimit.Limit >= m.RateLimit.Remaining {
 		reqsLastHour = m.RateLimit.Limit - m.RateLimit.Remaining
 	}
 
-	var userItem string
-	if m.Width >= 110 {
-		userItem = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render("👤 @"+user) +
-			" " + MetaBarStyle.Render(fmt.Sprintf("(%d reqs/h)", reqsLastHour))
+	var reqsStr string
+	if m.Width >= 130 {
+		reqsStr = fmt.Sprintf("%d reqs/h", reqsLastHour)
 	} else {
-		userItem = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render("👤 @" + user)
+		reqsStr = fmt.Sprintf("%d/h", reqsLastHour)
 	}
 
-	var metaItems []string
-	if m.Width >= 100 {
-		metaItems = []string{orgItem, squadItem, prItem, secItem, userItem}
+	var refreshStr string
+	if m.Loading {
+		refreshStr = "⟳ Refreshing..."
+	} else if !m.LastRefreshTime.IsZero() {
+		sinceLast := time.Since(m.LastRefreshTime)
+		const autoInterval = 5 * time.Minute
+		untilNext := autoInterval - sinceLast
+		if untilNext < 0 {
+			untilNext = 0
+		}
+
+		var sinceStr string
+		if sinceLast < time.Minute {
+			sinceStr = fmt.Sprintf("%ds", int(sinceLast.Seconds()))
+		} else {
+			sinceStr = fmt.Sprintf("%dm", int(sinceLast.Minutes()))
+		}
+
+		mins := int(untilNext.Minutes())
+		secs := int(untilNext.Seconds()) % 60
+		refreshStr = fmt.Sprintf("⟳ %s (%d:%02d)", sinceStr, mins, secs)
 	} else {
-		metaItems = []string{orgItem, prItem, secItem, userItem}
+		refreshStr = "⟳ Ready"
 	}
 
-	metaBar := distributeEvenly(metaItems, m.Width)
-	metaBarStyled := lipgloss.NewStyle().Background(DarkBgColor).Width(m.Width).Render(metaBar)
+	rightText := lipgloss.NewStyle().Foreground(MutedColor).Render(fmt.Sprintf("%s • %s", refreshStr, reqsStr))
 
-	// Line 2: Contextual keybindings help bar & Toast
+	leftWidth := lipgloss.Width(leftPart)
+	secWidth := lipgloss.Width(secItem)
+	rightWidth := lipgloss.Width(rightText)
+
+	var fullLine string
+	if m.Width >= leftWidth+secWidth+rightWidth+2 {
+		// Three-way layout: LeftPart ... SecItem ... RightText
+		avail := m.Width - leftWidth - secWidth - rightWidth
+		gap1 := avail / 2
+		if gap1 < 1 {
+			gap1 = 1
+		}
+		gap2 := avail - gap1
+		if gap2 < 1 {
+			gap2 = 1
+		}
+		fullLine = leftPart + strings.Repeat(" ", gap1) + secItem + strings.Repeat(" ", gap2) + rightText
+	} else if m.Width >= leftWidth+secWidth+2 {
+		padding := m.Width - leftWidth - secWidth
+		fullLine = leftPart + strings.Repeat(" ", padding) + secItem
+	} else if m.Width >= leftWidth+rightWidth+2 {
+		padding := m.Width - leftWidth - rightWidth
+		fullLine = leftPart + strings.Repeat(" ", padding) + rightText
+	} else if rightWidth > 0 && m.Width >= leftWidth+rightWidth {
+		fullLine = leftPart + rightText
+	} else {
+		fullLine = leftPart
+	}
+
+	return TabBarBorder.Render(fullLine)
+}
+
+func (m Model) renderFooter() string {
+	// Single-line efficient footer
+	// Left: Contextual hotkeys & toast message
 	var help string
 	switch m.ActiveTab {
 	case TabRepos:
 		if m.RepoFilter != "" || m.RepoGroupFilter != "" || m.RepoSortVulnerabilities {
-			help = "[v] View Group  [f] Filter  [s] Sort Vulns  [Esc] Clear Filter  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [e] Editor  [t] Shell  [?] Help"
+			help = "[v] View Group  [f] Filter  [s] Sort Vulns  [Esc] Clear  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [e] Editor  [t] Shell  [?] Help"
 		} else {
 			help = "[v] View Group  [f] Filter  [s] Sort Vulns  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [e] Editor  [t] Shell  [u] Sync  [?] Help"
 		}
@@ -818,7 +829,7 @@ func (m Model) renderFooter() string {
 			help = "[f] Filter  [o] Browser  [p] Copilot Review  [c] Checkout Branch  [r] Refresh  [?] Help"
 		}
 	case TabSquad:
-		help = "[m] Manage Squad  [s] Switch Squad  [n] New Squad  [a] Add Member  [d] Remove Member  [r] Refresh  [?] Help"
+		help = "[m] Manage Squad  [s] Switch Squad  [n] New Squad  [r] Refresh  [?] Help"
 	case TabSearch:
 		help = "[/] Query  [j/k] Nodes  [h/l/Space] Toggle  [Tab] Switch Viewport  [Enter] Open Editor  [?] Help"
 	case TabNotifications:
@@ -832,8 +843,32 @@ func (m Model) renderFooter() string {
 		toast = "  |  " + lipgloss.NewStyle().Foreground(WarningColor).Bold(true).Render(m.StatusMsg)
 	}
 
-	helpLine := FooterStyle.Render(help + toast)
-	return lipgloss.JoinVertical(lipgloss.Left, metaBarStyled, helpLine)
+	leftFooter := FooterStyle.Render(help + toast)
+
+	// Right: Consolidated user identity: '{username} @ {org} in {squad}'
+	user := m.AuthUser
+	if user == "" {
+		user = m.CurrentOrg
+	}
+	watchedSquad := "None"
+	if s := m.Config.GetActiveSquad(); s != nil {
+		watchedSquad = s.DisplayName
+	}
+	identityText := fmt.Sprintf("%s @ %s in %s", user, m.CurrentOrg, watchedSquad)
+	rightFooter := lipgloss.NewStyle().Foreground(lipgloss.Color("#7A7A8C")).Render(identityText)
+
+	leftWidth := lipgloss.Width(leftFooter)
+	rightWidth := lipgloss.Width(rightFooter)
+
+	var footerLine string
+	if m.Width >= leftWidth+rightWidth+2 {
+		padding := m.Width - leftWidth - rightWidth
+		footerLine = leftFooter + strings.Repeat(" ", padding) + rightFooter
+	} else {
+		footerLine = leftFooter
+	}
+
+	return footerLine
 }
 
 func distributeEvenly(items []string, totalWidth int) string {
