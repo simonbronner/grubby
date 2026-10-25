@@ -29,6 +29,7 @@ const (
 	TabSquad
 	TabSearch
 	TabNotifications
+	TabStatus
 )
 
 type ModalType int
@@ -44,6 +45,7 @@ const (
 	ModalFilterRepoName
 	ModalFilterPR
 	ModalCreateSquad
+	ModalManageSquad
 )
 
 // Async messages
@@ -66,6 +68,11 @@ type DataLoadedMsg struct {
 	Err           error
 }
 
+type GitHubStatusLoadedMsg struct {
+	Summary *github.StatusSummary
+	Err     error
+}
+
 type GitStatusUpdatedMsg struct {
 	Statuses map[string]git.RepoGitStatus
 }
@@ -81,7 +88,7 @@ type StatusToastMsg string
 type AutoRefreshTickMsg time.Time
 
 func autoRefreshTickCmd() tea.Cmd {
-	return tea.Tick(30*time.Second, func(t time.Time) tea.Msg {
+	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
 		return AutoRefreshTickMsg(t)
 	})
 }
@@ -108,6 +115,17 @@ type Model struct {
 	Loading             bool
 	InitialDataLoaded   bool
 	LastRefreshTime     time.Time
+
+	// GitHub Status
+	GitHubStatus          *github.StatusSummary
+	LastStatusCheck       time.Time
+	PrevComponentStatuses map[string]string
+	StatusCursor          int
+
+	// Squad Management
+	ManagedSquadName     string
+	SquadManageMode      int
+	SelectedSquadMembers map[string]bool
 
 	// Navigation & Cursors
 	RepoCursor              int
@@ -180,26 +198,29 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 	sp.Style = lipgloss.NewStyle().Foreground(SecondaryColor)
 
 	m := Model{
-		ActiveTab:           TabRepos,
-		Config:              cfg,
-		GHClient:            gh,
-		GitMgr:              gitMgr,
-		SearchEng:           search.NewRipgrepEngine(),
-		CurrentOrg:          org,
-		AuthUser:            org,
-		GitStatuses:         make(map[string]git.RepoGitStatus),
-		SecuritySummaries:   make(map[string]github.SecurityAlertSummary),
-		SeenNotificationIDs: make(map[string]bool),
-		Loading:             true,
-		InitialDataLoaded:   false,
-		LastRefreshTime:     time.Now(),
-		SearchInput:         si,
-		ModalInput:          mi,
-		RepoFilterInput:     rfi,
-		PRFilterInput:       prfi,
-		SearchPreview:       vp,
-		SelectedRepoGroups:  make(map[string]bool),
-		Spinner:             sp,
+		ActiveTab:             TabRepos,
+		Config:                cfg,
+		GHClient:              gh,
+		GitMgr:                gitMgr,
+		SearchEng:             search.NewRipgrepEngine(),
+		CurrentOrg:            org,
+		AuthUser:              org,
+		GitStatuses:           make(map[string]git.RepoGitStatus),
+		SecuritySummaries:     make(map[string]github.SecurityAlertSummary),
+		SeenNotificationIDs:   make(map[string]bool),
+		Loading:               true,
+		InitialDataLoaded:     false,
+		LastRefreshTime:       time.Now(),
+		LastStatusCheck:       time.Now().Add(-2 * time.Minute), // trigger status fetch right away
+		PrevComponentStatuses: make(map[string]string),
+		SelectedSquadMembers:  make(map[string]bool),
+		SearchInput:           si,
+		ModalInput:            mi,
+		RepoFilterInput:       rfi,
+		PRFilterInput:         prfi,
+		SearchPreview:         vp,
+		SelectedRepoGroups:    make(map[string]bool),
+		Spinner:               sp,
 	}
 
 	return m
@@ -208,10 +229,23 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.loadDataCmd(),
+		m.fetchGitHubStatusCmd(),
 		textinput.Blink,
 		m.Spinner.Tick,
 		autoRefreshTickCmd(),
 	)
+}
+
+func (m Model) fetchGitHubStatusCmd() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		summary, err := m.GHClient.FetchStatus(ctx)
+		return GitHubStatusLoadedMsg{
+			Summary: summary,
+			Err:     err,
+		}
+	}
 }
 
 func (m Model) loadDataCmd() tea.Cmd {
@@ -318,14 +352,80 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case AutoRefreshTickMsg:
+		var cmds []tea.Cmd
+		cmds = append(cmds, autoRefreshTickCmd())
+
+		// Poll GitHub Status every 60 seconds
+		if time.Since(m.LastStatusCheck) >= 60*time.Second {
+			m.LastStatusCheck = time.Now()
+			cmds = append(cmds, m.fetchGitHubStatusCmd())
+		}
+
+		// Auto-refresh main GitHub data every 5 minutes
 		if time.Since(m.LastRefreshTime) >= 5*time.Minute && !m.Loading {
 			m.Loading = true
 			m.LastRefreshTime = time.Now()
 			m.StatusMsg = "Auto-refreshing data from GitHub..."
 			m.StatusMsgTimer = time.Now().Add(4 * time.Second)
-			return m, tea.Batch(m.loadDataCmd(), m.Spinner.Tick, autoRefreshTickCmd())
+			cmds = append(cmds, m.loadDataCmd(), m.Spinner.Tick)
 		}
-		return m, autoRefreshTickCmd()
+		return m, tea.Batch(cmds...)
+
+	case GitHubStatusLoadedMsg:
+		if msg.Err == nil && msg.Summary != nil {
+			m.GitHubStatus = msg.Summary
+
+			// Detect service status changes
+			if len(m.PrevComponentStatuses) > 0 {
+				for _, comp := range msg.Summary.Components {
+					if comp.Group || comp.Name == "Visit www.githubstatus.com for more information" {
+						continue
+					}
+					prev, known := m.PrevComponentStatuses[comp.Name]
+					if known && prev != comp.Status {
+						if comp.Status != "operational" {
+							title := fmt.Sprintf("GitHub Alert: %s Degraded", comp.Name)
+							desc := fmt.Sprintf("Service is now %s (%s)", comp.Status, comp.Description)
+							SendNativeNotification("Grubby • GitHub Status Alert", title, desc)
+							m.StatusMsg = "⚠️ " + title + " (" + comp.Status + ")"
+							m.StatusMsgTimer = time.Now().Add(8 * time.Second)
+							m.Notifications = append([]github.Notification{{
+								ID:         fmt.Sprintf("gh-status-%s-%d", comp.ID, time.Now().Unix()),
+								Repository: "githubstatus.com",
+								Title:      title + ": " + comp.Status,
+								Type:       "ServiceAlert",
+								Unread:     true,
+								UpdatedAt:  time.Now(),
+								URL:        "https://www.githubstatus.com",
+							}}, m.Notifications...)
+						} else if prev != "operational" {
+							title := fmt.Sprintf("GitHub Resolved: %s Operational", comp.Name)
+							SendNativeNotification("Grubby • GitHub Status Restored", title, "Service restored to operational")
+							m.StatusMsg = "✅ " + title
+							m.StatusMsgTimer = time.Now().Add(8 * time.Second)
+							m.Notifications = append([]github.Notification{{
+								ID:         fmt.Sprintf("gh-status-res-%s-%d", comp.ID, time.Now().Unix()),
+								Repository: "githubstatus.com",
+								Title:      title,
+								Type:       "ServiceRestored",
+								Unread:     true,
+								UpdatedAt:  time.Now(),
+								URL:        "https://www.githubstatus.com",
+							}}, m.Notifications...)
+						}
+					}
+				}
+			}
+
+			// Store latest statuses
+			if m.PrevComponentStatuses == nil {
+				m.PrevComponentStatuses = make(map[string]string)
+			}
+			for _, comp := range msg.Summary.Components {
+				m.PrevComponentStatuses[comp.Name] = comp.Status
+			}
+		}
+		return m, nil
 
 	case DataLoadedMsg:
 		m.Loading = false
@@ -455,11 +555,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "5":
 			m.ActiveTab = TabNotifications
 			return m, nil
+		case "6":
+			m.ActiveTab = TabStatus
+			return m, nil
 		case "tab":
-			m.ActiveTab = (m.ActiveTab + 1) % 5
+			m.ActiveTab = (m.ActiveTab + 1) % 6
 			return m, nil
 		case "shift+tab":
-			m.ActiveTab = (m.ActiveTab + 4) % 5
+			m.ActiveTab = (m.ActiveTab + 5) % 6
 			return m, nil
 		case "?":
 			m.ActiveModal = ModalHelp
@@ -467,9 +570,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			m.Loading = true
 			m.LastRefreshTime = time.Now()
+			m.LastStatusCheck = time.Now()
 			m.StatusMsg = "Refreshing data from GitHub..."
 			m.StatusMsgTimer = time.Now().Add(5 * time.Second)
-			return m, tea.Batch(m.loadDataCmd(), m.Spinner.Tick)
+			return m, tea.Batch(m.loadDataCmd(), m.fetchGitHubStatusCmd(), m.Spinner.Tick)
 		}
 
 		// Tab-Specific Key Handling
@@ -484,6 +588,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleSearchKeys(msg)
 		case TabNotifications:
 			return m.handleNotificationsKeys(msg)
+		case TabStatus:
+			return m.handleStatusKeys(msg)
 		}
 	}
 
@@ -501,8 +607,7 @@ func (m Model) View() string {
 		return m.renderSplashScreen()
 	}
 
-	header := m.renderHeader()
-	tabBar := m.renderTabBar()
+	topBar := m.renderTopBar()
 
 	var body string
 	switch m.ActiveTab {
@@ -516,11 +621,13 @@ func (m Model) View() string {
 		body = m.renderSearchView()
 	case TabNotifications:
 		body = m.renderNotificationsView()
+	case TabStatus:
+		body = m.renderStatusView()
 	}
 
 	footer := m.renderFooter()
 
-	baseView := lipgloss.JoinVertical(lipgloss.Left, header, tabBar, body, footer)
+	baseView := lipgloss.JoinVertical(lipgloss.Left, topBar, body, footer)
 
 	if m.ActiveModal != ModalNone {
 		return m.renderModalOverlay(baseView)
@@ -529,21 +636,108 @@ func (m Model) View() string {
 	return baseView
 }
 
-func (m Model) renderHeader() string {
-	// 1. Hobbit avatar mascot replacing "GRUBBY"
+func (m Model) renderTopBar() string {
+	// 1. Hobbit avatar mascot on the left
 	hobbitBadge := HeaderStyle.Render(" ᘛ( ᵔ ᴗ ᵔ*)ᘚ ")
 
-	// 2. Organization with icon
+	// 2. Tabs immediately to the right of the mascot
+	unreadNotifs := 0
+	for _, n := range m.Notifications {
+		if n.Unread {
+			unreadNotifs++
+		}
+	}
+
+	statusIndicator := "●"
+	if m.GitHubStatus != nil && m.GitHubStatus.Status.Indicator != "none" && m.GitHubStatus.Status.Indicator != "" {
+		statusIndicator = "[!]"
+	}
+
+	var tabs []string
+	if m.Width >= 135 {
+		tabs = []string{
+			"1: Repositories",
+			fmt.Sprintf("2: Pull Requests (%d)", len(m.PRs)),
+			"3: Squad Activity",
+			"4: Code Search",
+			fmt.Sprintf("5: Notifications (%d)", unreadNotifs),
+			fmt.Sprintf("6: Status %s", statusIndicator),
+		}
+	} else {
+		tabs = []string{
+			"1: Repos",
+			fmt.Sprintf("2: PRs (%d)", len(m.PRs)),
+			"3: Squad",
+			"4: Search",
+			fmt.Sprintf("5: Notifs (%d)", unreadNotifs),
+			fmt.Sprintf("6: Status %s", statusIndicator),
+		}
+	}
+
+	var renderedTabs []string
+	for i, t := range tabs {
+		if TabType(i) == m.ActiveTab {
+			renderedTabs = append(renderedTabs, ActiveTabStyle.Render(t))
+		} else {
+			renderedTabs = append(renderedTabs, InactiveTabStyle.Render(t))
+		}
+	}
+
+	tabsRow := lipgloss.JoinHorizontal(lipgloss.Top, renderedTabs...)
+
+	// 3. Live count-up and countdown to next auto-refresh on the right
+	var refreshText string
+	if m.Loading {
+		refreshText = lipgloss.NewStyle().Foreground(WarningColor).Render("⟳ Refreshing...")
+	} else if !m.LastRefreshTime.IsZero() {
+		sinceLast := time.Since(m.LastRefreshTime)
+		const autoInterval = 5 * time.Minute
+		untilNext := autoInterval - sinceLast
+		if untilNext < 0 {
+			untilNext = 0
+		}
+
+		var sinceStr string
+		if sinceLast < time.Minute {
+			sinceStr = fmt.Sprintf("%ds ago", int(sinceLast.Seconds()))
+		} else {
+			sinceStr = fmt.Sprintf("%dm ago", int(sinceLast.Minutes()))
+		}
+
+		mins := int(untilNext.Minutes())
+		secs := int(untilNext.Seconds()) % 60
+		untilStr := fmt.Sprintf("%d:%02d", mins, secs)
+
+		refreshText = lipgloss.NewStyle().Foreground(MutedColor).Render(fmt.Sprintf("⟳ %s (next in %s)", sinceStr, untilStr))
+	}
+
+	leftPart := lipgloss.JoinHorizontal(lipgloss.Top, hobbitBadge, "  ", tabsRow)
+	leftWidth := lipgloss.Width(leftPart)
+	rightWidth := lipgloss.Width(refreshText)
+
+	var fullLine string
+	if m.Width >= leftWidth+rightWidth+1 {
+		padding := m.Width - leftWidth - rightWidth
+		fullLine = leftPart + strings.Repeat(" ", padding) + refreshText
+	} else if rightWidth > 0 && m.Width >= leftWidth+rightWidth {
+		fullLine = leftPart + refreshText
+	} else {
+		fullLine = leftPart
+	}
+
+	return TabBarBorder.Render(fullLine)
+}
+
+func (m Model) renderFooter() string {
+	// Line 1: Metadata row (moved from formerly busy top row)
 	orgItem := MetaBarStyle.Render("🏢 " + m.CurrentOrg)
 
-	// 3. Squad with icon
 	watchedSquad := "None"
 	if s := m.Config.GetActiveSquad(); s != nil {
 		watchedSquad = s.DisplayName
 	}
-	squadItem := MetaBarStyle.Render("👥 " + watchedSquad)
+	squadItem := MetaBarStyle.Render("👥 Squad: " + watchedSquad)
 
-	// 4. Summary of total open pull requests
 	prCount := len(m.PRs)
 	var prItem string
 	if prCount > 0 {
@@ -552,7 +746,6 @@ func (m Model) renderHeader() string {
 		prItem = lipgloss.NewStyle().Foreground(MutedColor).Render("⑂ 0 PRs")
 	}
 
-	// 5. Summary of total outstanding security issues across all repos
 	totalCrit := 0
 	totalHigh := 0
 	totalMedRest := 0
@@ -581,7 +774,6 @@ func (m Model) renderHeader() string {
 		secItem = "🛡️ " + strings.Join(parts, " ")
 	}
 
-	// 6. Logged-in GitHub user and rate quota
 	user := m.AuthUser
 	if user == "" {
 		user = m.CurrentOrg
@@ -600,15 +792,48 @@ func (m Model) renderHeader() string {
 		userItem = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render("👤 @" + user)
 	}
 
-	// Assemble header items evenly distributed across line 1
-	var items []string
+	var metaItems []string
 	if m.Width >= 100 {
-		items = []string{hobbitBadge, orgItem, squadItem, prItem, secItem, userItem}
+		metaItems = []string{orgItem, squadItem, prItem, secItem, userItem}
 	} else {
-		items = []string{hobbitBadge, orgItem, prItem, secItem, userItem}
+		metaItems = []string{orgItem, prItem, secItem, userItem}
 	}
 
-	return distributeEvenly(items, m.Width)
+	metaBar := distributeEvenly(metaItems, m.Width)
+	metaBarStyled := lipgloss.NewStyle().Background(DarkBgColor).Width(m.Width).Render(metaBar)
+
+	// Line 2: Contextual keybindings help bar & Toast
+	var help string
+	switch m.ActiveTab {
+	case TabRepos:
+		if m.RepoFilter != "" || m.RepoGroupFilter != "" || m.RepoSortVulnerabilities {
+			help = "[v] View Group  [f] Filter  [s] Sort Vulns  [Esc] Clear Filter  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [e] Editor  [t] Shell  [?] Help"
+		} else {
+			help = "[v] View Group  [f] Filter  [s] Sort Vulns  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [e] Editor  [t] Shell  [u] Sync  [?] Help"
+		}
+	case TabPRs:
+		if m.PRFilter != "" {
+			help = "[f] Filter  [Esc] Clear Filter  [o] Browser  [p] Copilot Review  [c] Checkout Branch  [?] Help"
+		} else {
+			help = "[f] Filter  [o] Browser  [p] Copilot Review  [c] Checkout Branch  [r] Refresh  [?] Help"
+		}
+	case TabSquad:
+		help = "[m] Manage Squad  [s] Switch Squad  [n] New Squad  [a] Add Member  [d] Remove Member  [r] Refresh  [?] Help"
+	case TabSearch:
+		help = "[/] Query  [j/k] Nodes  [h/l/Space] Toggle  [Tab] Switch Viewport  [Enter] Open Editor  [?] Help"
+	case TabNotifications:
+		help = "[Enter / o] Open in Browser  [m] Mark Read  [M] Mark All Read  [r] Refresh  [?] Help  [q] Quit"
+	case TabStatus:
+		help = "[r] Refresh Status  [o / Enter] Statuspage  [j/k] Navigate  [?] Help  [q] Quit"
+	}
+
+	toast := ""
+	if m.StatusMsg != "" && time.Now().Before(m.StatusMsgTimer) {
+		toast = "  |  " + lipgloss.NewStyle().Foreground(WarningColor).Bold(true).Render(m.StatusMsg)
+	}
+
+	helpLine := FooterStyle.Render(help + toast)
+	return lipgloss.JoinVertical(lipgloss.Left, metaBarStyled, helpLine)
 }
 
 func distributeEvenly(items []string, totalWidth int) string {
@@ -646,67 +871,6 @@ func distributeEvenly(items []string, totalWidth int) string {
 		}
 	}
 	return b.String()
-}
-
-func (m Model) renderTabBar() string {
-	unreadNotifs := 0
-	for _, n := range m.Notifications {
-		if n.Unread {
-			unreadNotifs++
-		}
-	}
-
-	tabs := []string{
-		"1: Repositories",
-		fmt.Sprintf("2: Pull Requests (%d)", len(m.PRs)),
-		"3: Squad Activity",
-		"4: Code Search",
-		fmt.Sprintf("5: Notifications (%d)", unreadNotifs),
-	}
-
-	var renderedTabs []string
-	for i, t := range tabs {
-		if TabType(i) == m.ActiveTab {
-			renderedTabs = append(renderedTabs, ActiveTabStyle.Render(t))
-		} else {
-			renderedTabs = append(renderedTabs, InactiveTabStyle.Render(t))
-		}
-	}
-
-	bar := lipgloss.JoinHorizontal(lipgloss.Top, renderedTabs...)
-	return TabBarBorder.Render(bar)
-}
-
-func (m Model) renderFooter() string {
-	var help string
-	switch m.ActiveTab {
-	case TabRepos:
-		if m.RepoFilter != "" || m.RepoGroupFilter != "" || m.RepoSortVulnerabilities {
-			help = "[v] View Group  [f] Filter  [s] Sort Vulns  [Esc] Clear Filter  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [e] Editor  [t] Shell  [?] Help"
-		} else {
-			help = "[v] View Group  [f] Filter  [s] Sort Vulns  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [e] Editor  [t] Shell  [u] Sync  [?] Help"
-		}
-	case TabPRs:
-		if m.PRFilter != "" {
-			help = "[f] Filter  [Esc] Clear Filter  [o] Browser  [p] Copilot Review  [c] Checkout Branch  [?] Help"
-		} else {
-			help = "[f] Filter  [o] Browser  [p] Copilot Review  [c] Checkout Branch  [r] Refresh  [?] Help"
-		}
-	case TabSquad:
-		help = "[s] Switch Squad  [n] New Squad  [a] Add Member  [d] Remove Member  [r] Refresh  [?] Help"
-	case TabSearch:
-		help = "[/] Query  [j/k] Nodes  [h/l/Space] Toggle  [Tab] Switch Viewport  [Enter] Open Editor  [?] Help"
-	case TabNotifications:
-		help = "[Enter / o] Open in Browser  [m] Mark Read  [M] Mark All Read  [r] Refresh  [?] Help  [q] Quit"
-	}
-
-	toast := ""
-	if m.StatusMsg != "" && time.Now().Before(m.StatusMsgTimer) {
-		toast = "  |  " + lipgloss.NewStyle().Foreground(WarningColor).Bold(true).Render(m.StatusMsg)
-	}
-
-	content := FooterStyle.Render(help + toast)
-	return content
 }
 
 // Helpers for opening in browser or editor

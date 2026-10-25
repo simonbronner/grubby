@@ -43,6 +43,15 @@ func (m Model) handleSquadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.SquadEvents) > 0 {
 			m.SquadCursor = len(m.SquadEvents) - 1
 		}
+	case "m":
+		// Open Manage Squad modal for active squad
+		activeSquad := m.Config.GetActiveSquad()
+		if activeSquad != nil {
+			m.ManagedSquadName = activeSquad.Name
+		}
+		m.SquadManageMode = SquadModeOverview
+		m.ActiveModal = ModalManageSquad
+		return m, nil
 	case "s":
 		// Open Squad switch modal
 		m.ActiveModal = ModalSelectSquad
@@ -55,21 +64,30 @@ func (m Model) handleSquadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.ModalInput.Focus()
 		return m, textinput.Blink
 	case "a":
-		// Open Add member modal with organization member selector
-		m.ActiveModal = ModalAddMember
+		// Open Add member mode in Manage Squad modal
+		activeSquad := m.Config.GetActiveSquad()
+		if activeSquad != nil {
+			m.ManagedSquadName = activeSquad.Name
+		}
+		m.SquadManageMode = SquadModeAdd
 		m.ModalCursor = 0
 		m.ModalInput.Reset()
-		m.ModalInput.Placeholder = "Type to filter org members or enter handle..."
+		m.ModalInput.Placeholder = "Search members or enter handle..."
 		m.ModalInput.Focus()
+		m.SelectedSquadMembers = make(map[string]bool)
+		m.ActiveModal = ModalManageSquad
 		return m, textinput.Blink
 	case "d":
-		// Remove selected member if on squad list
+		// Open Remove member mode in Manage Squad modal
 		activeSquad := m.Config.GetActiveSquad()
-		if activeSquad != nil && len(activeSquad.Members) > 0 {
-			lastMember := activeSquad.Members[len(activeSquad.Members)-1]
-			_ = m.Config.RemoveMemberFromSquad(activeSquad.Name, lastMember)
-			return m, func() tea.Msg { return StatusToastMsg("Removed " + lastMember + " from " + activeSquad.Name) }
+		if activeSquad != nil {
+			m.ManagedSquadName = activeSquad.Name
 		}
+		m.SquadManageMode = SquadModeRemove
+		m.ModalCursor = 0
+		m.SelectedSquadMembers = make(map[string]bool)
+		m.ActiveModal = ModalManageSquad
+		return m, nil
 	case "o":
 		if len(m.SquadEvents) > 0 && m.SquadCursor < len(m.SquadEvents) {
 			ev := m.SquadEvents[m.SquadCursor]
@@ -100,7 +118,7 @@ func (m Model) renderSquadView() string {
 		MetaBarStyle.Render(fmt.Sprintf("  (Members: %s)", membersList)) + "\n"
 
 	if len(m.SquadEvents) == 0 {
-		return banner + "\n  No recent activity recorded for squad members.\n  Press 'a' to add members to this squad, or 's' to switch squads.\n"
+		return banner + "\n  No recent activity recorded for squad members.\n  Press 'm' to manage squad, 's' to switch squads, or 'n' to create a squad.\n"
 	}
 
 	cols := computeSquadColumns(m.Width)

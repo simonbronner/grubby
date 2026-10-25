@@ -124,6 +124,10 @@ func (c *Config) Save() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.filePath == "" {
+		return nil
+	}
+
 	dir := filepath.Dir(c.filePath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("failed to create config dir: %w", err)
@@ -328,8 +332,16 @@ func (c *Config) RemoveMemberFromSquad(squadName, member string) error {
 
 func (c *Config) CreateSquad(name, displayName string, members []string) error {
 	c.mu.Lock()
+	cleanName := strings.TrimSpace(name)
+	if cleanName == "" {
+		c.mu.Unlock()
+		return fmt.Errorf("squad name cannot be empty")
+	}
+	if displayName == "" {
+		displayName = cleanName
+	}
 	for i := range c.Squads {
-		if strings.EqualFold(c.Squads[i].Name, name) {
+		if strings.EqualFold(c.Squads[i].Name, cleanName) {
 			c.Squads[i].DisplayName = displayName
 			c.Squads[i].Members = members
 			c.mu.Unlock()
@@ -337,13 +349,81 @@ func (c *Config) CreateSquad(name, displayName string, members []string) error {
 		}
 	}
 	c.Squads = append(c.Squads, SquadConfig{
-		Name:        name,
+		Name:        cleanName,
 		DisplayName: displayName,
 		Members:     members,
 	})
 	if c.ActiveSquad == "" {
-		c.ActiveSquad = name
+		c.ActiveSquad = cleanName
 	}
 	c.mu.Unlock()
 	return c.Save()
+}
+
+func (c *Config) RenameSquad(oldName, newName string) error {
+	c.mu.Lock()
+
+	cleanNew := strings.TrimSpace(newName)
+	if cleanNew == "" {
+		c.mu.Unlock()
+		return fmt.Errorf("new squad name cannot be empty")
+	}
+
+	for i := range c.Squads {
+		if strings.EqualFold(c.Squads[i].Name, oldName) {
+			c.Squads[i].Name = cleanNew
+			c.Squads[i].DisplayName = cleanNew
+			if strings.EqualFold(c.ActiveSquad, oldName) {
+				c.ActiveSquad = cleanNew
+			}
+			c.mu.Unlock()
+			return c.Save()
+		}
+	}
+	c.mu.Unlock()
+	return fmt.Errorf("squad '%s' not found", oldName)
+}
+
+func (c *Config) DeleteSquad(squadName string) error {
+	c.mu.Lock()
+
+	foundIndex := -1
+	for i := range c.Squads {
+		if strings.EqualFold(c.Squads[i].Name, squadName) {
+			foundIndex = i
+			break
+		}
+	}
+
+	if foundIndex == -1 {
+		c.mu.Unlock()
+		return fmt.Errorf("squad '%s' not found", squadName)
+	}
+
+	c.Squads = append(c.Squads[:foundIndex], c.Squads[foundIndex+1:]...)
+
+	if strings.EqualFold(c.ActiveSquad, squadName) {
+		if len(c.Squads) > 0 {
+			c.ActiveSquad = c.Squads[0].Name
+		} else {
+			c.ActiveSquad = ""
+		}
+	}
+
+	c.mu.Unlock()
+	return c.Save()
+}
+
+func (c *Config) SetSquadMembers(squadName string, members []string) error {
+	c.mu.Lock()
+
+	for i := range c.Squads {
+		if strings.EqualFold(c.Squads[i].Name, squadName) {
+			c.Squads[i].Members = members
+			c.mu.Unlock()
+			return c.Save()
+		}
+	}
+	c.mu.Unlock()
+	return fmt.Errorf("squad '%s' not found", squadName)
 }
