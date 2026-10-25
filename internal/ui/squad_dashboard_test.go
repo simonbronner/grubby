@@ -1,6 +1,10 @@
 package ui
 
 import (
+	"bytes"
+	"image"
+	"image/color"
+	"image/png"
 	"strings"
 	"testing"
 	"time"
@@ -111,5 +115,196 @@ func TestSquadDashboard_TwoWeekAggregation(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "@alice (Alice Smith)") {
 		t.Errorf("expected rendered view to show Alice Smith with handle")
+	}
+}
+
+func TestSquadDashboard_DeterministicSortingJitterFree(t *testing.T) {
+	now := time.Now()
+
+	cfg := &config.Config{
+		ActiveSquad: "infra",
+		Squads: []config.SquadConfig{
+			{
+				Name:        "infra",
+				DisplayName: "Infrastructure",
+				Members:     []string{"member-z", "member-a", "member-m", "member-c"},
+			},
+		},
+	}
+
+	// Create 4 repos with equal total actions, equal commits, equal reviews
+	events := []github.SquadEvent{
+		{Actor: "member-z", Action: "Committed", Repo: "repo-delta", Timestamp: now.Add(-1 * time.Hour)},
+		{Actor: "member-a", Action: "Committed", Repo: "repo-beta", Timestamp: now.Add(-1 * time.Hour)},
+		{Actor: "member-m", Action: "Committed", Repo: "repo-alpha", Timestamp: now.Add(-1 * time.Hour)},
+		{Actor: "member-c", Action: "Committed", Repo: "repo-charlie", Timestamp: now.Add(-1 * time.Hour)},
+	}
+
+	m := Model{
+		Config:      cfg,
+		Width:       120,
+		Height:      30,
+		SquadEvents: events,
+	}
+
+	// Compute dashboard repeatedly across 50 iterations to simulate 1s timer ticks
+	var firstOrder []string
+	var firstMembers []string
+	for i := 0; i < 50; i++ {
+		dash := m.computeSquadDashboard()
+
+		var currentOrder []string
+		for _, r := range dash.ActiveRepos {
+			currentOrder = append(currentOrder, r.RepoName)
+		}
+
+		var currentMembers []string
+		for _, mem := range dash.MemberContributions {
+			currentMembers = append(currentMembers, mem.Login)
+		}
+
+		if i == 0 {
+			firstOrder = currentOrder
+			firstMembers = currentMembers
+			// Verify alphabetical tiebreak: alpha, beta, charlie, delta
+			expectedRepos := []string{"repo-alpha", "repo-beta", "repo-charlie", "repo-delta"}
+			for idx, exp := range expectedRepos {
+				if firstOrder[idx] != exp {
+					t.Fatalf("expected repo #%d to be %s, got %s", idx, exp, firstOrder[idx])
+				}
+			}
+			// Verify alphabetical member tiebreak: member-a, member-c, member-m, member-z
+			expectedMembers := []string{"member-a", "member-c", "member-m", "member-z"}
+			for idx, exp := range expectedMembers {
+				if firstMembers[idx] != exp {
+					t.Fatalf("expected member #%d to be %s, got %s", idx, exp, firstMembers[idx])
+				}
+			}
+		} else {
+			// Ensure order NEVER changes across ticks (jitter-free)
+			for idx := range currentOrder {
+				if currentOrder[idx] != firstOrder[idx] {
+					t.Fatalf("jitter detected at iteration %d: order changed from %v to %v", i, firstOrder, currentOrder)
+				}
+			}
+			for idx := range currentMembers {
+				if currentMembers[idx] != firstMembers[idx] {
+					t.Fatalf("member jitter detected at iteration %d: order changed from %v to %v", i, firstMembers, currentMembers)
+				}
+			}
+		}
+	}
+}
+
+func TestSquadDashboard_BorderIntegrityAndUserDetails(t *testing.T) {
+	now := time.Now()
+
+	cfg := &config.Config{
+		ActiveSquad: "core",
+		Squads: []config.SquadConfig{
+			{
+				Name:        "core",
+				DisplayName: "Core",
+				Members:     []string{"simonb", "octo"},
+			},
+		},
+	}
+
+	m := Model{
+		Config: cfg,
+		Width:  100,
+		Height: 35,
+		OrgMembers: []github.OrgMember{
+			{
+				ID:         "MDQ6VXNlcjEyNDgyMjUz",
+				DatabaseID: 12482253,
+				Login:      "simonb",
+				Name:       "Simon Bronner",
+			},
+			{
+				ID:         "MDQ6VXNlcjU4MzIzMQ==",
+				DatabaseID: 583231,
+				Login:      "octo",
+				Name:       "The Octocat",
+			},
+		},
+		SquadEvents: []github.SquadEvent{
+			{Actor: "simonb", Action: "Committed", Repo: "grubby", Timestamp: now.Add(-1 * time.Hour)},
+		},
+		SquadCursor: 0, // simonb selected
+	}
+
+	rendered := m.renderSquadView()
+
+	// 1. Check user ID and display name
+	if !strings.Contains(rendered, "@simonb (Simon Bronner)") {
+		t.Errorf("expected rendered view to show @simonb (Simon Bronner)")
+	}
+	if !strings.Contains(rendered, "ID: 12482253") {
+		t.Errorf("expected rendered view to show ID: 12482253")
+	}
+	if !strings.Contains(rendered, "@octo (The Octocat)") {
+		t.Errorf("expected rendered view to show @octo (The Octocat)")
+	}
+	if !strings.Contains(rendered, "ID: 583231") {
+		t.Errorf("expected rendered view to show ID: 583231")
+	}
+
+	// 2. Check border alignment integrity
+	lines := strings.Split(rendered, "\n")
+	for lineIdx, line := range lines {
+		// If line contains card box characters, verify proper margin and no broken left indent
+		if strings.Contains(line, "╭") || strings.Contains(line, "│") || strings.Contains(line, "╰") {
+			// Find the index of the first box character
+			boxCharIdx := -1
+			for charIdx, r := range line {
+				if r == '╭' || r == '│' || r == '╰' {
+					boxCharIdx = charIdx
+					break
+				}
+			}
+			// MarginLeft(2) means the border character should always start at column 2 (2 leading spaces)
+			if boxCharIdx != 2 {
+				t.Errorf("broken border alignment on line %d (expected box char at column 2, got column %d): %q", lineIdx, boxCharIdx, line)
+			}
+		}
+	}
+}
+
+func TestAvatar_RenderAndFallback(t *testing.T) {
+	// 1. Create a synthetic 16x16 test image (blue circle on white background)
+	img := image.NewRGBA(image.Rect(0, 0, 16, 16))
+	for y := 0; y < 16; y++ {
+		for x := 0; x < 16; x++ {
+			img.Set(x, y, color.RGBA{R: 50, G: 100, B: 200, A: 255})
+		}
+	}
+	buf := bytes.NewBuffer(nil)
+	if err := png.Encode(buf, img); err != nil {
+		t.Fatalf("png encode error: %v", err)
+	}
+
+	// 2. Test RenderAvatarArt 8x4
+	art, err := RenderAvatarArt(buf.Bytes(), 8, 4, true)
+	if err != nil {
+		t.Fatalf("RenderAvatarArt failed: %v", err)
+	}
+	lines := strings.Split(art, "\n")
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 lines of avatar art, got %d", len(lines))
+	}
+	// Verify ANSI escapes present
+	if !strings.Contains(art, "\x1b[38;2;") {
+		t.Errorf("expected 24-bit TrueColor foreground escape in avatar art")
+	}
+
+	// 3. Test RenderFallbackAvatar
+	fb8x4 := RenderFallbackAvatar(8, 4)
+	fbLines := strings.Split(fb8x4, "\n")
+	if len(fbLines) != 4 {
+		t.Fatalf("expected 4 lines of fallback avatar, got %d", len(fbLines))
+	}
+	if !strings.Contains(fb8x4, "👤") {
+		t.Errorf("expected 👤 icon in fallback avatar")
 	}
 }

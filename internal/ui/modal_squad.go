@@ -149,18 +149,22 @@ func (m Model) handleSelectSquadModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.ActiveModal = ModalNone
 
 			// Trigger refresh of squad activity
-			return m, func() tea.Msg {
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				events, _ := m.GHClient.FetchSquadActivity(ctx, selected.Members, nil)
-				return DataLoadedMsg{
-					Repos:       m.Repos,
-					PRs:         m.PRs,
-					SquadEvents: events,
-					Security:    m.SecuritySummaries,
-					RateLimit:   m.GHClient.RateLimit(),
-				}
-			}
+			return m, tea.Batch(
+				func() tea.Msg {
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					events, _ := m.GHClient.FetchSquadActivity(ctx, selected.Members, nil)
+					return DataLoadedMsg{
+						Repos:       m.Repos,
+						PRs:         m.PRs,
+						SquadEvents: events,
+						OrgMembers:  m.OrgMembers,
+						Security:    m.SecuritySummaries,
+						RateLimit:   m.GHClient.RateLimit(),
+					}
+				},
+				m.fetchSquadAvatarsCmd(selected.Members),
+			)
 		}
 	}
 	return m, nil

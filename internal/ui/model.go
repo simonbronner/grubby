@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -85,6 +86,15 @@ type SearchResultsMsg struct {
 
 type StatusToastMsg string
 
+type AvatarLoadedMsg struct {
+	Login string
+	Art   string
+}
+
+type ProfilesLoadedMsg struct {
+	Profiles map[string]github.OrgMember
+}
+
 type AutoRefreshTickMsg time.Time
 
 func autoRefreshTickCmd() tea.Cmd {
@@ -109,6 +119,8 @@ type Model struct {
 	SecuritySummaries   map[string]github.SecurityAlertSummary
 	Notifications       []github.Notification
 	OrgMembers          []github.OrgMember
+	AvatarCache         map[string]string            // login -> rendered ANSI 24-bit half-block art
+	ProfileCache        map[string]github.OrgMember  // login -> enriched profile (id, name, avatarUrl)
 	SeenNotificationIDs map[string]bool
 	GitStatuses         map[string]git.RepoGitStatus
 	RateLimit           github.RateLimitInfo
@@ -208,6 +220,8 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 		GitStatuses:           make(map[string]git.RepoGitStatus),
 		SecuritySummaries:     make(map[string]github.SecurityAlertSummary),
 		SeenNotificationIDs:   make(map[string]bool),
+		AvatarCache:           make(map[string]string),
+		ProfileCache:          make(map[string]github.OrgMember),
 		Loading:               true,
 		InitialDataLoaded:     false,
 		LastRefreshTime:       time.Now(),
@@ -294,6 +308,34 @@ func (m Model) loadDataCmd() tea.Cmd {
 			if pr.Author != "" && !seenMembers[strings.ToLower(pr.Author)] {
 				seenMembers[strings.ToLower(pr.Author)] = true
 				orgMembers = append(orgMembers, github.OrgMember{Login: pr.Author, Name: pr.Author})
+			}
+		}
+
+		// Enrich squad member profiles with ID, full name, and avatar URL
+		if len(members) > 0 {
+			if squadProfiles, err := m.GHClient.FetchUserProfiles(ctx, members); err == nil {
+				for _, sp := range squadProfiles {
+					spLower := strings.ToLower(sp.Login)
+					if !seenMembers[spLower] {
+						seenMembers[spLower] = true
+						orgMembers = append(orgMembers, sp)
+					} else {
+						for i, om := range orgMembers {
+							if strings.EqualFold(om.Login, sp.Login) {
+								if sp.Name != "" {
+									orgMembers[i].Name = sp.Name
+								}
+								if sp.FormattedID() != "" {
+									orgMembers[i].ID = sp.ID
+									orgMembers[i].DatabaseID = sp.DatabaseID
+								}
+								if sp.AvatarURL != "" {
+									orgMembers[i].AvatarURL = sp.AvatarURL
+								}
+							}
+						}
+					}
+				}
 			}
 		}
 
@@ -491,6 +533,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			names = append(names, r.Name)
 		}
 		cmds = append(cmds, m.scanWorkspacesCmd(names))
+
+		// Seed ProfileCache
+		for _, om := range m.OrgMembers {
+			m.ProfileCache[strings.ToLower(om.Login)] = om
+		}
+
+		// Trigger avatar downloads for active squad members
+		var squadLogins []string
+		if activeSquad := m.Config.GetActiveSquad(); activeSquad != nil {
+			squadLogins = activeSquad.Members
+		}
+		if len(squadLogins) > 0 && m.GHClient != nil {
+			cmds = append(cmds, m.fetchSquadAvatarsCmd(squadLogins))
+		}
+
+	case AvatarLoadedMsg:
+		if msg.Art != "" {
+			if m.AvatarCache == nil {
+				m.AvatarCache = make(map[string]string)
+			}
+			m.AvatarCache[strings.ToLower(msg.Login)] = msg.Art
+		}
+		return m, nil
+
+	case ProfilesLoadedMsg:
+		if m.ProfileCache == nil {
+			m.ProfileCache = make(map[string]github.OrgMember)
+		}
+		for _, p := range msg.Profiles {
+			m.ProfileCache[strings.ToLower(p.Login)] = p
+		}
+		return m, nil
 
 	case GitStatusUpdatedMsg:
 		m.GitStatuses = msg.Statuses
@@ -994,4 +1068,55 @@ end tell`, dir, dir)
 		return exec.Command("open", "-a", "iTerm", dir).Start()
 	}
 	return exec.Command("open", "-a", "Terminal", dir).Start()
+}
+
+func (m Model) fetchSquadAvatarsCmd(logins []string) tea.Cmd {
+	if m.GHClient == nil {
+		return nil
+	}
+	var cmds []tea.Cmd
+	for _, login := range logins {
+		lClean := strings.TrimSpace(login)
+		if lClean == "" {
+			continue
+		}
+		lLower := strings.ToLower(lClean)
+		if m.AvatarCache != nil {
+			if _, exists := m.AvatarCache[lLower]; exists {
+				continue
+			}
+		}
+
+		ghClient := m.GHClient
+		profile := m.ProfileCache[lLower]
+
+		cmds = append(cmds, func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+
+			avatarURL := profile.AvatarURL
+			if avatarURL == "" {
+				avatarURL = fmt.Sprintf("https://github.com/%s.png?size=64", url.PathEscape(lClean))
+			}
+
+			data, err := ghClient.DownloadAvatar(ctx, avatarURL)
+			if err != nil || len(data) == 0 {
+				return nil
+			}
+
+			art, err := RenderAvatarArt(data, 8, 4, true)
+			if err != nil || art == "" {
+				return nil
+			}
+
+			return AvatarLoadedMsg{
+				Login: lLower,
+				Art:   art,
+			}
+		})
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
 }

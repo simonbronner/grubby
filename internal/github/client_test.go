@@ -194,3 +194,58 @@ func TestLiveFetchOrgMembers(t *testing.T) {
 		}
 	}
 }
+
+func TestLiveFetchUserProfile(t *testing.T) {
+	token, err := GetGHToken()
+	if err != nil {
+		t.Skip("gh auth not available")
+	}
+
+	client, err := NewClient(token)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	prof, err := client.FetchUserProfile(ctx, "simonbronner")
+	if err != nil {
+		t.Fatalf("FetchUserProfile failed: %v", err)
+	}
+	if prof.Login != "simonbronner" {
+		t.Errorf("expected login simonbronner, got %s", prof.Login)
+	}
+	if prof.FormattedID() == "" {
+		t.Errorf("expected non-empty user ID")
+	}
+	if prof.AvatarURL == "" {
+		t.Errorf("expected non-empty avatar URL")
+	}
+}
+
+func TestLiveFetchUserProfiles(t *testing.T) {
+	token, err := GetGHToken()
+	if err != nil {
+		t.Skip("gh auth not available")
+	}
+
+	client, err := NewClient(token)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	profs, err := client.FetchUserProfiles(ctx, []string{"simonbronner", "octocat"})
+	if err != nil {
+		t.Fatalf("FetchUserProfiles failed: %v", err)
+	}
+	if len(profs) < 2 {
+		t.Fatalf("expected at least 2 profiles, got %d", len(profs))
+	}
+	if sb, ok := profs["simonbronner"]; !ok || sb.Login != "simonbronner" {
+		t.Errorf("expected simonbronner in profiles, got %+v", profs)
+	}
+}
