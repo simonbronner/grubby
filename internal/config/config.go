@@ -29,14 +29,16 @@ type SearchConfig struct {
 }
 
 type Config struct {
-	Version      int            `yaml:"version"`
-	DefaultOrg   string         `yaml:"default_org"`
-	WorkspaceDir string         `yaml:"workspace_dir"`
-	Editor       string         `yaml:"editor"`
-	ActiveSquad  string         `yaml:"active_squad"`
-	Squads       []SquadConfig  `yaml:"squads"`
-	Groups       []GroupConfig  `yaml:"groups"`
-	Search       SearchConfig   `yaml:"search"`
+	Version            int            `yaml:"version"`
+	DefaultOrg         string         `yaml:"default_org"`
+	WorkspaceDir       string         `yaml:"workspace_dir"`
+	Editor             string         `yaml:"editor"`
+	ActiveSquad        string         `yaml:"active_squad"`
+	Squads             []SquadConfig  `yaml:"squads"`
+	Groups             []GroupConfig  `yaml:"groups"`
+	Search             SearchConfig   `yaml:"search"`
+	Proxy              string         `yaml:"proxy,omitempty"`
+	InsecureSkipVerify bool           `yaml:"insecure_skip_verify,omitempty"`
 
 	filePath string     `yaml:"-"`
 	mu       sync.Mutex `yaml:"-"`

@@ -126,6 +126,22 @@ Specify a target GitHub organization or custom workspace path:
 grubby --org acme-corp --workspace ~/workspaces
 ```
 
+### Corporate Proxy & Enterprise Environments
+Grubby is fully equipped for enterprise networks and corporate proxies (Zscaler, Netskope, BlueCoat, Squid):
+
+* **Automatic Detection**: Automatically checks shell proxy variables (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`) and your git configuration (`git config --get https.proxy` or `http.proxy`).
+* **Explicit Proxy**: Pass `--proxy <url>` or set `proxy: <url>` in `config.yaml`:
+  ```bash
+  grubby --proxy http://corporate-proxy.corp.internal:8080
+  # SOCKS5 proxies are also supported:
+  grubby --proxy socks5://127.0.0.1:1080
+  ```
+* **Corporate SSL Inspection (MITM)**: If your corporate proxy intercepts TLS traffic with internal root CAs:
+  * Pass `--insecure` or set `insecure_skip_verify: true` in `config.yaml` to skip TLS verification.
+  * Or specify your corporate root certificate bundle via `export SSL_CERT_FILE=/path/to/corporate-ca.pem`.
+* **Child Process Propagation**: Any proxy or TLS settings resolved by Grubby are automatically passed down to spawned processes (such as `gh repo clone` or `git fetch`).
+* **Resilient to 502 Bad Gateway**: Grubby decouples repository metadata from open pull requests using indexed search queries, eliminating GitHub's 10-second backend timeout on large corporate organizations, and automatically retries transient gateway 502/503/504 errors with exponential backoff.
+
 ---
 
 ## Keyboard Shortcuts
@@ -196,6 +212,10 @@ version: 1
 default_org: "acme-corp"
 workspace_dir: "~/workspaces"
 editor: "nvim" # or "code", fallback to $EDITOR
+
+# Optional Corporate Network Settings
+proxy: "http://proxy.corp.internal:8080" # or socks5://127.0.0.1:1080
+insecure_skip_verify: false              # set to true if corporate proxy performs SSL interception
 
 active_squad: "checkout-squad"
 
