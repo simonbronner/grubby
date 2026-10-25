@@ -386,6 +386,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Height = msg.Height
 		m.SearchPreview.Width = (m.Width / 2) - 4
 		m.SearchPreview.Height = m.Height - 12
+		if m.ActiveTab == TabSquad {
+			return m, m.emitSquadMemberAvatarsCmd()
+		}
 		return m, nil
 
 	case spinner.TickMsg:
@@ -610,7 +613,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// Modal Key Handling
 		if m.ActiveModal != ModalNone {
-			return m.handleModalKeys(msg)
+			prevModal := m.ActiveModal
+			newM, cmd := m.handleModalKeys(msg)
+			if updatedModel, ok := newM.(Model); ok {
+				if prevModal != ModalNone && updatedModel.ActiveModal == ModalNone && updatedModel.ActiveTab == TabSquad {
+					return updatedModel, tea.Batch(cmd, updatedModel.emitSquadMemberAvatarsCmd())
+				}
+			}
+			return newM, cmd
 		}
 
 		// When search input is focused, route keystrokes directly to it

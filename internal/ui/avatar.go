@@ -22,22 +22,58 @@ func BuildITerm2ImageSequence(b64Data string, width, height int) string {
 	return seq
 }
 
-// EmitITerm2ImageCmd outputs the native iTerm2 inline image sequence directly to the terminal at (row, col).
-// It is triggered as a tea.Cmd, keeping the model's View() clean of escape sequences and base64 payloads.
-func EmitITerm2ImageCmd(rawBytes []byte, row, col, width, height int) tea.Cmd {
-	return func() tea.Msg {
-		if len(rawBytes) == 0 {
-			return nil
-		}
-		b64 := base64.StdEncoding.EncodeToString(rawBytes)
-		seq := BuildITerm2ImageSequence(b64, width, height)
-		if row > 0 && col > 0 {
-			// Save cursor (DEC \x1b7), jump to (row, col), write image, restore cursor (DEC \x1b8)
-			seq = fmt.Sprintf("\x1b7\x1b[%d;%dH%s\x1b8", row, col, seq)
-		}
-		_, _ = os.Stdout.WriteString(seq)
+// AvatarPlacement represents a positioned avatar graphic to render via iTerm2 inline escape sequences.
+type AvatarPlacement struct {
+	Login    string
+	Row      int
+	Col      int
+	Width    int
+	Height   int
+	RawBytes []byte
+}
+
+// EmitITerm2ImagesCmd outputs multiple native iTerm2 inline image sequences directly to the terminal
+// sequentially in a single batch command, preventing race conditions or interleaving on stdout.
+func EmitITerm2ImagesCmd(placements []AvatarPlacement) tea.Cmd {
+	if len(placements) == 0 {
 		return nil
 	}
+	return func() tea.Msg {
+		var buf strings.Builder
+		for _, p := range placements {
+			if len(p.RawBytes) == 0 {
+				continue
+			}
+			b64 := base64.StdEncoding.EncodeToString(p.RawBytes)
+			seq := BuildITerm2ImageSequence(b64, p.Width, p.Height)
+			if p.Row > 0 && p.Col > 0 {
+				// Save cursor (DEC \x1b7), jump to (row, col), write image, restore cursor (DEC \x1b8)
+				buf.WriteString(fmt.Sprintf("\x1b7\x1b[%d;%dH%s\x1b8", p.Row, p.Col, seq))
+			} else {
+				buf.WriteString(seq)
+			}
+		}
+		if buf.Len() > 0 {
+			_, _ = os.Stdout.WriteString(buf.String())
+		}
+		return nil
+	}
+}
+
+// EmitITerm2ImageCmd outputs a single native iTerm2 inline image sequence directly to the terminal at (row, col).
+func EmitITerm2ImageCmd(rawBytes []byte, row, col, width, height int) tea.Cmd {
+	if len(rawBytes) == 0 {
+		return nil
+	}
+	return EmitITerm2ImagesCmd([]AvatarPlacement{
+		{
+			Row:      row,
+			Col:      col,
+			Width:    width,
+			Height:   height,
+			RawBytes: rawBytes,
+		},
+	})
 }
 
 // RenderAvatarBoundingBox reserves a blank rectangular bounding box using Lip Gloss

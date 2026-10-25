@@ -360,6 +360,19 @@ func (m Model) handleSquadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) renderSquadView() string {
+	view, _ := m.renderSquadDashboardView()
+	return view
+}
+
+func (m Model) emitSquadMemberAvatarsCmd() tea.Cmd {
+	if m.ActiveTab != TabSquad || m.ActiveModal != ModalNone {
+		return nil
+	}
+	_, placements := m.renderSquadDashboardView()
+	return EmitITerm2ImagesCmd(placements)
+}
+
+func (m Model) renderSquadDashboardView() (string, []AvatarPlacement) {
 	activeSquad := m.Config.GetActiveSquad()
 	squadName := "None Configured"
 	if activeSquad != nil {
@@ -375,10 +388,11 @@ func (m Model) renderSquadView() string {
 		Render(fmt.Sprintf("👥 Squad Dashboard: %s", squadName))
 
 	metaRange := MetaBarStyle.Render("  •  Time Range: Last 2 Weeks (14 Days)  •  " + fmt.Sprintf("%d Squad Members", len(dashboard.MemberContributions)))
-	banner := "  " + titleBadge + metaRange + "\n"
+	banner := "  " + titleBadge + metaRange
 
 	if len(dashboard.MemberContributions) == 0 {
-		return banner + "\n  No members configured in this squad.\n  Press 'm' to manage squad, 'a' to add members, or 's' to switch squads.\n"
+		emptyView := banner + "\n\n  No members configured in this squad.\n  Press 'm' to manage squad, 'a' to add members, or 's' to switch squads.\n"
+		return emptyView, nil
 	}
 
 	var sections []string
@@ -461,6 +475,15 @@ func (m Model) renderSquadView() string {
 	memberHeader := lipgloss.NewStyle().Bold(true).Foreground(SecondaryColor).Render("  👥 SQUAD MEMBER CONTRIBUTIONS (LAST 14 DAYS)")
 	sections = append(sections, memberHeader)
 
+	// Calculate starting row for member panes dynamically based on rendered line count
+	topBar := m.renderTopBar()
+	topBarLines := strings.Count(topBar, "\n") + 1
+
+	preMemberSections := strings.Join(sections, "\n\n") + "\n\n"
+	preMemberLines := strings.Count(preMemberSections, "\n")
+
+	currentRow := topBarLines + preMemberLines + 1
+
 	visiblePanes := 4
 	if m.Height > 34 {
 		visiblePanes = 6
@@ -480,7 +503,9 @@ func (m Model) renderSquadView() string {
 		cardWidth = 40
 	}
 
+	var placements []AvatarPlacement
 	var memberPanes []string
+
 	for i := start; i < end; i++ {
 		mem := dashboard.MemberContributions[i]
 
@@ -536,8 +561,18 @@ func (m Model) renderSquadView() string {
 		// Avatar: reserve a blank rectangular bounding box using Lip Gloss
 		// if native image data is available, or render fallback monogram badge.
 		var avatar string
-		if mem.HasAvatar {
+		memLower := strings.ToLower(mem.Login)
+		rawBytes := m.RawAvatarCache[memLower]
+		if len(rawBytes) > 0 {
 			avatar = RenderAvatarBoundingBox(8, 4)
+			placements = append(placements, AvatarPlacement{
+				Login:    mem.Login,
+				Row:      currentRow,
+				Col:      3, // Column 3: terminal is 1-based, MarginLeft(2) shifts 2 cells
+				Width:    8,
+				Height:   4,
+				RawBytes: rawBytes,
+			})
 		} else {
 			avatar = RenderFallbackAvatar(8, 4)
 		}
@@ -547,68 +582,15 @@ func (m Model) renderSquadView() string {
 			MarginLeft(2).
 			PaddingBottom(1)
 
-		memberPanes = append(memberPanes, contributorStyle.Render(cardContent))
+		renderedPane := contributorStyle.Render(cardContent)
+		memberPanes = append(memberPanes, renderedPane)
+
+		// Advance currentRow by the exact number of lines in this rendered pane
+		linesInPane := strings.Count(renderedPane, "\n") + 1
+		currentRow += linesInPane
 	}
 
 	sections = append(sections, strings.Join(memberPanes, "\n"))
 
-	return strings.Join(sections, "\n\n")
-}
-
-func (m Model) emitSquadMemberAvatarsCmd() tea.Cmd {
-	if m.ActiveTab != TabSquad {
-		return nil
-	}
-	dashboard := m.computeSquadDashboard()
-	if len(dashboard.MemberContributions) == 0 {
-		return nil
-	}
-
-	visiblePanes := 4
-	if m.Height > 34 {
-		visiblePanes = 6
-	}
-
-	start := 0
-	if m.SquadCursor >= visiblePanes {
-		start = m.SquadCursor - visiblePanes + 1
-	}
-	end := start + visiblePanes
-	if end > len(dashboard.MemberContributions) {
-		end = len(dashboard.MemberContributions)
-	}
-
-	displayLimit := 5
-	if len(dashboard.ActiveRepos) < displayLimit {
-		displayLimit = len(dashboard.ActiveRepos)
-	}
-
-	startRow := 1 // line 1: topBar
-	startRow += 2 // banner + blank
-	startRow += 2 // repoHeader + blank
-	if len(dashboard.ActiveRepos) == 0 {
-		startRow += 2 // "No repository activity..." + blank
-	} else {
-		startRow += 1 + displayLimit + 1 // tableHead + rows + blank
-	}
-	startRow += 2 // memberHeader + blank
-
-	var cmds []tea.Cmd
-	for i := start; i < end; i++ {
-		mem := dashboard.MemberContributions[i]
-		memLower := strings.ToLower(mem.Login)
-		rawBytes := m.RawAvatarCache[memLower]
-		if len(rawBytes) == 0 {
-			continue
-		}
-		k := i - start
-		row := startRow + (k * 5)
-		col := 3 // Column 3 (MarginLeft 2 + 1)
-		cmds = append(cmds, EmitITerm2ImageCmd(rawBytes, row, col, 8, 4))
-	}
-
-	if len(cmds) == 0 {
-		return nil
-	}
-	return tea.Batch(cmds...)
+	return strings.Join(sections, "\n\n"), placements
 }
