@@ -44,6 +44,7 @@ const (
 
 // Async messages
 type DataLoadedMsg struct {
+	AuthUser      string
 	Repos         []github.Repository
 	PRs           []github.PullRequest
 	SquadEvents   []github.SquadEvent
@@ -74,6 +75,7 @@ type Model struct {
 
 	// Data
 	CurrentOrg          string
+	AuthUser            string
 	Repos               []github.Repository
 	PRs                 []github.PullRequest
 	SquadEvents         []github.SquadEvent
@@ -145,6 +147,7 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 		GitMgr:              gitMgr,
 		SearchEng:           search.NewRipgrepEngine(),
 		CurrentOrg:          org,
+		AuthUser:            org,
 		GitStatuses:         make(map[string]git.RepoGitStatus),
 		SecuritySummaries:   make(map[string]github.SecurityAlertSummary),
 		SeenNotificationIDs: make(map[string]bool),
@@ -172,6 +175,11 @@ func (m Model) loadDataCmd() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 
+		authUser, _ := m.GHClient.GetAuthenticatedUser(ctx)
+		if authUser == "" {
+			authUser = m.CurrentOrg
+		}
+
 		repos, prs, commitEvents, secAlerts, err := m.GHClient.FetchRepositoriesAndPRs(ctx, m.CurrentOrg)
 		if err != nil {
 			return DataLoadedMsg{Err: err}
@@ -193,6 +201,7 @@ func (m Model) loadDataCmd() tea.Cmd {
 		notifs, _ := m.GHClient.FetchNotifications(ctx)
 
 		return DataLoadedMsg{
+			AuthUser:      authUser,
 			Repos:         repos,
 			PRs:           prs,
 			SquadEvents:   events,
@@ -256,6 +265,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.SquadEvents = msg.SquadEvents
 		m.SecuritySummaries = msg.Security
 		m.RateLimit = msg.RateLimit
+		if msg.AuthUser != "" {
+			m.AuthUser = msg.AuthUser
+		}
 
 		// Process notifications and alert for new unread items
 		var newNotifs []github.Notification
@@ -428,15 +440,48 @@ func (m Model) View() string {
 }
 
 func (m Model) renderHeader() string {
-	orgInfo := fmt.Sprintf("Target: %s", m.CurrentOrg)
-	rateInfo := fmt.Sprintf("API Rate: %d/%d (resets %s)", m.RateLimit.Remaining, m.RateLimit.Limit, m.RateLimit.Reset.Format("15:04"))
+	// 1. Top-left: cute grubby hobbit avatar badge replacing "GRUBBY"
+	hobbitBadge := HeaderStyle.Render(" ᘛ( ᵔ ᴗ ᵔ*)ᘚ ")
 
-	watchedSquad := "None"
-	if s := m.Config.GetActiveSquad(); s != nil {
-		watchedSquad = s.DisplayName
+	// 2. Summary of total open pull requests
+	prCount := len(m.PRs)
+	var prSummary string
+	if prCount > 0 {
+		prSummary = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render(fmt.Sprintf("⑂ %d Open PRs", prCount))
+	} else {
+		prSummary = lipgloss.NewStyle().Foreground(MutedColor).Render("⑂ 0 PRs")
 	}
-	squadInfo := fmt.Sprintf("Watched Squad: %s", watchedSquad)
 
+	// 3. Summary of total outstanding security issues
+	totalCrit := 0
+	totalHigh := 0
+	totalMedRest := 0
+	totalAlerts := 0
+	for _, sum := range m.SecuritySummaries {
+		totalCrit += sum.Critical
+		totalHigh += sum.High
+		totalMedRest += (sum.Medium + sum.Low)
+		totalAlerts += sum.Total
+	}
+
+	var secSummary string
+	if totalAlerts == 0 {
+		secSummary = lipgloss.NewStyle().Foreground(SuccessColor).Render("🛡️ 0 Alerts [✓ clean]")
+	} else {
+		var parts []string
+		if totalCrit > 0 {
+			parts = append(parts, lipgloss.NewStyle().Foreground(DangerColor).Bold(true).Render(fmt.Sprintf("%d crit", totalCrit)))
+		}
+		if totalHigh > 0 {
+			parts = append(parts, lipgloss.NewStyle().Foreground(WarningColor).Bold(true).Render(fmt.Sprintf("%d high", totalHigh)))
+		}
+		if totalMedRest > 0 {
+			parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("#E5C07B")).Render(fmt.Sprintf("%d med+", totalMedRest)))
+		}
+		secSummary = "🛡️ " + strings.Join(parts, " ")
+	}
+
+	// 4. Notification bubble
 	unreadNotifs := 0
 	for _, n := range m.Notifications {
 		if n.Unread {
@@ -458,8 +503,30 @@ func (m Model) renderHeader() string {
 			Render("🔔 0")
 	}
 
-	left := HeaderStyle.Render("GRUBBY") + "  " + MetaBarStyle.Render(orgInfo+"  |  "+squadInfo+"  |  ") + notifBadge
-	right := MetaBarStyle.Render(rateInfo)
+	watchedSquad := "None"
+	if s := m.Config.GetActiveSquad(); s != nil {
+		watchedSquad = s.DisplayName
+	}
+
+	// 5. Far right: icon and name of the logged-in GitHub user + API quota
+	user := m.AuthUser
+	if user == "" {
+		user = m.CurrentOrg
+	}
+	userBadge := lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render("👤 @" + user)
+	rateInfo := MetaBarStyle.Render(fmt.Sprintf("(%d/%d API)", m.RateLimit.Remaining, m.RateLimit.Limit))
+	right := userBadge + "  " + rateInfo
+
+	// Construct left & middle components adapting to terminal width
+	var left string
+	if m.Width >= 135 {
+		metaInfo := MetaBarStyle.Render(fmt.Sprintf("Org: %s  |  Squad: %s", m.CurrentOrg, watchedSquad))
+		left = hobbitBadge + "  " + metaInfo + "  |  " + prSummary + "  |  " + secSummary + "  |  " + notifBadge
+	} else if m.Width >= 105 {
+		left = hobbitBadge + "  " + prSummary + "  |  " + secSummary + "  |  " + notifBadge
+	} else {
+		left = hobbitBadge + "  " + prSummary + "  |  " + notifBadge
+	}
 
 	space := m.Width - lipgloss.Width(left) - lipgloss.Width(right)
 	if space < 1 {
