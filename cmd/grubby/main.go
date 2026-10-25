@@ -1,0 +1,86 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"os"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"grubby/internal/config"
+	"grubby/internal/git"
+	"grubby/internal/github"
+	"grubby/internal/ui"
+)
+
+func main() {
+	var (
+		orgFlag       string
+		workspaceFlag string
+		configFlag    string
+	)
+
+	flag.StringVar(&orgFlag, "org", "", "Target GitHub organization or user (defaults to personal account)")
+	flag.StringVar(&workspaceFlag, "workspace", "", "Path to local workspace directory (defaults to ~/workspaces)")
+	flag.StringVar(&configFlag, "config", "", "Path to Grubby config file (defaults to ~/.config/grubby/config.yaml)")
+	flag.Parse()
+
+	// Check authentication
+	token, err := github.GetGHToken()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintln(os.Stderr, "Grubby requires GitHub CLI authentication. Please run:")
+		fmt.Fprintln(os.Stderr, "  gh auth login --scopes repo,read:org")
+		os.Exit(1)
+	}
+
+	// Load configuration
+	cfg, err := config.Load(configFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	if workspaceFlag != "" {
+		cfg.WorkspaceDir = workspaceFlag
+	}
+
+	// Initialize GitHub client
+	ghClient, err := github.NewClient(token)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialize GitHub client: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Resolve target organization / owner
+	targetOrg := orgFlag
+	if targetOrg == "" {
+		targetOrg = cfg.DefaultOrg
+	}
+	if targetOrg == "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		currentUser, err := ghClient.GetAuthenticatedUser(ctx)
+		cancel()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Could not determine GitHub user: %v\n", err)
+			os.Exit(1)
+		}
+		targetOrg = currentUser
+		cfg.DefaultOrg = targetOrg
+		_ = cfg.Save()
+	}
+
+	// Initialize workspace manager
+	gitMgr := git.NewWorkspaceManager(cfg.WorkspaceDir)
+
+	// Launch TUI
+	initialModel := ui.InitialModel(cfg, ghClient, gitMgr, targetOrg)
+	p := tea.NewProgram(initialModel, tea.WithAltScreen())
+
+	if _, err := p.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Grubby exited with error: %v\n", err)
+		os.Exit(1)
+	}
+}

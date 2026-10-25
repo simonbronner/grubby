@@ -1,0 +1,11 @@
+# Binaries
+/grubby
+*.exe
+*.test
+
+# OS & Editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
