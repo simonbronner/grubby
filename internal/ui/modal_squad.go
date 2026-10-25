@@ -30,6 +30,8 @@ func (m Model) handleModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleFilterNameModalKeys(msg)
 	case ModalFilterPR:
 		return m.handleFilterPRModalKeys(msg)
+	case ModalManageSquad:
+		return m.handleManageSquadModalKeys(msg)
 	case ModalHelp:
 		if msg.String() == "esc" || msg.String() == "q" || msg.String() == "?" {
 			m.ActiveModal = ModalNone
@@ -58,6 +60,8 @@ func (m Model) renderModalOverlay(baseView string) string {
 		modalContent = m.renderFilterNameModal()
 	case ModalFilterPR:
 		modalContent = m.renderFilterPRModal()
+	case ModalManageSquad:
+		modalContent = m.renderManageSquadModal()
 	case ModalHelp:
 		modalContent = m.renderHelpModal()
 	}
@@ -82,7 +86,7 @@ func (m Model) renderSelectSquadModal() string {
 
 	var lines []string
 	lines = append(lines, title)
-	lines = append(lines, "Use [↑/↓] or [j/k] to choose, [Enter] to select, [+] or [n] to create new squad, [Esc] to exit.\n")
+	lines = append(lines, "Use [↑/↓] or [j/k] to choose, [Enter] to select, [m] to manage squad, [+] or [n] to create new squad, [Esc] to exit.\n")
 
 	squads := m.Config.Squads
 	if len(squads) == 0 {
@@ -123,6 +127,13 @@ func (m Model) handleSelectSquadModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.ModalInput.Placeholder = "New squad name (e.g. backend-squad)"
 		m.ModalInput.Focus()
 		return m, textinput.Blink
+	case "m":
+		if len(squads) > 0 && m.ModalCursor < len(squads) {
+			m.ManagedSquadName = squads[m.ModalCursor].Name
+			m.SquadManageMode = SquadModeOverview
+			m.ActiveModal = ModalManageSquad
+			return m, nil
+		}
 	case "up", "k":
 		if m.ModalCursor > 0 {
 			m.ModalCursor--
@@ -156,7 +167,7 @@ func (m Model) handleSelectSquadModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) renderCreateSquadModal() string {
-	title := ModalTitleStyle.Render("Create New Squad / Group")
+	title := ModalTitleStyle.Render("Create New Squad")
 
 	var lines []string
 	lines = append(lines, title)
@@ -367,8 +378,8 @@ func (m Model) renderHelpModal() string {
 
 	helpText := `
 Global Navigation:
-  [1-5] / [Tab]       Switch between primary tabs
-  [r]                 Refresh data from GitHub
+  [1-6] / [Tab]       Switch between primary tabs
+  [r]                 Refresh data from GitHub & GitHub Status
   [?]                 Toggle this help dialog
   [q] / [Ctrl+C]      Quit
 
@@ -389,14 +400,17 @@ Repositories Tab (1):
 
 Pull Requests Tab (2):
   [j/k] or [↑/↓]      Select pull request
+  [f]                 Filter PRs by title, repo, or author
   [o]                 Open PR in browser
   [p]                 Trigger GitHub Copilot PR review
   [c]                 Checkout PR branch in local workspace
 
 Squad Activity Tab (3):
+  [m]                 Manage squad (add/delete multiple members, rename, delete squad)
   [s]                 Switch watched squad
-  [a]                 Add GitHub user to watched squad
-  [d]                 Remove user from watched squad
+  [n]                 Create new squad
+  [a]                 Add members from organization or username
+  [d]                 Remove members from squad
   [o]                 Open event target in browser
 
 Code Search Tab (4):
@@ -411,6 +425,11 @@ Notifications Tab (5):
   [Enter] / [o]       Open in browser and mark as read
   [m]                 Mark selected notification as read
   [M]                 Mark all notifications as read
+
+GitHub Status Tab (6):
+  [j/k] or [↑/↓]      Select service component
+  [o] / [Enter]       Open githubstatus.com in browser
+  [r]                 Refresh GitHub status now
 
 Press [Esc] or [q] to close this help window.
 `

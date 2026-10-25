@@ -24,12 +24,14 @@ var (
 			Bold(true).
 			Background(PrimaryColor).
 			Foreground(lipgloss.Color("#FFFFFF")).
-			Padding(0, 2)
+			Padding(0, 1).
+			MarginRight(1)
 
 	InactiveTabStyle = lipgloss.NewStyle().
-				Background(lipgloss.Color("#2E2E3E")).
-				Foreground(lipgloss.Color("#A0A0B0")).
-				Padding(0, 2)
+			Background(lipgloss.Color("#202030")).
+			Foreground(lipgloss.Color("#8E8EA8")).
+			Padding(0, 1).
+			MarginRight(1)
 
 	TabBarBorder = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#3E3E50"))
@@ -85,6 +87,10 @@ var (
 
 	ReviewReqBadge = lipgloss.NewStyle().
 			Foreground(WarningColor).
+			Bold(true)
+
+	DangerBadge = lipgloss.NewStyle().
+			Foreground(DangerColor).
 			Bold(true)
 
 	GroupTagBadge = lipgloss.NewStyle().

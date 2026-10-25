@@ -88,4 +88,29 @@ func TestConfigLoadAndSave(t *testing.T) {
 	if collapsed != "~/workspaces/grubby" {
 		t.Errorf("expected ~/workspaces/grubby, got %s", collapsed)
 	}
+
+	// Test RenameSquad, SetSquadMembers, and DeleteSquad
+	err = cfg.SetSquadMembers("platform", []string{"alice", "bob", "charlie"})
+	if err != nil {
+		t.Fatalf("failed to set squad members: %v", err)
+	}
+	if len(cfg.GetActiveSquad().Members) != 3 {
+		t.Fatalf("expected 3 members, got %d", len(cfg.GetActiveSquad().Members))
+	}
+
+	err = cfg.RenameSquad("platform", "infrastructure")
+	if err != nil {
+		t.Fatalf("failed to rename squad: %v", err)
+	}
+	if cfg.ActiveSquad != "infrastructure" {
+		t.Errorf("expected active squad to be renamed to infrastructure, got %s", cfg.ActiveSquad)
+	}
+
+	err = cfg.DeleteSquad("infrastructure")
+	if err != nil {
+		t.Fatalf("failed to delete squad: %v", err)
+	}
+	if cfg.GetActiveSquad() != nil {
+		t.Errorf("expected nil active squad after deleting only squad, got %+v", cfg.GetActiveSquad())
+	}
 }
