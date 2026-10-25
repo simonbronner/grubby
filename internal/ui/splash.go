@@ -118,7 +118,7 @@ func (m Model) renderSplashScreen() string {
 	subtitle := lipgloss.NewStyle().
 		Foreground(SecondaryColor).
 		Bold(true).
-		Render("Developer GitHub Cockpit")
+		Render("A grubby little UI for GitHub...")
 
 	loadingMsg := fmt.Sprintf("%s Synchronizing workspaces & notifications for %s...",
 		m.Spinner.View(),
