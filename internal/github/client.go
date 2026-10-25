@@ -681,9 +681,9 @@ func (c *Client) TriggerCopilotReview(ctx context.Context, owner, repo string, p
 	return nil
 }
 
-// FetchNotifications retrieves unread GitHub notifications for the authenticated user
+// FetchNotifications retrieves unread and recent GitHub notifications for the authenticated user
 func (c *Client) FetchNotifications(ctx context.Context) ([]Notification, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", "https://api.github.com/notifications", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://api.github.com/notifications?all=true", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -741,6 +741,52 @@ func (c *Client) FetchNotifications(ctx context.Context) ([]Notification, error)
 	}
 
 	return notifications, nil
+}
+
+// MarkNotificationRead marks a notification thread as read on GitHub
+func (c *Client) MarkNotificationRead(ctx context.Context, threadID string) error {
+	req, err := http.NewRequestWithContext(ctx, "PATCH", "https://api.github.com/notifications/threads/"+threadID, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	c.updateRateLimits(resp)
+
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusResetContent {
+		return nil
+	}
+	return fmt.Errorf("failed to mark notification as read: HTTP %d", resp.StatusCode)
+}
+
+// MarkAllNotificationsRead marks all notifications as read on GitHub
+func (c *Client) MarkAllNotificationsRead(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, "PUT", "https://api.github.com/notifications", bytes.NewBuffer([]byte("{}")))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	c.updateRateLimits(resp)
+
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusResetContent || resp.StatusCode == http.StatusAccepted {
+		return nil
+	}
+	return fmt.Errorf("failed to mark all notifications as read: HTTP %d", resp.StatusCode)
 }
 
 func formatNotificationWebURL(apiURL, repoHTMLURL string) string {

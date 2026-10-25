@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// SendNativeNotification triggers a native macOS notification bubble / banner with sound.
+// SendNativeNotification triggers a silent native macOS notification bubble / banner.
 // It executes asynchronously in a separate goroutine so it never blocks the Bubble Tea
 // event loop or TUI rendering.
 func SendNativeNotification(title, subtitle, message string) {
@@ -25,9 +25,9 @@ func SendNativeNotification(title, subtitle, message string) {
 
 		var script string
 		if sSub != "" {
-			script = fmt.Sprintf(`display notification "%s" with title "%s" subtitle "%s" sound name "default"`, sMsg, sTitle, sSub)
+			script = fmt.Sprintf(`display notification "%s" with title "%s" subtitle "%s"`, sMsg, sTitle, sSub)
 		} else {
-			script = fmt.Sprintf(`display notification "%s" with title "%s" sound name "default"`, sMsg, sTitle)
+			script = fmt.Sprintf(`display notification "%s" with title "%s"`, sMsg, sTitle)
 		}
 
 		cmd := exec.Command("osascript", "-e", script)

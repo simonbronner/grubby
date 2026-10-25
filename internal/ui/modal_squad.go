@@ -206,6 +206,7 @@ Repositories Tab (1):
   [j/k] or [↑/↓]      Select repository
   [Enter]             Open repo in dedicated browser
   [o]                 Open GitHub Web Tabs Submenu (Issues, PRs, Actions, Security...)
+  [S]                 Open Security (Dependabot) tab directly in browser
   [g]                 Manage Groups (assign / create groups)
   [c]                 Clone repo to ~/workspaces/
   [e]                 Open in $EDITOR (Neovim/VS Code)
@@ -230,6 +231,12 @@ Code Search Tab (4):
   [h/l] or [Space]    Expand / Collapse repo or file branch
   [Tab]               Toggle focus between Tree and Code Preview
   [Enter]             Open match in $EDITOR at exact line number
+
+Notifications Tab (5):
+  [j/k] or [↑/↓]      Select notification
+  [Enter] / [o]       Open in browser and mark as read
+  [m]                 Mark selected notification as read
+  [M]                 Mark all notifications as read
 
 Press [Esc] or [q] to close this help window.
 `

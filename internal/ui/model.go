@@ -28,7 +28,7 @@ const (
 	TabPRs
 	TabSquad
 	TabSearch
-	TabSecurity
+	TabNotifications
 )
 
 type ModalType int
@@ -92,6 +92,8 @@ type Model struct {
 	PRFilter string
 
 	SquadCursor int
+
+	NotifCursor int
 
 	// Search View
 	SearchInput       textinput.Model
@@ -273,6 +275,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				first := newNotifs[0]
 				SendNativeNotification("Grubby • GitHub Notifications", fmt.Sprintf("%d New Notifications", len(newNotifs)), fmt.Sprintf("%s: %s", first.Repository, first.Title))
 			}
+
+			// Automatically mark popped-up notifications as read
+			for _, n := range newNotifs {
+				for i := range m.Notifications {
+					if m.Notifications[i].ID == n.ID {
+						m.Notifications[i].Unread = false
+					}
+				}
+				threadID := n.ID
+				cmds = append(cmds, func() tea.Msg {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					_ = m.GHClient.MarkNotificationRead(ctx, threadID)
+					return nil
+				})
+			}
 		}
 
 		m.StatusMsg = "Refreshed data from GitHub"
@@ -334,7 +352,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ActiveTab = TabSearch
 			return m, nil
 		case "5":
-			m.ActiveTab = TabSecurity
+			m.ActiveTab = TabNotifications
 			return m, nil
 		case "tab":
 			m.ActiveTab = (m.ActiveTab + 1) % 5
@@ -362,8 +380,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleSquadKeys(msg)
 		case TabSearch:
 			return m.handleSearchKeys(msg)
-		case TabSecurity:
-			return m.handleSecurityKeys(msg)
+		case TabNotifications:
+			return m.handleNotificationsKeys(msg)
 		}
 	}
 
@@ -394,8 +412,8 @@ func (m Model) View() string {
 		body = m.renderSquadView()
 	case TabSearch:
 		body = m.renderSearchView()
-	case TabSecurity:
-		body = m.renderSecurityView()
+	case TabNotifications:
+		body = m.renderNotificationsView()
 	}
 
 	footer := m.renderFooter()
@@ -452,12 +470,19 @@ func (m Model) renderHeader() string {
 }
 
 func (m Model) renderTabBar() string {
+	unreadNotifs := 0
+	for _, n := range m.Notifications {
+		if n.Unread {
+			unreadNotifs++
+		}
+	}
+
 	tabs := []string{
 		"1: Repositories",
 		fmt.Sprintf("2: Pull Requests (%d)", len(m.PRs)),
 		"3: Squad Activity",
 		"4: Code Search",
-		"5: Security",
+		fmt.Sprintf("5: Notifications (%d)", unreadNotifs),
 	}
 
 	var renderedTabs []string
@@ -477,15 +502,15 @@ func (m Model) renderFooter() string {
 	var help string
 	switch m.ActiveTab {
 	case TabRepos:
-		help = "[Enter] Open Web  [o] Web Tabs Menu  [g] Groups  [c] Clone  [e] Editor (nvim)  [t] Shell  [u] Fast-forward  [?] Help  [q] Quit"
+		help = "[Enter] Open Web  [o] Submenu  [S] Security Tab  [g] Groups  [c] Clone  [e] Editor (nvim)  [t] Shell  [u] Fast-forward  [?] Help  [q] Quit"
 	case TabPRs:
 		help = "[o] Browser  [p] Trigger Copilot Review  [c] Checkout Branch  [r] Refresh  [?] Help  [q] Quit"
 	case TabSquad:
 		help = "[s] Switch Squad  [a] Add Member  [d] Remove Member  [r] Refresh  [?] Help  [q] Quit"
 	case TabSearch:
 		help = "[/] Query  [j/k] Nodes  [h/l/Space] Toggle  [Tab] Switch Viewport  [Enter] Open Editor  [?] Help"
-	case TabSecurity:
-		help = "[Enter / o] Open Dependabot Alerts  [r] Refresh  [?] Help  [q] Quit"
+	case TabNotifications:
+		help = "[Enter / o] Open in Browser  [m] Mark Read  [M] Mark All Read  [r] Refresh  [?] Help  [q] Quit"
 	}
 
 	toast := ""

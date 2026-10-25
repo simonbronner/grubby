@@ -5,7 +5,7 @@ import (
 )
 
 func TestComputeRepoColumns(t *testing.T) {
-	widths := []int{70, 90, 100, 110, 120, 150, 180, 220, 300}
+	widths := []int{70, 90, 100, 112, 120, 150, 180, 220, 300}
 
 	for _, w := range widths {
 		cols := computeRepoColumns(w)
@@ -15,11 +15,11 @@ func TestComputeRepoColumns(t *testing.T) {
 		}
 
 		target := w - 2
-		if target < 107 {
-			target = 107
+		if target < 112 {
+			target = 112
 		}
 
-		fixedWidth := 3 + 11 + 16 + 12 + 13 // 55
+		fixedWidth := 3 + 16 + 16 + 12 + 13 // 60
 		total := fixedWidth + cols.NameWidth + cols.GroupWidth + cols.PathWidth
 
 		if total != target {
@@ -76,23 +76,23 @@ func TestComputeSquadColumns(t *testing.T) {
 	}
 }
 
-func TestComputeSecurityColumns(t *testing.T) {
-	widths := []int{75, 89, 100, 120, 150, 180, 220, 300}
+func TestComputeNotificationColumns(t *testing.T) {
+	widths := []int{75, 94, 100, 120, 150, 180, 220, 300}
 
 	for _, w := range widths {
-		cols := computeSecurityColumns(w)
+		cols := computeNotificationColumns(w)
 
-		if cols.RepoWidth <= 0 || cols.StatusWidth <= 0 {
+		if cols.RepoWidth <= 0 || cols.TitleWidth <= 0 {
 			t.Fatalf("Width %d produced invalid column width: %+v", w, cols)
 		}
 
 		target := w - 2
-		if target < 89 {
-			target = 89
+		if target < 94 {
+			target = 94
 		}
 
-		fixedWidth := 3 + 10 + 10 + 8 + 8 + 10 // 49
-		total := fixedWidth + cols.RepoWidth + cols.StatusWidth
+		fixedWidth := 3 + 7 + 13 + 14 + 11 // 48
+		total := fixedWidth + cols.RepoWidth + cols.TitleWidth
 
 		if total != target {
 			t.Errorf("Width %d: total columns %d != target %d", w, total, target)

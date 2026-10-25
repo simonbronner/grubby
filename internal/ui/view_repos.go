@@ -39,6 +39,15 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.ModalCursor = 0
 			return m, nil
 		}
+	case "S":
+		// 'S' opens repository Security (Dependabot) directly in dedicated browser
+		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
+			repo := m.Repos[m.RepoCursor]
+			url := fmt.Sprintf("https://github.com/%s/security/dependabot", repo.FullName)
+			_ = OpenBrowser(url)
+			SendNativeNotification("Grubby • Browser", "Security Dependabot", repo.FullName)
+			return m, func() tea.Msg { return StatusToastMsg("Opened Security tab for " + repo.Name) }
+		}
 	case "g":
 		// Open Groups modal for current repo
 		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
@@ -206,20 +215,30 @@ func (m Model) renderReposView() string {
 			nameColText = fmt.Sprintf("%s %s", prBadge, repoDisplayName)
 		}
 
-		// 2. Format Security Issues column
+		// 2. Format Security Issues column: visual summary (crit) (high) (medium + the rest)
 		var secColText string
 		if m.Loading {
 			secColText = m.Spinner.View()
 		} else {
 			sum := m.SecuritySummaries[r.Name]
-			if sum.Critical > 0 {
-				secColText = lipgloss.NewStyle().Foreground(DangerColor).Bold(true).Render(fmt.Sprintf("%d [CRIT]", sum.Critical))
-			} else if sum.High > 0 {
-				secColText = lipgloss.NewStyle().Foreground(WarningColor).Bold(true).Render(fmt.Sprintf("%d [HIGH]", sum.High))
-			} else if sum.Total > 0 {
-				secColText = lipgloss.NewStyle().Foreground(WarningColor).Render(fmt.Sprintf("%d [warn]", sum.Total))
+			if sum.Total == 0 {
+				secColText = lipgloss.NewStyle().Foreground(SuccessColor).Render("0 [✓ clean]")
 			} else {
-				secColText = lipgloss.NewStyle().Foreground(SuccessColor).Render("0 [✓]")
+				var parts []string
+				if sum.Critical > 0 {
+					parts = append(parts, lipgloss.NewStyle().Foreground(DangerColor).Bold(true).Render(fmt.Sprintf("(%dc)", sum.Critical)))
+				}
+				if sum.High > 0 {
+					parts = append(parts, lipgloss.NewStyle().Foreground(WarningColor).Bold(true).Render(fmt.Sprintf("(%dh)", sum.High)))
+				}
+				medRest := sum.Medium + sum.Low
+				if medRest > 0 {
+					parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("#E5C07B")).Render(fmt.Sprintf("(%dm+)", medRest)))
+				}
+				if len(parts) == 0 {
+					parts = append(parts, lipgloss.NewStyle().Foreground(WarningColor).Render(fmt.Sprintf("(%d)", sum.Total)))
+				}
+				secColText = strings.Join(parts, " ")
 			}
 		}
 

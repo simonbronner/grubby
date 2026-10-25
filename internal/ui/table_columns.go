@@ -20,13 +20,13 @@ type RepoColumns struct {
 
 func computeRepoColumns(termWidth int) RepoColumns {
 	w := termWidth - 2
-	// Minimum width where each column meets its minimum:
-	// Cursor (3) + Sec (11) + Git (16) + Branch (12) + Last (13) + MinName (22) + MinGroup (12) + MinPath (18) = 107
-	if w < 107 {
-		w = 107
+	// Minimum width:
+	// Cursor (3) + Sec (16) + Git (16) + Branch (12) + Last (13) + MinName (22) + MinGroup (12) + MinPath (18) = 112
+	if w < 112 {
+		w = 112
 	}
 
-	fixedWidth := 3 + 11 + 16 + 12 + 13 // 55
+	fixedWidth := 3 + 16 + 16 + 12 + 13 // 60
 	elastic := w - fixedWidth
 
 	nameW := elastic * 35 / 100
@@ -42,7 +42,7 @@ func computeRepoColumns(termWidth int) RepoColumns {
 	return RepoColumns{
 		Cursor:      lipgloss.NewStyle().Width(3),
 		Name:        lipgloss.NewStyle().Width(nameW),
-		Sec:         lipgloss.NewStyle().Width(11),
+		Sec:         lipgloss.NewStyle().Width(16),
 		Group:       lipgloss.NewStyle().Width(groupW),
 		Git:         lipgloss.NewStyle().Width(16),
 		Branch:      lipgloss.NewStyle().Width(12),
@@ -73,7 +73,7 @@ type PRColumns struct {
 
 func computePRColumns(termWidth int) PRColumns {
 	w := termWidth - 2
-	// Minimum width where each column meets its minimum:
+	// Minimum width:
 	// Cursor (3) + Num (7) + Author (12) + Age (10) + Review (15) + Comments (10) + MinRepo (16) + MinLabels (15) + MinTitle (26) = 114
 	if w < 114 {
 		w = 114
@@ -149,47 +149,45 @@ func computeSquadColumns(termWidth int) SquadColumns {
 	}
 }
 
-type SecurityColumns struct {
+type NotificationColumns struct {
 	Cursor lipgloss.Style
-	Repo   lipgloss.Style
-	Crit   lipgloss.Style
-	High   lipgloss.Style
-	Med    lipgloss.Style
-	Low    lipgloss.Style
-	Total  lipgloss.Style
 	Status lipgloss.Style
+	Type   lipgloss.Style
+	Reason lipgloss.Style
+	Repo   lipgloss.Style
+	Title  lipgloss.Style
+	Time   lipgloss.Style
 
-	RepoWidth   int
-	StatusWidth int
+	RepoWidth  int
+	TitleWidth int
 }
 
-func computeSecurityColumns(termWidth int) SecurityColumns {
+func computeNotificationColumns(termWidth int) NotificationColumns {
 	w := termWidth - 2
 	// Minimum width:
-	// Cursor (3) + Crit (10) + High (10) + Med (8) + Low (8) + Total (10) + MinRepo (20) + MinStatus (20) = 89
-	if w < 89 {
-		w = 89
+	// Cursor (3) + Status (7) + Type (13) + Reason (14) + Time (11) + MinRepo (18) + MinTitle (28) = 94
+	if w < 94 {
+		w = 94
 	}
 
-	fixedWidth := 3 + 10 + 10 + 8 + 8 + 10 // 49
+	fixedWidth := 3 + 7 + 13 + 14 + 11 // 48
 	elastic := w - fixedWidth
 
-	repoW := elastic * 35 / 100
-	if repoW < 20 {
-		repoW = 20
+	repoW := elastic * 25 / 100
+	if repoW < 18 {
+		repoW = 18
 	}
-	statusW := elastic - repoW
+	titleW := elastic - repoW
 
-	return SecurityColumns{
-		Cursor:      lipgloss.NewStyle().Width(3),
-		Repo:        lipgloss.NewStyle().Width(repoW),
-		Crit:        lipgloss.NewStyle().Width(10),
-		High:        lipgloss.NewStyle().Width(10),
-		Med:         lipgloss.NewStyle().Width(8),
-		Low:         lipgloss.NewStyle().Width(8),
-		Total:       lipgloss.NewStyle().Width(10),
-		Status:      lipgloss.NewStyle().Width(statusW),
-		RepoWidth:   repoW,
-		StatusWidth: statusW,
+	return NotificationColumns{
+		Cursor:     lipgloss.NewStyle().Width(3),
+		Status:     lipgloss.NewStyle().Width(7),
+		Type:       lipgloss.NewStyle().Width(13),
+		Reason:     lipgloss.NewStyle().Width(14),
+		Repo:       lipgloss.NewStyle().Width(repoW),
+		Title:      lipgloss.NewStyle().Width(titleW),
+		Time:       lipgloss.NewStyle().Width(11),
+		RepoWidth:  repoW,
+		TitleWidth: titleW,
 	}
 }

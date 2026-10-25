@@ -115,6 +115,7 @@ Press `?` at any time inside Grubby to display the contextual keybindings overla
 | `e` | Open local repository in `$EDITOR` |
 | `t` | Open repository in a new shell (iTerm2 on macOS) |
 | `o` | Open repository in web browser |
+| `S` | Open repository Security (Dependabot) alerts directly in browser |
 | `u` | Safe fast-forward clean `behind` repository |
 
 ### Tab 2: Pull Requests
@@ -141,6 +142,14 @@ Press `?` at any time inside Grubby to display the contextual keybindings overla
 | `h` / `l` or `Space` | Collapse / expand repository or file branch |
 | `Tab` | Switch focus between Tree Navigator and Code Preview |
 | `Enter` | Open selected match in `$EDITOR` at exact line number |
+
+### Tab 5: Notifications
+| Key | Action |
+| :--- | :--- |
+| `j` / `k` or `↑` / `↓` | Select notification thread |
+| `Enter` or `o` | Open notification in dedicated browser and mark as read |
+| `m` | Mark selected notification as read |
+| `M` | Mark all notifications as read |
 
 ---
 
