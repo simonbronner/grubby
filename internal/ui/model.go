@@ -66,6 +66,14 @@ type SearchResultsMsg struct {
 
 type StatusToastMsg string
 
+type AutoRefreshTickMsg time.Time
+
+func autoRefreshTickCmd() tea.Cmd {
+	return tea.Tick(30*time.Second, func(t time.Time) tea.Msg {
+		return AutoRefreshTickMsg(t)
+	})
+}
+
 type Model struct {
 	ActiveTab TabType
 	Config    *config.Config
@@ -85,6 +93,8 @@ type Model struct {
 	GitStatuses         map[string]git.RepoGitStatus
 	RateLimit           github.RateLimitInfo
 	Loading             bool
+	InitialDataLoaded   bool
+	LastRefreshTime     time.Time
 
 	// Navigation & Cursors
 	RepoCursor int
@@ -152,6 +162,8 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 		SecuritySummaries:   make(map[string]github.SecurityAlertSummary),
 		SeenNotificationIDs: make(map[string]bool),
 		Loading:             true,
+		InitialDataLoaded:   false,
+		LastRefreshTime:     time.Now(),
 		SearchInput:         si,
 		ModalInput:          mi,
 		SearchPreview:       vp,
@@ -167,6 +179,7 @@ func (m Model) Init() tea.Cmd {
 		m.loadDataCmd(),
 		textinput.Blink,
 		m.Spinner.Tick,
+		autoRefreshTickCmd(),
 	)
 }
 
@@ -253,8 +266,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Spinner, cmd = m.Spinner.Update(msg)
 		return m, cmd
 
+	case AutoRefreshTickMsg:
+		if time.Since(m.LastRefreshTime) >= 5*time.Minute && !m.Loading {
+			m.Loading = true
+			m.LastRefreshTime = time.Now()
+			m.StatusMsg = "Auto-refreshing data from GitHub..."
+			m.StatusMsgTimer = time.Now().Add(4 * time.Second)
+			return m, tea.Batch(m.loadDataCmd(), m.Spinner.Tick, autoRefreshTickCmd())
+		}
+		return m, autoRefreshTickCmd()
+
 	case DataLoadedMsg:
 		m.Loading = false
+		m.InitialDataLoaded = true
+		m.LastRefreshTime = time.Now()
 		if msg.Err != nil {
 			m.StatusMsg = fmt.Sprintf("Error loading data: %v", msg.Err)
 			m.StatusMsgTimer = time.Now().Add(5 * time.Second)
@@ -377,6 +402,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "r":
 			m.Loading = true
+			m.LastRefreshTime = time.Now()
 			m.StatusMsg = "Refreshing data from GitHub..."
 			m.StatusMsgTimer = time.Now().Add(5 * time.Second)
 			return m, tea.Batch(m.loadDataCmd(), m.Spinner.Tick)
@@ -407,8 +433,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	if m.Width == 0 {
-		return "Initializing Grubby..."
+	if m.Width == 0 || !m.InitialDataLoaded {
+		return m.renderSplashScreen()
 	}
 
 	header := m.renderHeader()
@@ -497,10 +523,15 @@ func (m Model) renderHeader() string {
 		user = m.CurrentOrg
 	}
 
+	reqsLastHour := 0
+	if m.RateLimit.Limit > 0 && m.RateLimit.Limit >= m.RateLimit.Remaining {
+		reqsLastHour = m.RateLimit.Limit - m.RateLimit.Remaining
+	}
+
 	var userItem string
 	if m.Width >= 110 {
 		userItem = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render("👤 @"+user) +
-			" " + MetaBarStyle.Render(fmt.Sprintf("(%d/%d API)", m.RateLimit.Remaining, m.RateLimit.Limit))
+			" " + MetaBarStyle.Render(fmt.Sprintf("(%d reqs/h)", reqsLastHour))
 	} else {
 		userItem = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render("👤 @" + user)
 	}

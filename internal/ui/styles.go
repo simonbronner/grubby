@@ -72,10 +72,8 @@ var (
 			Foreground(MutedColor)
 
 	StaleBadge = lipgloss.NewStyle().
-			Background(DangerColor).
-			Foreground(lipgloss.Color("#FFFFFF")).
-			Bold(true).
-			Padding(0, 1)
+			Foreground(DangerColor).
+			Bold(true)
 
 	ApprovedBadge = lipgloss.NewStyle().
 			Foreground(SuccessColor).
