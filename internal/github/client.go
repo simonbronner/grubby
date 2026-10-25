@@ -168,8 +168,8 @@ func (c *Client) queryGraphQL(ctx context.Context, query string, variables map[s
 	return json.Unmarshal(gqlResp.Data, target)
 }
 
-// FetchRepositoriesAndPRs fetches repos, open PRs, and vulnerability summaries for an owner (org or user)
-func (c *Client) FetchRepositoriesAndPRs(ctx context.Context, owner string) ([]Repository, []PullRequest, map[string]SecurityAlertSummary, error) {
+// FetchRepositoriesAndPRs fetches repos, open PRs, commit events, and vulnerability summaries for an owner (org or user)
+func (c *Client) FetchRepositoriesAndPRs(ctx context.Context, owner string) ([]Repository, []PullRequest, []SquadEvent, map[string]SecurityAlertSummary, error) {
 	query := `
 query($login: String!) {
   repositoryOwner(login: $login) {
@@ -183,6 +183,23 @@ query($login: String!) {
         sshUrl
         defaultBranchRef {
           name
+          target {
+            ... on Commit {
+              history(first: 10) {
+                nodes {
+                  oid
+                  message
+                  committedDate
+                  author {
+                    name
+                    user {
+                      login
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
         vulnerabilityAlerts(first: 50, states: OPEN) {
           totalCount
@@ -240,7 +257,22 @@ query($login: String!) {
 					URL              string    `json:"url"`
 					SSHURL           string    `json:"sshUrl"`
 					DefaultBranchRef *struct {
-						Name string `json:"name"`
+						Name   string `json:"name"`
+						Target *struct {
+							History struct {
+								Nodes []struct {
+									OID           string    `json:"oid"`
+									Message       string    `json:"message"`
+									CommittedDate time.Time `json:"committedDate"`
+									Author        struct {
+										Name string `json:"name"`
+										User *struct {
+											Login string `json:"login"`
+										} `json:"user"`
+									} `json:"author"`
+								} `json:"nodes"`
+							} `json:"history"`
+						} `json:"target"`
 					} `json:"defaultBranchRef"`
 					VulnerabilityAlerts struct {
 						TotalCount int `json:"totalCount"`
@@ -289,11 +321,12 @@ query($login: String!) {
 
 	err := c.queryGraphQL(ctx, query, map[string]interface{}{"login": owner}, &resp)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	var repos []Repository
 	var prs []PullRequest
+	var commitEvents []SquadEvent
 	securityMap := make(map[string]SecurityAlertSummary)
 
 	for _, node := range resp.RepositoryOwner.Repositories.Nodes {
@@ -317,6 +350,30 @@ query($login: String!) {
 			SSHURL:        node.SSHURL,
 		}
 		repos = append(repos, repo)
+
+		// Parse commit events from default branch
+		if node.DefaultBranchRef != nil && node.DefaultBranchRef.Target != nil {
+			for _, cNode := range node.DefaultBranchRef.Target.History.Nodes {
+				actor := ""
+				if cNode.Author.User != nil && cNode.Author.User.Login != "" {
+					actor = cNode.Author.User.Login
+				} else if cNode.Author.Name != "" {
+					actor = cNode.Author.Name
+				}
+				msg := strings.Split(cNode.Message, "\n")[0]
+				if len(msg) > 60 {
+					msg = msg[:57] + "..."
+				}
+				commitEvents = append(commitEvents, SquadEvent{
+					Actor:     actor,
+					Action:    "Committed",
+					Repo:      node.Name,
+					Target:    fmt.Sprintf("%s:%s", node.Name, defBranch),
+					Details:   msg,
+					Timestamp: cNode.CommittedDate,
+				})
+			}
+		}
 
 		// Parse Vulnerability Alerts
 		crit, high, med, low := 0, 0, 0, 0
@@ -390,14 +447,26 @@ query($login: String!) {
 		}
 	}
 
-	return repos, prs, securityMap, nil
+	return repos, prs, commitEvents, securityMap, nil
 }
 
-// FetchSquadActivity retrieves public and private events for a list of squad members
-func (c *Client) FetchSquadActivity(ctx context.Context, members []string) ([]SquadEvent, error) {
+// FetchSquadActivity retrieves public and private events for a list of squad members and merges with commit history
+func (c *Client) FetchSquadActivity(ctx context.Context, members []string, commitEvents []SquadEvent) ([]SquadEvent, error) {
 	var events []SquadEvent
 	if len(members) == 0 {
 		return events, nil
+	}
+
+	memberMap := make(map[string]bool)
+	for _, m := range members {
+		memberMap[strings.ToLower(strings.TrimSpace(m))] = true
+	}
+
+	// Filter commitEvents to only include squad members
+	for _, ce := range commitEvents {
+		if memberMap[strings.ToLower(ce.Actor)] {
+			events = append(events, ce)
+		}
 	}
 
 	for _, member := range members {
@@ -540,7 +609,27 @@ func (c *Client) FetchSquadActivity(ctx context.Context, members []string) ([]Sq
 		resp.Body.Close()
 	}
 
-	return events, nil
+	// Deduplicate events that might appear as both PushEvent and Commit
+	var deduplicated []SquadEvent
+	seen := make(map[string]bool)
+	for _, ev := range events {
+		key := fmt.Sprintf("%s|%s|%s|%d", ev.Actor, ev.Repo, ev.Details, ev.Timestamp.Unix())
+		if !seen[key] {
+			seen[key] = true
+			deduplicated = append(deduplicated, ev)
+		}
+	}
+
+	// Sort events by timestamp descending (newest first)
+	for i := 0; i < len(deduplicated)-1; i++ {
+		for j := i + 1; j < len(deduplicated); j++ {
+			if deduplicated[j].Timestamp.After(deduplicated[i].Timestamp) {
+				deduplicated[i], deduplicated[j] = deduplicated[j], deduplicated[i]
+			}
+		}
+	}
+
+	return deduplicated, nil
 }
 
 // TriggerCopilotReview requests a Copilot review on a PR

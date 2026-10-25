@@ -113,11 +113,12 @@ func (m Model) handleSelectSquadModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
-				events, _ := m.GHClient.FetchSquadActivity(ctx, selected.Members)
+				events, _ := m.GHClient.FetchSquadActivity(ctx, selected.Members, nil)
 				return DataLoadedMsg{
 					Repos:       m.Repos,
 					PRs:         m.PRs,
 					SquadEvents: events,
+					Security:    m.SecuritySummaries,
 					RateLimit:   m.GHClient.RateLimit(),
 				}
 			}
@@ -170,11 +171,12 @@ func (m Model) handleAddMemberModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if squad != nil {
 					members = squad.Members
 				}
-				events, _ := m.GHClient.FetchSquadActivity(ctx, members)
+				events, _ := m.GHClient.FetchSquadActivity(ctx, members, nil)
 				return DataLoadedMsg{
 					Repos:       m.Repos,
 					PRs:         m.PRs,
 					SquadEvents: events,
+					Security:    m.SecuritySummaries,
 					RateLimit:   m.GHClient.RateLimit(),
 				}
 			}

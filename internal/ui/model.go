@@ -156,7 +156,7 @@ func (m Model) loadDataCmd() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 
-		repos, prs, secAlerts, err := m.GHClient.FetchRepositoriesAndPRs(ctx, m.CurrentOrg)
+		repos, prs, commitEvents, secAlerts, err := m.GHClient.FetchRepositoriesAndPRs(ctx, m.CurrentOrg)
 		if err != nil {
 			return DataLoadedMsg{Err: err}
 		}
@@ -171,7 +171,7 @@ func (m Model) loadDataCmd() tea.Cmd {
 			_ = m.Config.SetActiveSquad("my-squad")
 			members = []string{m.CurrentOrg}
 		}
-		events, _ := m.GHClient.FetchSquadActivity(ctx, members)
+		events, _ := m.GHClient.FetchSquadActivity(ctx, members, commitEvents)
 
 		return DataLoadedMsg{
 			Repos:       repos,
@@ -223,6 +223,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Loading = false
 		if msg.Err != nil {
 			m.StatusMsg = fmt.Sprintf("Error loading data: %v", msg.Err)
+			m.StatusMsgTimer = time.Now().Add(5 * time.Second)
 			return m, nil
 		}
 		m.Repos = msg.Repos
@@ -230,6 +231,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.SquadEvents = msg.SquadEvents
 		m.SecuritySummaries = msg.Security
 		m.RateLimit = msg.RateLimit
+		m.StatusMsg = "Refreshed data from GitHub"
+		m.StatusMsgTimer = time.Now().Add(4 * time.Second)
 
 		// Trigger workspace git scan once repos are known
 		var names []string
@@ -263,14 +266,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleModalKeys(msg)
 		}
 
-		// Global Key Handling
+		// When search input is focused, route keystrokes directly to it
+		if m.ActiveTab == TabSearch && m.SearchInput.Focused() {
+			return m.handleSearchKeys(msg)
+		}
+
+		// Global Key Handling (only active when not typing in an input field)
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
 		case "q":
-			if m.ActiveTab != TabSearch || !m.SearchInput.Focused() {
-				return m, tea.Quit
-			}
+			return m, tea.Quit
 		case "1":
 			m.ActiveTab = TabRepos
 			return m, nil
@@ -282,18 +288,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "4":
 			m.ActiveTab = TabSearch
-			m.SearchInput.Focus()
 			return m, nil
 		case "5":
 			m.ActiveTab = TabSecurity
 			return m, nil
 		case "tab":
 			m.ActiveTab = (m.ActiveTab + 1) % 5
-			if m.ActiveTab == TabSearch {
-				m.SearchInput.Focus()
-			} else {
-				m.SearchInput.Blur()
-			}
 			return m, nil
 		case "shift+tab":
 			m.ActiveTab = (m.ActiveTab + 4) % 5
@@ -304,6 +304,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			m.Loading = true
 			m.StatusMsg = "Refreshing data from GitHub..."
+			m.StatusMsgTimer = time.Now().Add(5 * time.Second)
 			return m, m.loadDataCmd()
 		}
 
@@ -419,7 +420,7 @@ func (m Model) renderFooter() string {
 	case TabSearch:
 		help = "[/] Query  [j/k] Nodes  [h/l/Space] Toggle  [Tab] Switch Viewport  [Enter] Open Editor  [?] Help"
 	case TabSecurity:
-		help = "[Enter] Drilldown  [o] Web Security  [r] Refresh  [?] Help  [q] Quit"
+		help = "[Enter / o] Open Dependabot Alerts  [r] Refresh  [?] Help  [q] Quit"
 	}
 
 	toast := ""

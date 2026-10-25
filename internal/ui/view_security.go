@@ -33,28 +33,12 @@ func (m Model) handleSecurityKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.RepoCursor < len(sortedRepos)-1 {
 			m.RepoCursor++
 		}
-	case "o":
+	case "o", "enter":
 		if len(sortedRepos) > 0 && m.RepoCursor < len(sortedRepos) {
 			repo := sortedRepos[m.RepoCursor]
-			url := fmt.Sprintf("https://github.com/%s/security", repo.FullName)
+			url := fmt.Sprintf("https://github.com/%s/security/dependabot", repo.FullName)
 			_ = OpenBrowser(url)
-			return m, func() tea.Msg { return StatusToastMsg("Opened security alerts for " + repo.Name) }
-		}
-	case "enter":
-		if len(sortedRepos) > 0 && m.RepoCursor < len(sortedRepos) {
-			repo := sortedRepos[m.RepoCursor]
-			sum := m.SecuritySummaries[repo.Name]
-			if sum.Total > 0 {
-				pkgs := strings.Join(sum.Packages, ", ")
-				if len(pkgs) > 50 {
-					pkgs = pkgs[:47] + "..."
-				}
-				return m, func() tea.Msg {
-					return StatusToastMsg(fmt.Sprintf("%s has %d alerts in: %s", repo.Name, sum.Total, pkgs))
-				}
-			} else {
-				return m, func() tea.Msg { return StatusToastMsg(repo.Name + " has 0 open security alerts!") }
-			}
+			return m, func() tea.Msg { return StatusToastMsg("Opened Dependabot alerts for " + repo.Name) }
 		}
 	}
 	return m, nil
