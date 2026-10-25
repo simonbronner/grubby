@@ -20,7 +20,7 @@ func OpenInDedicatedBrowser(url string) error {
 		return exec.Command("open", url).Start()
 	}
 
-	// 1. Check if we have a saved window ID
+	// 1. Check if we have a saved window ID and if it is still open
 	if data, err := os.ReadFile(browserWinIDFile); err == nil {
 		winIDStr := strings.TrimSpace(string(data))
 		if winID, err := strconv.Atoi(winIDStr); err == nil && winID > 0 {
@@ -44,7 +44,7 @@ end tell`, winID, url)
 		}
 	}
 
-	// 2. Window not found or not created yet. Query existing window IDs before launching
+	// 2. Window not found or closed. Record existing window IDs before launching
 	beforeScript := `
 tell application "Google Chrome"
 	try
@@ -57,36 +57,40 @@ end tell`
 	beforeOut, _ := exec.Command("osascript", "-e", beforeScript).Output()
 	beforeIDs := parseIDList(string(beforeOut))
 
-	// 3. Launch Chrome in app mode (minimal dedicated frame, no bookmarks/toolbar)
-	cmd := exec.Command("open", "-na", "Google Chrome", "--args", fmt.Sprintf("--app=%s", url))
-	if err := cmd.Run(); err != nil {
-		return exec.Command("open", url).Start()
-	}
+	// 3. Launch Chrome binary directly with --app so it connects to the primary running instance
+	chromeBin := "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+	cmd := exec.Command(chromeBin, fmt.Sprintf("--app=%s", url))
+	_ = cmd.Start()
 
-	// Wait briefly for the window to spawn
-	time.Sleep(250 * time.Millisecond)
-
-	// 4. Find the newly created window ID
-	afterOut, _ := exec.Command("osascript", "-e", beforeScript).Output()
-	afterIDs := parseIDList(string(afterOut))
-
+	// 4. Poll for the newly created window ID
 	newWinID := 0
-	for id := range afterIDs {
-		if !beforeIDs[id] {
-			newWinID = id
-			break
-		}
-	}
+	for attempt := 0; attempt < 10; attempt++ {
+		time.Sleep(150 * time.Millisecond)
+		afterOut, _ := exec.Command("osascript", "-e", beforeScript).Output()
+		afterIDs := parseIDList(string(afterOut))
 
-	if newWinID == 0 {
 		for id := range afterIDs {
-			newWinID = id
+			if !beforeIDs[id] {
+				newWinID = id
+				break
+			}
+		}
+		if newWinID > 0 {
 			break
 		}
 	}
 
 	if newWinID > 0 {
 		_ = os.WriteFile(browserWinIDFile, []byte(strconv.Itoa(newWinID)), 0o644)
+		// Ensure the new window is brought to front
+		activateScript := fmt.Sprintf(`
+tell application "Google Chrome"
+	try
+		set index of (window id %d) to 1
+		activate
+	end try
+end tell`, newWinID)
+		_ = exec.Command("osascript", "-e", activateScript).Run()
 	}
 
 	return nil

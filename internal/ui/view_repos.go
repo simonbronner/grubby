@@ -16,12 +16,13 @@ import (
 
 var (
 	repoColCursor = lipgloss.NewStyle().Width(3)
-	repoColName   = lipgloss.NewStyle().Width(24)
-	repoColGroup  = lipgloss.NewStyle().Width(18)
-	repoColGit    = lipgloss.NewStyle().Width(18)
-	repoColBranch = lipgloss.NewStyle().Width(14)
-	repoColLast   = lipgloss.NewStyle().Width(16)
-	repoColPath   = lipgloss.NewStyle().Width(34)
+	repoColName   = lipgloss.NewStyle().Width(28) // ( n ) repo-name
+	repoColSec    = lipgloss.NewStyle().Width(12) // SECURITY issues column
+	repoColGroup  = lipgloss.NewStyle().Width(16)
+	repoColGit    = lipgloss.NewStyle().Width(16)
+	repoColBranch = lipgloss.NewStyle().Width(12)
+	repoColLast   = lipgloss.NewStyle().Width(14)
+	repoColPath   = lipgloss.NewStyle().Width(30)
 )
 
 func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -34,6 +35,20 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.RepoCursor < len(m.Repos)-1 {
 			m.RepoCursor++
 		}
+	case "enter":
+		// Enter key opens repository root in dedicated browser
+		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
+			repo := m.Repos[m.RepoCursor]
+			_ = OpenBrowser(repo.URL)
+			return m, func() tea.Msg { return StatusToastMsg("Opened " + repo.Name + " in dedicated browser") }
+		}
+	case "o":
+		// 'o' opens the repo tabs submenu (issues, pull requests, actions, security, etc.)
+		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
+			m.ActiveModal = ModalRepoTabs
+			m.ModalCursor = 0
+			return m, nil
+		}
 	case "g":
 		// Open Groups modal for current repo
 		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
@@ -44,12 +59,6 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			for _, grp := range m.Config.GetGroupsForRepo(repo.Name) {
 				m.SelectedRepoGroups[grp] = true
 			}
-		}
-	case "o":
-		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
-			repo := m.Repos[m.RepoCursor]
-			_ = OpenBrowser(repo.URL)
-			return m, func() tea.Msg { return StatusToastMsg("Opened " + repo.Name + " in browser") }
 		}
 	case "e":
 		if len(m.Repos) > 0 && m.RepoCursor < len(m.Repos) {
@@ -131,8 +140,8 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) renderReposView() string {
-	if m.Loading {
-		return "\n  Fetching repositories from GitHub...\n"
+	if m.Loading && len(m.Repos) == 0 {
+		return fmt.Sprintf("\n  %s Fetching repositories from GitHub...\n", m.Spinner.View())
 	}
 	if len(m.Repos) == 0 {
 		return "\n  No repositories found for " + m.CurrentOrg + ".\n"
@@ -141,6 +150,7 @@ func (m Model) renderReposView() string {
 	headerRow := lipgloss.JoinHorizontal(lipgloss.Top,
 		repoColCursor.Render(""),
 		repoColName.Render("REPOSITORY"),
+		repoColSec.Render("SECURITY"),
 		repoColGroup.Render("GROUPS"),
 		repoColGit.Render("GIT STATUS"),
 		repoColBranch.Render("BRANCH"),
@@ -170,17 +180,77 @@ func (m Model) renderReposView() string {
 		r := m.Repos[i]
 		st := m.GitStatuses[r.Name]
 
-		// Format Groups
+		// 1. Calculate open PR count for this repository
+		var nameColText string
+		if m.Loading {
+			nameColText = fmt.Sprintf("(%s) %s", m.Spinner.View(), r.Name)
+		} else {
+			prCount := 0
+			for _, pr := range m.PRs {
+				if strings.EqualFold(pr.Repo, r.Name) {
+					prCount++
+				}
+			}
+
+			var prBadge string
+			if prCount > 0 {
+				prBadge = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render(fmt.Sprintf("(%d)", prCount))
+			} else {
+				prBadge = lipgloss.NewStyle().Foreground(MutedColor).Render("(0)")
+			}
+			nameColText = fmt.Sprintf("%s %s", prBadge, r.Name)
+		}
+
+		if len(r.Name) > 21 {
+			// Ensure it fits the column nicely
+			shortName := r.Name[:19] + "…"
+			if m.Loading {
+				nameColText = fmt.Sprintf("(%s) %s", m.Spinner.View(), shortName)
+			} else {
+				prCount := 0
+				for _, pr := range m.PRs {
+					if strings.EqualFold(pr.Repo, r.Name) {
+						prCount++
+					}
+				}
+				var prBadge string
+				if prCount > 0 {
+					prBadge = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render(fmt.Sprintf("(%d)", prCount))
+				} else {
+					prBadge = lipgloss.NewStyle().Foreground(MutedColor).Render("(0)")
+				}
+				nameColText = fmt.Sprintf("%s %s", prBadge, shortName)
+			}
+		}
+
+		// 2. Format Security Issues column
+		var secColText string
+		if m.Loading {
+			secColText = m.Spinner.View()
+		} else {
+			sum := m.SecuritySummaries[r.Name]
+			if sum.Critical > 0 {
+				secColText = lipgloss.NewStyle().Foreground(DangerColor).Bold(true).Render(fmt.Sprintf("%d [CRIT]", sum.Critical))
+			} else if sum.High > 0 {
+				secColText = lipgloss.NewStyle().Foreground(WarningColor).Bold(true).Render(fmt.Sprintf("%d [HIGH]", sum.High))
+			} else if sum.Total > 0 {
+				secColText = lipgloss.NewStyle().Foreground(WarningColor).Render(fmt.Sprintf("%d [warn]", sum.Total))
+			} else {
+				secColText = lipgloss.NewStyle().Foreground(SuccessColor).Render("0 [✓]")
+			}
+		}
+
+		// 3. Format Groups
 		groups := m.Config.GetGroupsForRepo(r.Name)
 		groupText := "-"
 		if len(groups) > 0 {
 			groupText = strings.Join(groups, ", ")
 		}
-		if len(groupText) > 16 {
-			groupText = groupText[:13] + "..."
+		if len(groupText) > 14 {
+			groupText = groupText[:11] + "..."
 		}
 
-		// Git badge
+		// 4. Git badge
 		gitBadge := st.Badge()
 		var styledBadge string
 		switch st.State {
@@ -200,8 +270,8 @@ func (m Model) renderReposView() string {
 		if branch == "" {
 			branch = r.DefaultBranch
 		}
-		if len(branch) > 12 {
-			branch = branch[:11] + "…"
+		if len(branch) > 10 {
+			branch = branch[:9] + "…"
 		}
 
 		lastPushed := formatTimeAgo(r.PushedAt)
@@ -209,8 +279,8 @@ func (m Model) renderReposView() string {
 		localPath := "-"
 		if st.IsCloned {
 			localPath = config.CollapseHome(st.LocalPath)
-			if len(localPath) > 32 {
-				localPath = "…" + localPath[len(localPath)-31:]
+			if len(localPath) > 28 {
+				localPath = "…" + localPath[len(localPath)-27:]
 			}
 		}
 
@@ -219,14 +289,10 @@ func (m Model) renderReposView() string {
 			prefix = "▶ "
 		}
 
-		name := r.Name
-		if len(name) > 22 {
-			name = name[:20] + "…"
-		}
-
 		rowCells := lipgloss.JoinHorizontal(lipgloss.Top,
 			repoColCursor.Render(prefix),
-			repoColName.Render(name),
+			repoColName.Render(nameColText),
+			repoColSec.Render(secColText),
 			repoColGroup.Render(groupText),
 			repoColGit.Render(styledBadge),
 			repoColBranch.Render(branch),

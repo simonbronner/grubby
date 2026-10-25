@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -37,6 +38,7 @@ const (
 	ModalManageGroups
 	ModalSelectSquad
 	ModalAddMember
+	ModalRepoTabs
 	ModalHelp
 )
 
@@ -111,6 +113,7 @@ type Model struct {
 	// Status / Toast
 	StatusMsg      string
 	StatusMsgTimer time.Time
+	Spinner        spinner.Model
 }
 
 func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceManager, org string) Model {
@@ -126,6 +129,10 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 
 	vp := viewport.New(60, 20)
 
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(SecondaryColor)
+
 	m := Model{
 		ActiveTab:          TabRepos,
 		Config:             cfg,
@@ -140,6 +147,7 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 		ModalInput:         mi,
 		SearchPreview:      vp,
 		SelectedRepoGroups: make(map[string]bool),
+		Spinner:            sp,
 	}
 
 	return m
@@ -149,6 +157,7 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.loadDataCmd(),
 		textinput.Blink,
+		m.Spinner.Tick,
 	)
 }
 
@@ -219,6 +228,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.SearchPreview.Width = (m.Width / 2) - 4
 		m.SearchPreview.Height = m.Height - 12
 		return m, nil
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.Spinner, cmd = m.Spinner.Update(msg)
+		return m, cmd
 
 	case DataLoadedMsg:
 		m.Loading = false
@@ -306,7 +320,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Loading = true
 			m.StatusMsg = "Refreshing data from GitHub..."
 			m.StatusMsgTimer = time.Now().Add(5 * time.Second)
-			return m, m.loadDataCmd()
+			return m, tea.Batch(m.loadDataCmd(), m.Spinner.Tick)
 		}
 
 		// Tab-Specific Key Handling
@@ -413,7 +427,7 @@ func (m Model) renderFooter() string {
 	var help string
 	switch m.ActiveTab {
 	case TabRepos:
-		help = "[g] Groups  [c] Clone  [e] Editor  [t] Shell (iTerm)  [o] Browser  [u] Fast-forward  [?] Help  [q] Quit"
+		help = "[Enter] Open Web  [o] Web Tabs Menu  [g] Groups  [c] Clone  [e] Editor (nvim)  [t] Shell  [u] Fast-forward  [?] Help  [q] Quit"
 	case TabPRs:
 		help = "[o] Browser  [p] Trigger Copilot Review  [c] Checkout Branch  [r] Refresh  [?] Help  [q] Quit"
 	case TabSquad:

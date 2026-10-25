@@ -18,6 +18,8 @@ func (m Model) handleModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleSelectSquadModalKeys(msg)
 	case ModalAddMember:
 		return m.handleAddMemberModalKeys(msg)
+	case ModalRepoTabs:
+		return m.handleRepoTabsModalKeys(msg)
 	case ModalHelp:
 		if msg.String() == "esc" || msg.String() == "q" || msg.String() == "?" {
 			m.ActiveModal = ModalNone
@@ -36,6 +38,8 @@ func (m Model) renderModalOverlay(baseView string) string {
 		modalContent = m.renderSelectSquadModal()
 	case ModalAddMember:
 		modalContent = m.renderAddMemberModal()
+	case ModalRepoTabs:
+		modalContent = m.renderRepoTabsModal()
 	case ModalHelp:
 		modalContent = m.renderHelpModal()
 	}
@@ -200,11 +204,12 @@ Global Navigation:
 
 Repositories Tab (1):
   [j/k] or [↑/↓]      Select repository
+  [Enter]             Open repo in dedicated browser
+  [o]                 Open GitHub Web Tabs Submenu (Issues, PRs, Actions, Security...)
   [g]                 Manage Groups (assign / create groups)
   [c]                 Clone repo to ~/workspaces/
   [e]                 Open in $EDITOR (Neovim/VS Code)
   [t]                 Open in shell (iTerm2 on macOS)
-  [o]                 Open repo in GitHub browser
   [u]                 Fast-forward clean behind repo
 
 Pull Requests Tab (2):
