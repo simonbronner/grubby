@@ -27,7 +27,7 @@ type MemberContribution struct {
 	ID           string
 	Login        string
 	Name         string
-	AvatarArt    string
+	HasAvatar    bool
 	Commits      int
 	Pushes       int
 	Reviews      int
@@ -87,16 +87,16 @@ func (m Model) computeSquadDashboard() SquadDashboardData {
 			id = prof.FormattedID()
 		}
 
-		var avatarArt string
-		if m.AvatarCache != nil {
-			avatarArt = m.AvatarCache[memLower]
+		hasAvatar := false
+		if m.RawAvatarCache != nil && len(m.RawAvatarCache[memLower]) > 0 {
+			hasAvatar = true
 		}
 
 		memberContribMap[memLower] = &MemberContribution{
 			ID:        id,
 			Login:     mem,
 			Name:      name,
-			AvatarArt: avatarArt,
+			HasAvatar: hasAvatar,
 		}
 		memberRepoCounts[memLower] = make(map[string]int)
 	}
@@ -138,15 +138,15 @@ func (m Model) computeSquadDashboard() SquadDashboardData {
 				}
 				id = prof.FormattedID()
 			}
-			var avatarArt string
-			if m.AvatarCache != nil {
-				avatarArt = m.AvatarCache[actorLower]
+			hasAvatar := false
+			if m.RawAvatarCache != nil && len(m.RawAvatarCache[actorLower]) > 0 {
+				hasAvatar = true
 			}
 			memberContribMap[actorLower] = &MemberContribution{
 				ID:        id,
 				Login:     ev.Actor,
 				Name:      name,
-				AvatarArt: avatarArt,
+				HasAvatar: hasAvatar,
 			}
 			memberRepoCounts[actorLower] = make(map[string]int)
 		}
@@ -481,11 +481,9 @@ func (m Model) renderSquadView() string {
 		mem := dashboard.MemberContributions[i]
 
 		isSelected := (i == m.SquadCursor)
-		cardBorderColor := lipgloss.Color("#303045")
 		cursorIndicator := "  "
 		nameColor := lipgloss.Color("#FFFFFF")
 		if isSelected {
-			cardBorderColor = PrimaryColor
 			cursorIndicator = "▶ "
 			nameColor = SecondaryColor
 		}
@@ -531,20 +529,21 @@ func (m Model) renderSquadView() string {
 
 		textBlock := lipgloss.JoinVertical(lipgloss.Left, line1, line2, line3, line4)
 
-		avatar := mem.AvatarArt
-		if avatar == "" {
+		// Avatar: reserve a blank rectangular bounding box using Lip Gloss
+		// if native image data is available, or render fallback monogram badge.
+		var avatar string
+		if mem.HasAvatar {
+			avatar = RenderAvatarBoundingBox(8, 4)
+		} else {
 			avatar = RenderFallbackAvatar(8, 4)
 		}
 
 		cardContent := lipgloss.JoinHorizontal(lipgloss.Top, avatar, "  ", textBlock)
-		cardStyle := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(cardBorderColor).
-			Padding(0, 1).
+		contributorStyle := lipgloss.NewStyle().
 			MarginLeft(2).
-			Width(cardWidth)
+			PaddingBottom(1)
 
-		memberPanes = append(memberPanes, cardStyle.Render(cardContent))
+		memberPanes = append(memberPanes, contributorStyle.Render(cardContent))
 	}
 
 	sections = append(sections, strings.Join(memberPanes, "\n"))

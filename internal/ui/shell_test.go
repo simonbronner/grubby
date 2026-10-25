@@ -9,12 +9,12 @@ func TestSanitizeTmuxSessionName(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"auth-service", "grubby-auth-service"},
-		{"api.gateway", "grubby-api-gateway"},
-		{"core/payments", "grubby-core-payments"},
-		{"weird@#name!123", "grubby-weird-name-123"},
-		{"", "grubby-repo"},
-		{"---", "grubby-repo"},
+		{"auth-service", "auth-service"},
+		{"api.gateway", "api-gateway"},
+		{"core/payments", "core-payments"},
+		{"weird@#name!123", "weird-name-123"},
+		{"", "repo"},
+		{"---", "repo"},
 	}
 
 	for _, tt := range tests {

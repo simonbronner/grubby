@@ -87,8 +87,8 @@ type SearchResultsMsg struct {
 type StatusToastMsg string
 
 type AvatarLoadedMsg struct {
-	Login string
-	Art   string
+	Login   string
+	RawData []byte
 }
 
 type ProfilesLoadedMsg struct {
@@ -119,7 +119,7 @@ type Model struct {
 	SecuritySummaries   map[string]github.SecurityAlertSummary
 	Notifications       []github.Notification
 	OrgMembers          []github.OrgMember
-	AvatarCache         map[string]string            // login -> rendered ANSI 24-bit half-block art
+	RawAvatarCache      map[string][]byte            // login -> raw image bytes for iTerm2 native graphics
 	ProfileCache        map[string]github.OrgMember  // login -> enriched profile (id, name, avatarUrl)
 	SeenNotificationIDs map[string]bool
 	GitStatuses         map[string]git.RepoGitStatus
@@ -220,7 +220,7 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 		GitStatuses:           make(map[string]git.RepoGitStatus),
 		SecuritySummaries:     make(map[string]github.SecurityAlertSummary),
 		SeenNotificationIDs:   make(map[string]bool),
-		AvatarCache:           make(map[string]string),
+		RawAvatarCache:        make(map[string][]byte),
 		ProfileCache:          make(map[string]github.OrgMember),
 		Loading:               true,
 		InitialDataLoaded:     false,
@@ -549,11 +549,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case AvatarLoadedMsg:
-		if msg.Art != "" {
-			if m.AvatarCache == nil {
-				m.AvatarCache = make(map[string]string)
+		if len(msg.RawData) > 0 {
+			if m.RawAvatarCache == nil {
+				m.RawAvatarCache = make(map[string][]byte)
 			}
-			m.AvatarCache[strings.ToLower(msg.Login)] = msg.Art
+			m.RawAvatarCache[strings.ToLower(msg.Login)] = msg.RawData
+			return m, EmitITerm2ImageCmd(msg.RawData, 8, 4)
 		}
 		return m, nil
 
@@ -892,9 +893,9 @@ func (m Model) renderFooter() string {
 	switch m.ActiveTab {
 	case TabRepos:
 		if m.RepoFilter != "" || m.RepoGroupFilter != "" || m.RepoSortVulnerabilities {
-			help = "[v] View Group  [f] Filter  [s] Sort Vulns  [Esc] Clear  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [e] Editor  [t] Shell  [?] Help"
+			help = "[v] View Group  [f] Filter  [s] Sort Vulns  [Esc] Clear  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [e] Session  [t] Shell  [E] Editor  [?] Help"
 		} else {
-			help = "[v] View Group  [f] Filter  [s] Sort Vulns  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [e] Editor  [t] Shell  [u] Sync  [?] Help"
+			help = "[v] View Group  [f] Filter  [s] Sort Vulns  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [e] Session  [t] Shell  [E] Editor  [u] Sync  [?] Help"
 		}
 	case TabPRs:
 		if m.PRFilter != "" {
@@ -1081,8 +1082,8 @@ func (m Model) fetchSquadAvatarsCmd(logins []string) tea.Cmd {
 			continue
 		}
 		lLower := strings.ToLower(lClean)
-		if m.AvatarCache != nil {
-			if _, exists := m.AvatarCache[lLower]; exists {
+		if m.RawAvatarCache != nil {
+			if _, exists := m.RawAvatarCache[lLower]; exists {
 				continue
 			}
 		}
@@ -1104,14 +1105,9 @@ func (m Model) fetchSquadAvatarsCmd(logins []string) tea.Cmd {
 				return nil
 			}
 
-			art, err := RenderAvatarArt(data, 8, 4, true)
-			if err != nil || art == "" {
-				return nil
-			}
-
 			return AvatarLoadedMsg{
-				Login: lLower,
-				Art:   art,
+				Login:   lLower,
+				RawData: data,
 			}
 		})
 	}

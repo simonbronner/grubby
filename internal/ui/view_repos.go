@@ -167,6 +167,35 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "e":
+		// Go to existing session for repository
+		if len(repos) > 0 && m.RepoCursor < len(repos) {
+			repo := repos[m.RepoCursor]
+			st := m.GitStatuses[repo.Name]
+			if st.IsCloned {
+				msg, err := GoToRepoSession(repo.Name, st.LocalPath)
+				if err != nil {
+					return m, func() tea.Msg { return StatusToastMsg("Failed to switch session: " + err.Error()) }
+				}
+				return m, func() tea.Msg { return StatusToastMsg(msg) }
+			}
+			return m, func() tea.Msg { return StatusToastMsg("Repo is not cloned yet! Press 'c' to clone.") }
+		}
+	case "t":
+		// Open repo shell (creates new window if session exists, or creates session)
+		if len(repos) > 0 && m.RepoCursor < len(repos) {
+			repo := repos[m.RepoCursor]
+			st := m.GitStatuses[repo.Name]
+			if st.IsCloned {
+				msg, err := OpenRepoShell(repo.Name, st.LocalPath)
+				if err != nil {
+					return m, func() tea.Msg { return StatusToastMsg("Failed to open shell: " + err.Error()) }
+				}
+				return m, func() tea.Msg { return StatusToastMsg(msg) }
+			}
+			return m, func() tea.Msg { return StatusToastMsg("Repo is not cloned yet! Press 'c' to clone.") }
+		}
+	case "E":
+		// Open repo in editor (nvim)
 		if len(repos) > 0 && m.RepoCursor < len(repos) {
 			repo := repos[m.RepoCursor]
 			st := m.GitStatuses[repo.Name]
@@ -177,31 +206,8 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				collapsed := config.CollapseHome(st.LocalPath)
 				return m, func() tea.Msg { return StatusToastMsg("Opened nvim in " + collapsed) }
-			} else {
-				return m, func() tea.Msg { return StatusToastMsg("Repo is not cloned yet! Press 'c' to clone.") }
 			}
-		}
-	case "t":
-		// Open repo in a dedicated shell / tmux session
-		if len(repos) > 0 && m.RepoCursor < len(repos) {
-			repo := repos[m.RepoCursor]
-			st := m.GitStatuses[repo.Name]
-			if st.IsCloned {
-				tmuxUsed, err := OpenRepoShell(repo.Name, st.LocalPath)
-				if err != nil {
-					return m, func() tea.Msg { return StatusToastMsg("Failed to open shell: " + err.Error()) }
-				}
-				sessionName := SanitizeTmuxSessionName(repo.Name)
-				if tmuxUsed {
-					return m, func() tea.Msg { return StatusToastMsg(fmt.Sprintf("Opened tmux session '%s'", sessionName)) }
-				}
-				collapsed := config.CollapseHome(st.LocalPath)
-				return m, func() tea.Msg {
-					return StatusToastMsg(fmt.Sprintf("Opened shell at %s (tip: install tmux for persistent sessions)", collapsed))
-				}
-			} else {
-				return m, func() tea.Msg { return StatusToastMsg("Repo is not cloned yet! Press 'c' to clone.") }
-			}
+			return m, func() tea.Msg { return StatusToastMsg("Repo is not cloned yet! Press 'c' to clone.") }
 		}
 	case "c":
 		// Clone repo

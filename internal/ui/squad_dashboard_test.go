@@ -1,10 +1,6 @@
 package ui
 
 import (
-	"bytes"
-	"image"
-	"image/color"
-	"image/png"
 	"strings"
 	"testing"
 	"time"
@@ -196,7 +192,7 @@ func TestSquadDashboard_DeterministicSortingJitterFree(t *testing.T) {
 	}
 }
 
-func TestSquadDashboard_BorderIntegrityAndUserDetails(t *testing.T) {
+func TestSquadDashboard_CleanBorderlessAndUserDetails(t *testing.T) {
 	now := time.Now()
 
 	cfg := &config.Config{
@@ -250,52 +246,30 @@ func TestSquadDashboard_BorderIntegrityAndUserDetails(t *testing.T) {
 		t.Errorf("expected rendered view to show ID: 583231")
 	}
 
-	// 2. Check border alignment integrity
-	lines := strings.Split(rendered, "\n")
-	for lineIdx, line := range lines {
-		// If line contains card box characters, verify proper margin and no broken left indent
-		if strings.Contains(line, "╭") || strings.Contains(line, "│") || strings.Contains(line, "╰") {
-			// Find the index of the first box character
-			boxCharIdx := -1
-			for charIdx, r := range line {
-				if r == '╭' || r == '│' || r == '╰' {
-					boxCharIdx = charIdx
-					break
-				}
-			}
-			// MarginLeft(2) means the border character should always start at column 2 (2 leading spaces)
-			if boxCharIdx != 2 {
-				t.Errorf("broken border alignment on line %d (expected box char at column 2, got column %d): %q", lineIdx, boxCharIdx, line)
-			}
-		}
+	// 2. Check selected cursor prefix
+	if !strings.Contains(rendered, "▶ @simonb (Simon Bronner)") {
+		t.Errorf("expected rendered view to contain selected cursor prefix ▶")
 	}
 }
 
-func TestAvatar_RenderAndFallback(t *testing.T) {
-	// 1. Create a synthetic 16x16 test image (blue circle on white background)
-	img := image.NewRGBA(image.Rect(0, 0, 16, 16))
-	for y := 0; y < 16; y++ {
-		for x := 0; x < 16; x++ {
-			img.Set(x, y, color.RGBA{R: 50, G: 100, B: 200, A: 255})
-		}
-	}
-	buf := bytes.NewBuffer(nil)
-	if err := png.Encode(buf, img); err != nil {
-		t.Fatalf("png encode error: %v", err)
+func TestAvatar_ITerm2NativeGraphicsAndBoundingBox(t *testing.T) {
+	// 1. Test BuildITerm2ImageSequence standard
+	seq := BuildITerm2ImageSequence("aGVsbG8=", 8, 4)
+	expectedSeq := "\x1b]1337;File=inline=1;width=8;height=4;preserveAspectRatio=1:aGVsbG8=\x07"
+	if !strings.Contains(seq, expectedSeq) {
+		t.Errorf("expected sequence to contain %q, got %q", expectedSeq, seq)
 	}
 
-	// 2. Test RenderAvatarArt 8x4
-	art, err := RenderAvatarArt(buf.Bytes(), 8, 4, true)
-	if err != nil {
-		t.Fatalf("RenderAvatarArt failed: %v", err)
-	}
-	lines := strings.Split(art, "\n")
+	// 2. Test RenderAvatarBoundingBox
+	bbox := RenderAvatarBoundingBox(8, 4)
+	lines := strings.Split(bbox, "\n")
 	if len(lines) != 4 {
-		t.Fatalf("expected 4 lines of avatar art, got %d", len(lines))
+		t.Fatalf("expected 4 lines in bounding box, got %d", len(lines))
 	}
-	// Verify ANSI escapes present
-	if !strings.Contains(art, "\x1b[38;2;") {
-		t.Errorf("expected 24-bit TrueColor foreground escape in avatar art")
+	for i, l := range lines {
+		if len(l) != 8 {
+			t.Errorf("line %d: expected width 8, got %d", i, len(l))
+		}
 	}
 
 	// 3. Test RenderFallbackAvatar
