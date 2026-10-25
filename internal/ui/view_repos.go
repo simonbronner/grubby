@@ -182,17 +182,23 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "t":
-		// Open repo in a new shell (iTerm2 on macOS)
+		// Open repo in a dedicated shell / tmux session
 		if len(repos) > 0 && m.RepoCursor < len(repos) {
 			repo := repos[m.RepoCursor]
 			st := m.GitStatuses[repo.Name]
 			if st.IsCloned {
-				err := OpenInShell(st.LocalPath)
+				tmuxUsed, err := OpenRepoShell(repo.Name, st.LocalPath)
 				if err != nil {
 					return m, func() tea.Msg { return StatusToastMsg("Failed to open shell: " + err.Error()) }
 				}
+				sessionName := SanitizeTmuxSessionName(repo.Name)
+				if tmuxUsed {
+					return m, func() tea.Msg { return StatusToastMsg(fmt.Sprintf("Opened tmux session '%s'", sessionName)) }
+				}
 				collapsed := config.CollapseHome(st.LocalPath)
-				return m, func() tea.Msg { return StatusToastMsg("Opened iTerm at " + collapsed) }
+				return m, func() tea.Msg {
+					return StatusToastMsg(fmt.Sprintf("Opened shell at %s (tip: install tmux for persistent sessions)", collapsed))
+				}
 			} else {
 				return m, func() tea.Msg { return StatusToastMsg("Repo is not cloned yet! Press 'c' to clone.") }
 			}
