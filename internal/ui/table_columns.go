@@ -3,25 +3,25 @@ package ui
 import "github.com/charmbracelet/lipgloss"
 
 type RepoColumns struct {
-	Cursor lipgloss.Style
-	Name   lipgloss.Style
-	Sec    lipgloss.Style
-	Group  lipgloss.Style
-	Git    lipgloss.Style
-	Branch lipgloss.Style
-	Last   lipgloss.Style
-	Path   lipgloss.Style
+	Cursor       lipgloss.Style
+	Name         lipgloss.Style
+	Sec          lipgloss.Style
+	Group        lipgloss.Style
+	Git          lipgloss.Style
+	Session      lipgloss.Style
+	Last         lipgloss.Style
+	Path         lipgloss.Style
 
-	NameWidth   int
-	GroupWidth  int
-	BranchWidth int
-	PathWidth   int
+	NameWidth    int
+	GroupWidth   int
+	SessionWidth int
+	PathWidth    int
 }
 
 func computeRepoColumns(termWidth int) RepoColumns {
 	w := termWidth - 2
 	// Minimum width:
-	// Cursor (3) + Sec (16) + Git (16) + Branch (12) + Last (13) + MinName (22) + MinGroup (12) + MinPath (18) = 112
+	// Cursor (3) + Sec (16) + Git (16) + Session (12) + Last (13) + MinName (22) + MinGroup (12) + MinPath (18) = 112
 	if w < 112 {
 		w = 112
 	}
@@ -44,18 +44,18 @@ func computeRepoColumns(termWidth int) RepoColumns {
 	}
 
 	return RepoColumns{
-		Cursor:      colStyle(3),
-		Name:        colStyle(nameW),
-		Sec:         colStyle(16),
-		Group:       colStyle(groupW),
-		Git:         colStyle(16),
-		Branch:      colStyle(12),
-		Last:        colStyle(13),
-		Path:        colStyle(pathW),
-		NameWidth:   nameW,
-		GroupWidth:  groupW,
-		BranchWidth: 12,
-		PathWidth:   pathW,
+		Cursor:       colStyle(3),
+		Name:         colStyle(nameW),
+		Sec:          colStyle(16),
+		Group:        colStyle(groupW),
+		Git:          colStyle(16),
+		Session:      colStyle(12),
+		Last:         colStyle(13),
+		Path:         colStyle(pathW),
+		NameWidth:    nameW,
+		GroupWidth:   groupW,
+		SessionWidth: 12,
+		PathWidth:    pathW,
 	}
 }
 

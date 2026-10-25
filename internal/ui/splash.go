@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"grubby/internal/assets"
@@ -107,8 +108,29 @@ func RenderSplashArt(imagePath string, targetWidth int) (string, int, int) {
 
 // RenderSplashScreen renders the full centered startup splash screen
 func (m Model) renderSplashScreen() string {
-	iconPath := "internal/assets/grubby-icon.png"
-	art, _, _ := RenderSplashArt(iconPath, 34)
+	w := m.Width
+	if w <= 0 {
+		w = 80
+	}
+	h := m.Height
+	if h <= 0 {
+		h = 24
+	}
+
+	imgW := 24
+	imgH := 12
+
+	var iconBox string
+	if len(assets.GrubbyIconPNG) > 0 {
+		iconBox = RenderAvatarBoundingBox(imgW, imgH)
+	} else {
+		iconBox = lipgloss.NewStyle().
+			Bold(true).
+			Background(PrimaryColor).
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Padding(1, 4).
+			Render("ᘛ( ᵔ ᴗ ᵔ*)ᘚ\n  GRUBBY  ")
+	}
 
 	title := lipgloss.NewStyle().
 		Bold(true).
@@ -127,35 +149,23 @@ func (m Model) renderSplashScreen() string {
 
 	hint := MetaBarStyle.Render("Connecting to GitHub GraphQL API • Scanning ~/workspaces")
 
-	var content string
-	if art != "" {
-		content = lipgloss.JoinVertical(lipgloss.Center,
-			art,
-			"",
-			title,
-			subtitle,
-			"",
-			loadingMsg,
-			hint,
-		)
-	} else {
-		// Fallback ASCII badge if image not found
-		mascot := lipgloss.NewStyle().
-			Bold(true).
-			Background(PrimaryColor).
-			Foreground(lipgloss.Color("#FFFFFF")).
-			Padding(1, 4).
-			Render("ᘛ( ᵔ ᴗ ᵔ*)ᘚ\n  GRUBBY  ")
+	content := lipgloss.JoinVertical(lipgloss.Center,
+		iconBox,
+		"",
+		title,
+		subtitle,
+		"",
+		loadingMsg,
+		hint,
+	)
 
-		content = lipgloss.JoinVertical(lipgloss.Center,
-			mascot,
-			"",
-			title,
-			subtitle,
-			"",
-			loadingMsg,
-			hint,
-		)
+	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, content)
+}
+
+// emitSplashImageCmd outputs the native iTerm2 inline graphic for Grubby icon on the splash screen
+func (m Model) emitSplashImageCmd() tea.Cmd {
+	if m.InitialDataLoaded || len(assets.GrubbyIconPNG) == 0 {
+		return nil
 	}
 
 	w := m.Width
@@ -167,5 +177,19 @@ func (m Model) renderSplashScreen() string {
 		h = 24
 	}
 
-	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, content)
+	imgW := 24
+	imgH := 12
+	contentH := 18
+
+	padTop := (h - contentH) / 2
+	if padTop < 0 {
+		padTop = 0
+	}
+	row := padTop + 1
+	col := (w - imgW) / 2 + 1
+	if col < 1 {
+		col = 1
+	}
+
+	return EmitITerm2ImageCmd(assets.GrubbyIconPNG, row, col, imgW, imgH)
 }

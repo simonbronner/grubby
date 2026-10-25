@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,12 +49,22 @@ const (
 	ModalManageSquad
 )
 
+type RepoActionType int
+
+const (
+	RepoActionNone RepoActionType = iota
+	RepoActionSession
+	RepoActionEditor
+	RepoActionShell
+)
+
 // Async messages
 type RepoClonedMsg struct {
-	RepoName  string
-	TargetDir string
-	Status    git.RepoGitStatus
-	Err       error
+	RepoName   string
+	TargetDir  string
+	Status     git.RepoGitStatus
+	Err        error
+	PostAction RepoActionType
 }
 
 type DataLoadedMsg struct {
@@ -85,6 +96,15 @@ type SearchResultsMsg struct {
 
 type StatusToastMsg string
 
+type AvatarLoadedMsg struct {
+	Login   string
+	RawData []byte
+}
+
+type ProfilesLoadedMsg struct {
+	Profiles map[string]github.OrgMember
+}
+
 type AutoRefreshTickMsg time.Time
 
 func autoRefreshTickCmd() tea.Cmd {
@@ -109,6 +129,8 @@ type Model struct {
 	SecuritySummaries   map[string]github.SecurityAlertSummary
 	Notifications       []github.Notification
 	OrgMembers          []github.OrgMember
+	RawAvatarCache      map[string][]byte            // login -> raw image bytes for iTerm2 native graphics
+	ProfileCache        map[string]github.OrgMember  // login -> enriched profile (id, name, avatarUrl)
 	SeenNotificationIDs map[string]bool
 	GitStatuses         map[string]git.RepoGitStatus
 	RateLimit           github.RateLimitInfo
@@ -208,6 +230,8 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 		GitStatuses:           make(map[string]git.RepoGitStatus),
 		SecuritySummaries:     make(map[string]github.SecurityAlertSummary),
 		SeenNotificationIDs:   make(map[string]bool),
+		RawAvatarCache:        make(map[string][]byte),
+		ProfileCache:          make(map[string]github.OrgMember),
 		Loading:               true,
 		InitialDataLoaded:     false,
 		LastRefreshTime:       time.Now(),
@@ -233,6 +257,7 @@ func (m Model) Init() tea.Cmd {
 		textinput.Blink,
 		m.Spinner.Tick,
 		autoRefreshTickCmd(),
+		m.emitSplashImageCmd(),
 	)
 }
 
@@ -297,6 +322,34 @@ func (m Model) loadDataCmd() tea.Cmd {
 			}
 		}
 
+		// Enrich squad member profiles with ID, full name, and avatar URL
+		if len(members) > 0 {
+			if squadProfiles, err := m.GHClient.FetchUserProfiles(ctx, members); err == nil {
+				for _, sp := range squadProfiles {
+					spLower := strings.ToLower(sp.Login)
+					if !seenMembers[spLower] {
+						seenMembers[spLower] = true
+						orgMembers = append(orgMembers, sp)
+					} else {
+						for i, om := range orgMembers {
+							if strings.EqualFold(om.Login, sp.Login) {
+								if sp.Name != "" {
+									orgMembers[i].Name = sp.Name
+								}
+								if sp.FormattedID() != "" {
+									orgMembers[i].ID = sp.ID
+									orgMembers[i].DatabaseID = sp.DatabaseID
+								}
+								if sp.AvatarURL != "" {
+									orgMembers[i].AvatarURL = sp.AvatarURL
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
 		return DataLoadedMsg{
 			AuthUser:      authUser,
 			Repos:         repos,
@@ -344,16 +397,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Height = msg.Height
 		m.SearchPreview.Width = (m.Width / 2) - 4
 		m.SearchPreview.Height = m.Height - 12
+		if !m.InitialDataLoaded {
+			return m, m.emitSplashImageCmd()
+		}
+		if m.ActiveTab == TabSquad {
+			return m, m.emitSquadMemberAvatarsCmd()
+		}
 		return m, nil
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.Spinner, cmd = m.Spinner.Update(msg)
+		if !m.InitialDataLoaded {
+			return m, tea.Batch(cmd, m.emitSplashImageCmd())
+		}
 		return m, cmd
 
 	case AutoRefreshTickMsg:
 		var cmds []tea.Cmd
 		cmds = append(cmds, autoRefreshTickCmd())
+
+		if m.ActiveTab == TabSquad {
+			cmds = append(cmds, m.emitSquadMemberAvatarsCmd())
+		}
 
 		// Poll GitHub Status every 60 seconds
 		if time.Since(m.LastStatusCheck) >= 60*time.Second {
@@ -492,6 +558,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, m.scanWorkspacesCmd(names))
 
+		// Seed ProfileCache
+		for _, om := range m.OrgMembers {
+			m.ProfileCache[strings.ToLower(om.Login)] = om
+		}
+
+		// Trigger avatar downloads for active squad members
+		var squadLogins []string
+		if activeSquad := m.Config.GetActiveSquad(); activeSquad != nil {
+			squadLogins = activeSquad.Members
+		}
+		if len(squadLogins) > 0 && m.GHClient != nil {
+			cmds = append(cmds, m.fetchSquadAvatarsCmd(squadLogins))
+		}
+		if m.ActiveTab == TabSquad {
+			cmds = append(cmds, m.emitSquadMemberAvatarsCmd())
+		}
+
+	case AvatarLoadedMsg:
+		if len(msg.RawData) > 0 {
+			if m.RawAvatarCache == nil {
+				m.RawAvatarCache = make(map[string][]byte)
+			}
+			m.RawAvatarCache[strings.ToLower(msg.Login)] = msg.RawData
+			if m.ActiveTab == TabSquad {
+				return m, m.emitSquadMemberAvatarsCmd()
+			}
+		}
+		return m, nil
+
+	case ProfilesLoadedMsg:
+		if m.ProfileCache == nil {
+			m.ProfileCache = make(map[string]github.OrgMember)
+		}
+		for _, p := range msg.Profiles {
+			m.ProfileCache[strings.ToLower(p.Login)] = p
+		}
+		return m, nil
+
 	case GitStatusUpdatedMsg:
 		m.GitStatuses = msg.Statuses
 
@@ -503,7 +607,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.GitStatuses[msg.RepoName] = msg.Status
 		collapsed := config.CollapseHome(msg.TargetDir)
-		m.StatusMsg = "Successfully cloned " + msg.RepoName + " to " + collapsed
+
+		switch msg.PostAction {
+		case RepoActionSession:
+			outMsg, err := GoToRepoSession(msg.RepoName, msg.TargetDir)
+			if err != nil {
+				m.StatusMsg = "Cloned, but session failed: " + err.Error()
+			} else {
+				m.StatusMsg = fmt.Sprintf("Cloned %s & %s", msg.RepoName, outMsg)
+			}
+		case RepoActionEditor:
+			outMsg, err := OpenRepoEditor(msg.RepoName, msg.TargetDir)
+			if err != nil {
+				m.StatusMsg = "Cloned, but editor failed: " + err.Error()
+			} else {
+				m.StatusMsg = fmt.Sprintf("Cloned %s & %s", msg.RepoName, outMsg)
+			}
+		case RepoActionShell:
+			outMsg, err := OpenRepoShell(msg.RepoName, msg.TargetDir)
+			if err != nil {
+				m.StatusMsg = "Cloned, but shell failed: " + err.Error()
+			} else {
+				m.StatusMsg = fmt.Sprintf("Cloned %s & %s", msg.RepoName, outMsg)
+			}
+		default:
+			m.StatusMsg = "Successfully cloned " + msg.RepoName + " to " + collapsed
+		}
 		m.StatusMsgTimer = time.Now().Add(4 * time.Second)
 		return m, nil
 
@@ -526,7 +655,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// Modal Key Handling
 		if m.ActiveModal != ModalNone {
-			return m.handleModalKeys(msg)
+			prevModal := m.ActiveModal
+			newM, cmd := m.handleModalKeys(msg)
+			if updatedModel, ok := newM.(Model); ok {
+				if prevModal != ModalNone && updatedModel.ActiveModal == ModalNone && updatedModel.ActiveTab == TabSquad {
+					return updatedModel, tea.Batch(cmd, updatedModel.emitSquadMemberAvatarsCmd())
+				}
+			}
+			return newM, cmd
 		}
 
 		// When search input is focused, route keystrokes directly to it
@@ -548,7 +684,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "3":
 			m.ActiveTab = TabSquad
-			return m, nil
+			return m, m.emitSquadMemberAvatarsCmd()
 		case "4":
 			m.ActiveTab = TabSearch
 			return m, nil
@@ -560,9 +696,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "tab":
 			m.ActiveTab = (m.ActiveTab + 1) % 6
+			if m.ActiveTab == TabSquad {
+				return m, m.emitSquadMemberAvatarsCmd()
+			}
 			return m, nil
 		case "shift+tab":
 			m.ActiveTab = (m.ActiveTab + 5) % 6
+			if m.ActiveTab == TabSquad {
+				return m, m.emitSquadMemberAvatarsCmd()
+			}
 			return m, nil
 		case "?":
 			m.ActiveModal = ModalHelp
@@ -808,7 +950,7 @@ func (m Model) renderTopBar() string {
 		fullLine = leftPart
 	}
 
-	return TabBarBorder.Render(fullLine)
+	return TopBarStyle.Render(fullLine)
 }
 
 func (m Model) renderFooter() string {
@@ -818,9 +960,9 @@ func (m Model) renderFooter() string {
 	switch m.ActiveTab {
 	case TabRepos:
 		if m.RepoFilter != "" || m.RepoGroupFilter != "" || m.RepoSortVulnerabilities {
-			help = "[v] View Group  [f] Filter  [s] Sort Vulns  [Esc] Clear  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [e] Editor  [t] Shell  [?] Help"
+			help = "[/] Filter  [v] Sort Vulns  [s] Session  [e] Editor  [t] Shell  [Esc] Clear  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [?] Help"
 		} else {
-			help = "[v] View Group  [f] Filter  [s] Sort Vulns  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [e] Editor  [t] Shell  [u] Sync  [?] Help"
+			help = "[/] Filter  [v] Sort Vulns  [s] Session  [e] Editor  [t] Shell  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [u] Sync  [?] Help"
 		}
 	case TabPRs:
 		if m.PRFilter != "" {
@@ -994,4 +1136,50 @@ end tell`, dir, dir)
 		return exec.Command("open", "-a", "iTerm", dir).Start()
 	}
 	return exec.Command("open", "-a", "Terminal", dir).Start()
+}
+
+func (m Model) fetchSquadAvatarsCmd(logins []string) tea.Cmd {
+	if m.GHClient == nil {
+		return nil
+	}
+	var cmds []tea.Cmd
+	for _, login := range logins {
+		lClean := strings.TrimSpace(login)
+		if lClean == "" {
+			continue
+		}
+		lLower := strings.ToLower(lClean)
+		if m.RawAvatarCache != nil {
+			if _, exists := m.RawAvatarCache[lLower]; exists {
+				continue
+			}
+		}
+
+		ghClient := m.GHClient
+		profile := m.ProfileCache[lLower]
+
+		cmds = append(cmds, func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+
+			avatarURL := profile.AvatarURL
+			if avatarURL == "" {
+				avatarURL = fmt.Sprintf("https://github.com/%s.png?size=64", url.PathEscape(lClean))
+			}
+
+			data, err := ghClient.DownloadAvatar(ctx, avatarURL)
+			if err != nil || len(data) == 0 {
+				return nil
+			}
+
+			return AvatarLoadedMsg{
+				Login:   lLower,
+				RawData: data,
+			}
+		})
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
 }

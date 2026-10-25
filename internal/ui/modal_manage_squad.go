@@ -441,6 +441,7 @@ func (m Model) reloadSquadActivityCmd() tea.Cmd {
 			Repos:       m.Repos,
 			PRs:         m.PRs,
 			SquadEvents: events,
+			OrgMembers:  m.OrgMembers,
 			Security:    m.SecuritySummaries,
 			RateLimit:   m.GHClient.RateLimit(),
 		}

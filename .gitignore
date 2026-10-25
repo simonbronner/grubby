@@ -1,5 +1,6 @@
 # Binaries
 /grubby
+/bin/
 *.exe
 *.test
 /dist/

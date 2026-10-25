@@ -696,8 +696,18 @@ query($searchQuery: String!) {
 }
 
 type OrgMember struct {
-	Login string `json:"login"`
-	Name  string `json:"name"`
+	ID         string `json:"id"`
+	DatabaseID int64  `json:"database_id"`
+	Login      string `json:"login"`
+	Name       string `json:"name"`
+	AvatarURL  string `json:"avatar_url"`
+}
+
+func (m OrgMember) FormattedID() string {
+	if m.DatabaseID > 0 {
+		return fmt.Sprintf("%d", m.DatabaseID)
+	}
+	return m.ID
 }
 
 // FetchOrgMembers retrieves the members of an organization (up to 100)
@@ -707,8 +717,11 @@ query($login: String!) {
   organization(login: $login) {
     membersWithRole(first: 100) {
       nodes {
+        id
+        databaseId
         login
         name
+        avatarUrl(size: 64)
       }
     }
   }
@@ -718,8 +731,11 @@ query($login: String!) {
 		Organization *struct {
 			MembersWithRole struct {
 				Nodes []struct {
-					Login string  `json:"login"`
-					Name  *string `json:"name"`
+					ID         string  `json:"id"`
+					DatabaseID *int64  `json:"databaseId"`
+					Login      string  `json:"login"`
+					Name       *string `json:"name"`
+					AvatarURL  string  `json:"avatarUrl"`
 				} `json:"nodes"`
 			} `json:"membersWithRole"`
 		} `json:"organization"`
@@ -733,9 +749,16 @@ query($login: String!) {
 			if n.Name != nil && strings.TrimSpace(*n.Name) != "" {
 				name = *n.Name
 			}
+			var dbID int64
+			if n.DatabaseID != nil {
+				dbID = *n.DatabaseID
+			}
 			members = append(members, OrgMember{
-				Login: n.Login,
-				Name:  name,
+				ID:         n.ID,
+				DatabaseID: dbID,
+				Login:      n.Login,
+				Name:       name,
+				AvatarURL:  n.AvatarURL,
 			})
 		}
 		return members, nil
@@ -758,18 +781,212 @@ query($login: String!) {
 
 	if httpResp.StatusCode == http.StatusOK {
 		var raw []struct {
-			Login string `json:"login"`
+			ID        int64  `json:"id"`
+			NodeID    string `json:"node_id"`
+			Login     string `json:"login"`
+			AvatarURL string `json:"avatar_url"`
 		}
 		if err := json.NewDecoder(httpResp.Body).Decode(&raw); err == nil && len(raw) > 0 {
 			var members []OrgMember
 			for _, r := range raw {
-				members = append(members, OrgMember{Login: r.Login, Name: r.Login})
+				members = append(members, OrgMember{
+					ID:         r.NodeID,
+					DatabaseID: r.ID,
+					Login:      r.Login,
+					Name:       r.Login,
+					AvatarURL:  r.AvatarURL,
+				})
 			}
 			return members, nil
 		}
 	}
 
 	return nil, fmt.Errorf("no members found for org %s", org)
+}
+
+// FetchUserProfile retrieves detailed profile information (id, name, avatarUrl) for a user.
+func (c *Client) FetchUserProfile(ctx context.Context, login string) (*OrgMember, error) {
+	query := `
+query($login: String!) {
+  user(login: $login) {
+    id
+    databaseId
+    login
+    name
+    avatarUrl(size: 64)
+  }
+}
+`
+	var resp struct {
+		User *struct {
+			ID         string  `json:"id"`
+			DatabaseID *int64  `json:"databaseId"`
+			Login      string  `json:"login"`
+			Name       *string `json:"name"`
+			AvatarURL  string  `json:"avatarUrl"`
+		} `json:"user"`
+	}
+
+	err := c.queryGraphQL(ctx, query, map[string]interface{}{"login": login}, &resp)
+	if err == nil && resp.User != nil {
+		name := resp.User.Login
+		if resp.User.Name != nil && strings.TrimSpace(*resp.User.Name) != "" {
+			name = *resp.User.Name
+		}
+		var dbID int64
+		if resp.User.DatabaseID != nil {
+			dbID = *resp.User.DatabaseID
+		}
+		return &OrgMember{
+			ID:         resp.User.ID,
+			DatabaseID: dbID,
+			Login:      resp.User.Login,
+			Name:       name,
+			AvatarURL:  resp.User.AvatarURL,
+		}, nil
+	}
+
+	// Fallback to REST API /users/{login}
+	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("https://api.github.com/users/%s", url.PathEscape(login)), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	httpResp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer httpResp.Body.Close()
+	c.updateRateLimits(httpResp)
+
+	if httpResp.StatusCode == http.StatusOK {
+		var raw struct {
+			ID        int64   `json:"id"`
+			NodeID    string  `json:"node_id"`
+			Login     string  `json:"login"`
+			Name      *string `json:"name"`
+			AvatarURL string  `json:"avatar_url"`
+		}
+		if err := json.NewDecoder(httpResp.Body).Decode(&raw); err == nil {
+			name := raw.Login
+			if raw.Name != nil && strings.TrimSpace(*raw.Name) != "" {
+				name = *raw.Name
+			}
+			return &OrgMember{
+				ID:         raw.NodeID,
+				DatabaseID: raw.ID,
+				Login:      raw.Login,
+				Name:       name,
+				AvatarURL:  raw.AvatarURL,
+			}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("user not found: %s", login)
+}
+
+// FetchUserProfiles retrieves detailed profile information for multiple users.
+// It uses aliased GraphQL queries to fetch all members in a single request.
+func (c *Client) FetchUserProfiles(ctx context.Context, logins []string) (map[string]OrgMember, error) {
+	profiles := make(map[string]OrgMember)
+	if len(logins) == 0 {
+		return profiles, nil
+	}
+
+	// Deduplicate logins
+	unique := make(map[string]string)
+	for _, l := range logins {
+		lClean := strings.TrimSpace(l)
+		if lClean != "" {
+			unique[strings.ToLower(lClean)] = lClean
+		}
+	}
+
+	var cleanLogins []string
+	for _, l := range unique {
+		cleanLogins = append(cleanLogins, l)
+	}
+
+	// Build batch GraphQL query
+	var queryParts []string
+	queryParts = append(queryParts, "query {")
+	for i, l := range cleanLogins {
+		escaped := strings.ReplaceAll(l, `"`, `\"`)
+		queryParts = append(queryParts, fmt.Sprintf(`  u%d: user(login: "%s") { id databaseId login name avatarUrl(size: 64) }`, i, escaped))
+	}
+	queryParts = append(queryParts, "}")
+	query := strings.Join(queryParts, "\n")
+
+	var rawResp map[string]interface{}
+	err := c.queryGraphQL(ctx, query, nil, &rawResp)
+	if err == nil && rawResp != nil {
+		for i, l := range cleanLogins {
+			alias := fmt.Sprintf("u%d", i)
+			if uData, ok := rawResp[alias].(map[string]interface{}); ok && uData != nil {
+				loginStr, _ := uData["login"].(string)
+				if loginStr == "" {
+					loginStr = l
+				}
+				idStr, _ := uData["id"].(string)
+				var dbID int64
+				if f, ok := uData["databaseId"].(float64); ok {
+					dbID = int64(f)
+				}
+				nameStr := loginStr
+				if n, ok := uData["name"].(string); ok && strings.TrimSpace(n) != "" {
+					nameStr = n
+				}
+				avatarURL, _ := uData["avatarUrl"].(string)
+
+				profiles[strings.ToLower(loginStr)] = OrgMember{
+					ID:         idStr,
+					DatabaseID: dbID,
+					Login:      loginStr,
+					Name:       nameStr,
+					AvatarURL:  avatarURL,
+				}
+			}
+		}
+	}
+
+	// For any login that was not resolved, try individual FetchUserProfile as fallback
+	for _, l := range cleanLogins {
+		if _, ok := profiles[strings.ToLower(l)]; !ok {
+			if prof, err := c.FetchUserProfile(ctx, l); err == nil && prof != nil {
+				profiles[strings.ToLower(prof.Login)] = *prof
+			}
+		}
+	}
+
+	return profiles, nil
+}
+
+// DownloadAvatar downloads an avatar image using the configured HTTP client (respecting proxy/TLS).
+func (c *Client) DownloadAvatar(ctx context.Context, avatarURL string) ([]byte, error) {
+	if avatarURL == "" {
+		return nil, fmt.Errorf("empty avatar url")
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", avatarURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	if strings.Contains(avatarURL, "api.github.com") {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("avatar download failed with status %d", resp.StatusCode)
+	}
+
+	return io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
 }
 
 // FetchSquadActivity retrieves public and private events for a list of squad members and merges with commit history

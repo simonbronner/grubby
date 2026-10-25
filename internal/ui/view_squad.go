@@ -9,6 +9,8 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"grubby/internal/github"
 )
 
 type RepoActivitySummary struct {
@@ -22,8 +24,10 @@ type RepoActivitySummary struct {
 }
 
 type MemberContribution struct {
+	ID           string
 	Login        string
 	Name         string
+	HasAvatar    bool
 	Commits      int
 	Pushes       int
 	Reviews      int
@@ -54,9 +58,9 @@ func (m Model) computeSquadDashboard() SquadDashboardData {
 		memberMap[strings.ToLower(strings.TrimSpace(mem))] = true
 	}
 
-	orgMemberNames := make(map[string]string)
+	orgMemberDetails := make(map[string]github.OrgMember)
 	for _, om := range m.OrgMembers {
-		orgMemberNames[strings.ToLower(om.Login)] = om.Name
+		orgMemberDetails[strings.ToLower(om.Login)] = om
 	}
 
 	// Filter squad events within the last 14 days
@@ -69,13 +73,30 @@ func (m Model) computeSquadDashboard() SquadDashboardData {
 	// Initialize squad members even if they had 0 activity in 2 weeks
 	for _, mem := range squadMembers {
 		memLower := strings.ToLower(strings.TrimSpace(mem))
-		name := orgMemberNames[memLower]
-		if name == "" {
-			name = mem
+		name := mem
+		var id string
+		if om, ok := orgMemberDetails[memLower]; ok {
+			if om.Name != "" {
+				name = om.Name
+			}
+			id = om.FormattedID()
+		} else if prof, ok := m.ProfileCache[memLower]; ok {
+			if prof.Name != "" {
+				name = prof.Name
+			}
+			id = prof.FormattedID()
 		}
+
+		hasAvatar := false
+		if m.RawAvatarCache != nil && len(m.RawAvatarCache[memLower]) > 0 {
+			hasAvatar = true
+		}
+
 		memberContribMap[memLower] = &MemberContribution{
-			Login: mem,
-			Name:  name,
+			ID:        id,
+			Login:     mem,
+			Name:      name,
+			HasAvatar: hasAvatar,
 		}
 		memberRepoCounts[memLower] = make(map[string]int)
 	}
@@ -104,13 +125,28 @@ func (m Model) computeSquadDashboard() SquadDashboardData {
 		repoContribMap[repoName][ev.Actor] = true
 
 		if memberContribMap[actorLower] == nil {
-			name := orgMemberNames[actorLower]
-			if name == "" {
-				name = ev.Actor
+			name := ev.Actor
+			var id string
+			if om, ok := orgMemberDetails[actorLower]; ok {
+				if om.Name != "" {
+					name = om.Name
+				}
+				id = om.FormattedID()
+			} else if prof, ok := m.ProfileCache[actorLower]; ok {
+				if prof.Name != "" {
+					name = prof.Name
+				}
+				id = prof.FormattedID()
+			}
+			hasAvatar := false
+			if m.RawAvatarCache != nil && len(m.RawAvatarCache[actorLower]) > 0 {
+				hasAvatar = true
 			}
 			memberContribMap[actorLower] = &MemberContribution{
-				Login: ev.Actor,
-				Name:  name,
+				ID:        id,
+				Login:     ev.Actor,
+				Name:      name,
+				HasAvatar: hasAvatar,
 			}
 			memberRepoCounts[actorLower] = make(map[string]int)
 		}
@@ -160,8 +196,24 @@ func (m Model) computeSquadDashboard() SquadDashboardData {
 		sort.Strings(summary.Contributors)
 		activeRepos = append(activeRepos, *summary)
 	}
+	// Multi-tiered deterministic tiebreakers to eliminate visual jitter
 	sort.Slice(activeRepos, func(i, j int) bool {
-		return activeRepos[i].TotalActions > activeRepos[j].TotalActions
+		if activeRepos[i].TotalActions != activeRepos[j].TotalActions {
+			return activeRepos[i].TotalActions > activeRepos[j].TotalActions
+		}
+		if activeRepos[i].Commits != activeRepos[j].Commits {
+			return activeRepos[i].Commits > activeRepos[j].Commits
+		}
+		if activeRepos[i].Reviews != activeRepos[j].Reviews {
+			return activeRepos[i].Reviews > activeRepos[j].Reviews
+		}
+		if activeRepos[i].Pushes != activeRepos[j].Pushes {
+			return activeRepos[i].Pushes > activeRepos[j].Pushes
+		}
+		if activeRepos[i].Merges != activeRepos[j].Merges {
+			return activeRepos[i].Merges > activeRepos[j].Merges
+		}
+		return strings.ToLower(activeRepos[i].RepoName) < strings.ToLower(activeRepos[j].RepoName)
 	})
 
 	// Finalize Member Contributions
@@ -183,7 +235,10 @@ func (m Model) computeSquadDashboard() SquadDashboardData {
 			pairs = append(pairs, repoPair{repo: r, count: count})
 		}
 		sort.Slice(pairs, func(i, j int) bool {
-			return pairs[i].count > pairs[j].count
+			if pairs[i].count != pairs[j].count {
+				return pairs[i].count > pairs[j].count
+			}
+			return strings.ToLower(pairs[i].repo) < strings.ToLower(pairs[j].repo)
 		})
 
 		for i, p := range pairs {
@@ -196,9 +251,24 @@ func (m Model) computeSquadDashboard() SquadDashboardData {
 		memberContributions = append(memberContributions, *c)
 	}
 
-	// Sort member contributions by total actions descending
+	// Sort member contributions by total actions descending with deterministic tiebreakers
 	sort.Slice(memberContributions, func(i, j int) bool {
-		return memberContributions[i].TotalActions > memberContributions[j].TotalActions
+		if memberContributions[i].TotalActions != memberContributions[j].TotalActions {
+			return memberContributions[i].TotalActions > memberContributions[j].TotalActions
+		}
+		if memberContributions[i].Commits != memberContributions[j].Commits {
+			return memberContributions[i].Commits > memberContributions[j].Commits
+		}
+		if memberContributions[i].Reviews != memberContributions[j].Reviews {
+			return memberContributions[i].Reviews > memberContributions[j].Reviews
+		}
+		if memberContributions[i].Pushes != memberContributions[j].Pushes {
+			return memberContributions[i].Pushes > memberContributions[j].Pushes
+		}
+		if memberContributions[i].Merges != memberContributions[j].Merges {
+			return memberContributions[i].Merges > memberContributions[j].Merges
+		}
+		return strings.ToLower(memberContributions[i].Login) < strings.ToLower(memberContributions[j].Login)
 	})
 
 	return SquadDashboardData{
@@ -220,14 +290,18 @@ func (m Model) handleSquadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.SquadCursor > 0 {
 			m.SquadCursor--
 		}
+		return m, m.emitSquadMemberAvatarsCmd()
 	case "down", "j":
 		if m.SquadCursor < totalItems-1 {
 			m.SquadCursor++
 		}
+		return m, m.emitSquadMemberAvatarsCmd()
 	case "home", "g":
 		m.SquadCursor = 0
+		return m, m.emitSquadMemberAvatarsCmd()
 	case "end", "G":
 		m.SquadCursor = totalItems - 1
+		return m, m.emitSquadMemberAvatarsCmd()
 	case "m":
 		// Open Manage Squad modal for active squad
 		activeSquad := m.Config.GetActiveSquad()
@@ -286,6 +360,19 @@ func (m Model) handleSquadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) renderSquadView() string {
+	view, _ := m.renderSquadDashboardView()
+	return view
+}
+
+func (m Model) emitSquadMemberAvatarsCmd() tea.Cmd {
+	if m.ActiveTab != TabSquad || m.ActiveModal != ModalNone {
+		return nil
+	}
+	_, placements := m.renderSquadDashboardView()
+	return EmitITerm2ImagesCmd(placements)
+}
+
+func (m Model) renderSquadDashboardView() (string, []AvatarPlacement) {
 	activeSquad := m.Config.GetActiveSquad()
 	squadName := "None Configured"
 	if activeSquad != nil {
@@ -301,10 +388,11 @@ func (m Model) renderSquadView() string {
 		Render(fmt.Sprintf("👥 Squad Dashboard: %s", squadName))
 
 	metaRange := MetaBarStyle.Render("  •  Time Range: Last 2 Weeks (14 Days)  •  " + fmt.Sprintf("%d Squad Members", len(dashboard.MemberContributions)))
-	banner := "  " + titleBadge + metaRange + "\n"
+	banner := "  " + titleBadge + metaRange
 
 	if len(dashboard.MemberContributions) == 0 {
-		return banner + "\n  No members configured in this squad.\n  Press 'm' to manage squad, 'a' to add members, or 's' to switch squads.\n"
+		emptyView := banner + "\n\n  No members configured in this squad.\n  Press 'm' to manage squad, 'a' to add members, or 's' to switch squads.\n"
+		return emptyView, nil
 	}
 
 	var sections []string
@@ -387,6 +475,15 @@ func (m Model) renderSquadView() string {
 	memberHeader := lipgloss.NewStyle().Bold(true).Foreground(SecondaryColor).Render("  👥 SQUAD MEMBER CONTRIBUTIONS (LAST 14 DAYS)")
 	sections = append(sections, memberHeader)
 
+	// Calculate starting row for member panes dynamically based on rendered line count
+	topBar := m.renderTopBar()
+	topBarLines := strings.Count(topBar, "\n") + 1
+
+	preMemberSections := strings.Join(sections, "\n\n") + "\n\n"
+	preMemberLines := strings.Count(preMemberSections, "\n")
+
+	currentRow := topBarLines + preMemberLines + 1
+
 	visiblePanes := 4
 	if m.Height > 34 {
 		visiblePanes = 6
@@ -406,16 +503,18 @@ func (m Model) renderSquadView() string {
 		cardWidth = 40
 	}
 
+	var placements []AvatarPlacement
 	var memberPanes []string
+
 	for i := start; i < end; i++ {
 		mem := dashboard.MemberContributions[i]
 
 		isSelected := (i == m.SquadCursor)
-		cursorPrefix := "   "
-		cardBorderColor := lipgloss.Color("#303045")
+		cursorIndicator := "  "
+		nameColor := lipgloss.Color("#FFFFFF")
 		if isSelected {
-			cursorPrefix = " ▶ "
-			cardBorderColor = PrimaryColor
+			cursorIndicator = "▶ "
+			nameColor = SecondaryColor
 		}
 
 		nameDisplay := "@" + mem.Login
@@ -423,12 +522,14 @@ func (m Model) renderSquadView() string {
 			nameDisplay = fmt.Sprintf("@%s (%s)", mem.Login, mem.Name)
 		}
 
-		titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF"))
-		if isSelected {
-			titleStyle = titleStyle.Foreground(SecondaryColor)
-		}
+		cursorStyle := lipgloss.NewStyle().Bold(true).Foreground(SecondaryColor)
+		titleStyle := lipgloss.NewStyle().Bold(true).Foreground(nameColor)
+		idStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#7F8497"))
 
-		line1 := titleStyle.Render(nameDisplay)
+		line1 := cursorStyle.Render(cursorIndicator) + titleStyle.Render(nameDisplay)
+		if mem.ID != "" {
+			line1 += idStyle.Render(fmt.Sprintf("  •  ID: %s", mem.ID))
+		}
 
 		// Line 2: Contribution stats
 		statCommits := fmt.Sprintf("📦 %d Commits", mem.Commits)
@@ -439,29 +540,57 @@ func (m Model) renderSquadView() string {
 
 		line2 := fmt.Sprintf("  %s   %s   %s   %s   %s", statCommits, statPushes, statReviews, statMerges, statTotal)
 
-		// Line 3: Top repos & recent highlight
+		// Line 3: Top repos
 		topReposStr := "None"
 		if len(mem.TopRepos) > 0 {
 			topReposStr = strings.Join(mem.TopRepos, ", ")
 		}
+		line3 := lipgloss.NewStyle().Foreground(lipgloss.Color("#7F8497")).Render("  Top Repos: ") +
+			lipgloss.NewStyle().Foreground(lipgloss.Color("#B3B9D1")).Render(topReposStr)
+
+		// Line 4: Recent highlight
 		recentStr := "No activity in last 14 days"
 		if mem.RecentAction != "" {
 			recentStr = mem.RecentAction
 		}
+		line4 := lipgloss.NewStyle().Foreground(lipgloss.Color("#7F8497")).Render("  Latest: ") +
+			lipgloss.NewStyle().Foreground(lipgloss.Color("#B3B9D1")).Render(recentStr)
 
-		line3 := MetaBarStyle.Render(fmt.Sprintf("  Top Repos: %s  •  Latest: %s", topReposStr, recentStr))
+		textBlock := lipgloss.JoinVertical(lipgloss.Left, line1, line2, line3, line4)
 
-		cardContent := lipgloss.JoinVertical(lipgloss.Left, line1, line2, line3)
-		cardStyle := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(cardBorderColor).
-			Padding(0, 1).
-			Width(cardWidth)
+		// Avatar: reserve a blank rectangular bounding box using Lip Gloss
+		// if native image data is available, or render fallback monogram badge.
+		var avatar string
+		memLower := strings.ToLower(mem.Login)
+		rawBytes := m.RawAvatarCache[memLower]
+		if len(rawBytes) > 0 {
+			avatar = RenderAvatarBoundingBox(8, 4)
+			placements = append(placements, AvatarPlacement{
+				Login:    mem.Login,
+				Row:      currentRow,
+				Col:      3, // Column 3: terminal is 1-based, MarginLeft(2) shifts 2 cells
+				Width:    8,
+				Height:   4,
+				RawBytes: rawBytes,
+			})
+		} else {
+			avatar = RenderFallbackAvatar(8, 4)
+		}
 
-		memberPanes = append(memberPanes, cursorPrefix+cardStyle.Render(cardContent))
+		cardContent := lipgloss.JoinHorizontal(lipgloss.Top, avatar, "  ", textBlock)
+		contributorStyle := lipgloss.NewStyle().
+			MarginLeft(2).
+			PaddingBottom(1)
+
+		renderedPane := contributorStyle.Render(cardContent)
+		memberPanes = append(memberPanes, renderedPane)
+
+		// Advance currentRow by the exact number of lines in this rendered pane
+		linesInPane := strings.Count(renderedPane, "\n") + 1
+		currentRow += linesInPane
 	}
 
 	sections = append(sections, strings.Join(memberPanes, "\n"))
 
-	return strings.Join(sections, "\n\n")
+	return strings.Join(sections, "\n\n"), placements
 }
