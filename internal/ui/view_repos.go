@@ -449,6 +449,9 @@ func (m Model) renderReposView() string {
 }
 
 func formatTimeAgo(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
 	d := time.Since(t)
 	if d.Hours() < 1 {
 		return fmt.Sprintf("%dm ago", int(d.Minutes()))

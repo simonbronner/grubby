@@ -31,6 +31,9 @@ type PullRequest struct {
 }
 
 func (pr PullRequest) DaysStale() int {
+	if pr.UpdatedAt.IsZero() {
+		return 0
+	}
 	days := int(time.Since(pr.UpdatedAt).Hours() / 24)
 	if days < 0 {
 		return 0
