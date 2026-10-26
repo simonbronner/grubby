@@ -29,11 +29,14 @@ type TabType int
 const (
 	TabRepos TabType = iota
 	TabPRs
+	TabMyTasks
+	TabSquadTasks
 	TabSquad
-	TabTasks
 	TabSearch
-	TabNotifications
 	TabStatus
+
+	// Backward compatibility alias
+	TabTasks = TabMyTasks
 )
 
 type ModalType int
@@ -1551,29 +1554,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ActiveTab = TabPRs
 			return m, nil
 		case "3":
-			m.ActiveTab = TabSquad
-			return m, m.emitSquadMemberAvatarsCmd()
+			m.ActiveTab = TabMyTasks
+			m.ActiveTaskSubtab = TaskSubtabMine
+			return m, nil
 		case "4":
-			m.ActiveTab = TabTasks
+			m.ActiveTab = TabSquadTasks
+			m.ActiveTaskSubtab = TaskSubtabSquad
 			return m, nil
 		case "5":
-			m.ActiveTab = TabSearch
-			return m, nil
+			m.ActiveTab = TabSquad
+			return m, m.emitSquadMemberAvatarsCmd()
 		case "6":
-			m.ActiveTab = TabNotifications
+			m.ActiveTab = TabSearch
 			return m, nil
 		case "7":
 			m.ActiveTab = TabStatus
 			return m, nil
 		case "tab":
 			m.ActiveTab = (m.ActiveTab + 1) % 7
-			if m.ActiveTab == TabSquad {
+			if m.ActiveTab == TabMyTasks {
+				m.ActiveTaskSubtab = TaskSubtabMine
+			} else if m.ActiveTab == TabSquadTasks {
+				m.ActiveTaskSubtab = TaskSubtabSquad
+			} else if m.ActiveTab == TabSquad {
 				return m, m.emitSquadMemberAvatarsCmd()
 			}
 			return m, nil
 		case "shift+tab":
 			m.ActiveTab = (m.ActiveTab + 6) % 7
-			if m.ActiveTab == TabSquad {
+			if m.ActiveTab == TabMyTasks {
+				m.ActiveTaskSubtab = TaskSubtabMine
+			} else if m.ActiveTab == TabSquadTasks {
+				m.ActiveTaskSubtab = TaskSubtabSquad
+			} else if m.ActiveTab == TabSquad {
 				return m, m.emitSquadMemberAvatarsCmd()
 			}
 			return m, nil
@@ -1595,14 +1608,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleReposKeys(msg)
 		case TabPRs:
 			return m.handlePRsKeys(msg)
+		case TabMyTasks, TabSquadTasks:
+			return m.handleTasksKeys(msg)
 		case TabSquad:
 			return m.handleSquadKeys(msg)
-		case TabTasks:
-			return m.handleTasksKeys(msg)
 		case TabSearch:
 			return m.handleSearchKeys(msg)
-		case TabNotifications:
-			return m.handleNotificationsKeys(msg)
 		case TabStatus:
 			return m.handleStatusKeys(msg)
 		}
@@ -1639,16 +1650,16 @@ func (m Model) View() string {
 		body = m.renderReposView()
 	case TabPRs:
 		body = m.renderPRsView()
+	case TabMyTasks, TabSquadTasks:
+		body = m.renderTasksView()
 	case TabSquad:
 		body = m.renderSquadView()
-	case TabTasks:
-		body = m.renderTasksView()
 	case TabSearch:
 		body = m.renderSearchView()
-	case TabNotifications:
-		body = m.renderNotificationsView()
 	case TabStatus:
 		body = m.renderStatusView()
+	default:
+		body = m.renderReposView()
 	}
 
 	footer := m.renderFooter()
@@ -1691,21 +1702,18 @@ func (m Model) renderTopBar() string {
 		}
 	}
 
-	totalOpenTasks := len(m.PersonalTasks) + len(m.SquadTasks)
-	taskCountStr := ""
-	if totalOpenTasks > 0 {
-		taskCountStr = fmt.Sprintf(" (%d)", totalOpenTasks)
-	}
+	mineOpen := len(m.PersonalTasks)
+	squadOpen := len(m.SquadTasks)
 
 	var tabs []string
 	if m.Width >= 145 {
 		tabs = []string{
 			"1: Repositories",
 			fmt.Sprintf("2: Pull Requests (%d)", len(m.PRs)),
-			"3: Squad Activity",
-			fmt.Sprintf("4: Tasks (%d)", totalOpenTasks),
-			"5: Code Search",
-			fmt.Sprintf("6: Notifications (%d)", unreadNotifs),
+			fmt.Sprintf("3: My Tasks (%d)", mineOpen),
+			fmt.Sprintf("4: Squad Tasks (%d)", squadOpen),
+			"5: Squad Activity",
+			"6: Code Search",
 			fmt.Sprintf("7: Status %s", statusDot),
 		}
 	} else if m.Width >= 115 {
@@ -1713,31 +1721,37 @@ func (m Model) renderTopBar() string {
 		if len(m.PRs) > 0 {
 			prCountStr = fmt.Sprintf(" (%d)", len(m.PRs))
 		}
-		notifCountStr := ""
-		if unreadNotifs > 0 {
-			notifCountStr = fmt.Sprintf(" (%d)", unreadNotifs)
+		mineCountStr := ""
+		if mineOpen > 0 {
+			mineCountStr = fmt.Sprintf(" (%d)", mineOpen)
+		}
+		squadCountStr := ""
+		if squadOpen > 0 {
+			squadCountStr = fmt.Sprintf(" (%d)", squadOpen)
 		}
 		tabs = []string{
 			"1: Repos",
 			fmt.Sprintf("2: PRs%s", prCountStr),
-			"3: Squad",
-			fmt.Sprintf("4: Tasks%s", taskCountStr),
-			"5: Search",
-			fmt.Sprintf("6: Notifs%s", notifCountStr),
+			fmt.Sprintf("3: My Tasks%s", mineCountStr),
+			fmt.Sprintf("4: Squad Tasks%s", squadCountStr),
+			"5: Squad",
+			"6: Search",
 			fmt.Sprintf("7: Status %s", statusDot),
 		}
 	} else {
 		tabs = []string{
-			"1: Repos", "2: PRs", "3: Squad", "4: Tasks", "5: Search", "6: Notifs", fmt.Sprintf("7: %s", statusDot),
+			"1: Repos", "2: PRs", "3: My Tasks", "4: Squad Tasks", "5: Squad", "6: Search", fmt.Sprintf("7: %s", statusDot),
 		}
 	}
 
+	activeStyle := ActiveTabStyle.MarginRight(0)
+	inactiveStyle := InactiveTabStyle.MarginRight(0)
 	var renderedTabs []string
 	for i, t := range tabs {
 		if TabType(i) == m.ActiveTab {
-			renderedTabs = append(renderedTabs, ActiveTabStyle.Render(t))
+			renderedTabs = append(renderedTabs, activeStyle.Render(t))
 		} else {
-			renderedTabs = append(renderedTabs, InactiveTabStyle.Render(t))
+			renderedTabs = append(renderedTabs, inactiveStyle.Render(t))
 		}
 	}
 
@@ -1875,36 +1889,36 @@ func (m Model) renderFooter() string {
 		} else {
 			help = "[m] Merge  [f] Filter  [t] Create Task  [o] Browser  [p] Copilot Review  [c] Checkout Branch  [r] Refresh  [?] Help"
 		}
-	case TabSquad:
-		help = "[m] Manage Squad  [s] Switch Squad  [n] New Squad  [r] Refresh  [?] Help"
-	case TabTasks:
+	case TabMyTasks:
 		if m.InlineAdding {
 			help = "[Enter] Create Task  [Esc] Cancel  [ctrl+n] Notes  [ctrl+p] Priority"
-			if m.ActiveTaskSubtab == TaskSubtabSquad {
-				help += "  [Tab] Assignee"
-			}
 		} else if m.InlineEditing {
 			help = "[Enter] Save Title  [Esc] Cancel"
 		} else {
 			_, cursorTask := m.getCursorTarget()
 			if cursorTask != nil && cursorTask.IsPRReview() {
-				if m.ActiveTaskSubtab == TaskSubtabSquad {
-					help = "[Enter/o] Open PR  [i] Issue  [Space] Toggle Done  [A] Assign  [n] Notes  [p] Priority  [c] Cycle  [d] All Done  [a] Add  [?] Help"
-				} else {
-					help = "[Enter/o] Open PR  [i] Issue  [Space] Toggle Done  [n] Notes  [p] Priority  [c] Assign  [d] All Done  [a] Add  [?] Help"
-				}
+				help = "[Enter/o] Open PR  [i] Issue  [Space] Toggle Done  [n] Notes  [p] Priority  [c] Assign  [d] All Done  [a] Add  [?] Help"
 			} else {
-				if m.ActiveTaskSubtab == TaskSubtabSquad {
-					help = "[a] Add  [Enter] Edit Title  [Space] Toggle Done  [A] Assign  [n] Notes  [p] Priority  [c] Cycle  [d] All Done  [i/o] Issue  [?] Help"
-				} else {
-					help = "[a] Add  [Enter] Edit Title  [Space] Toggle Done  [n] Notes  [p] Priority  [c] Assign  [d] All Done  [i/o] Issue  [?] Help"
-				}
+				help = "[a] Add  [Enter] Edit Title  [Space] Toggle Done  [n] Notes  [p] Priority  [c] Assign  [d] All Done  [i/o] Issue  [?] Help"
 			}
 		}
+	case TabSquadTasks:
+		if m.InlineAdding {
+			help = "[Enter] Create Task  [Esc] Cancel  [ctrl+n] Notes  [ctrl+p] Priority  [Tab] Assignee"
+		} else if m.InlineEditing {
+			help = "[Enter] Save Title  [Esc] Cancel"
+		} else {
+			_, cursorTask := m.getCursorTarget()
+			if cursorTask != nil && cursorTask.IsPRReview() {
+				help = "[Enter/o] Open PR  [i] Issue  [Space] Toggle Done  [A] Assign  [n] Notes  [p] Priority  [c] Cycle  [d] All Done  [a] Add  [?] Help"
+			} else {
+				help = "[a] Add  [Enter] Edit Title  [Space] Toggle Done  [A] Assign  [n] Notes  [p] Priority  [c] Cycle  [d] All Done  [i/o] Issue  [?] Help"
+			}
+		}
+	case TabSquad:
+		help = "[m] Manage Squad  [s] Switch Squad  [n] New Squad  [r] Refresh  [?] Help"
 	case TabSearch:
 		help = "[/] Query  [j/k] Nodes  [h/l/Space] Toggle  [Tab] Switch Viewport  [Enter] Open Editor  [?] Help"
-	case TabNotifications:
-		help = "[Enter / o] Open in Browser  [m] Mark Read  [M] Mark All Read  [r] Refresh  [?] Help  [q] Quit"
 	case TabStatus:
 		help = "[r] Refresh Status  [o / Enter] Statuspage  [j/k] Navigate  [?] Help  [q] Quit"
 	}

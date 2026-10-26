@@ -406,7 +406,7 @@ func (m Model) renderHelpModal() string {
 
 	helpText := `
 Global Navigation:
-  [1-6] / [Tab]       Switch between primary tabs
+  [1-7] / [Tab]       Switch between primary tabs
   [r]                 Refresh data from GitHub & GitHub Status
   [?]                 Toggle this help dialog
   [q] / [Ctrl+C]      Quit
@@ -436,20 +436,32 @@ Pull Requests Tab (2):
   [p]                 Trigger GitHub Copilot PR review
   [c]                 Checkout PR branch in local workspace
 
-Tasks Tab:
+My Tasks Tab (3):
   [j/k] or [↑/↓]      Select task
-  [a]                 Add new task inline
+  [a]                 Add new personal task inline
   [Enter]             Edit task title (or Open PR directly if PR review task)
   [o]                 Open in browser (PR if review task, issue otherwise)
   [i]                 Always open underlying GitHub issue in browser
   [Space]             Toggle completed / active
-  [A]                 Assign task to multiple squad members (squad tasks)
   [n]                 View / edit notes
   [p]                 Cycle priority (High / Medium / Low)
   [c]                 Cycle assignee
   [d]                 Show all completed tasks modal
 
-Squad Activity Tab (3):
+Squad Tasks Tab (4):
+  [j/k] or [↑/↓]      Select task
+  [a]                 Add new squad task inline
+  [Enter]             Edit task title (or Open PR directly if PR review task)
+  [o]                 Open in browser (PR if review task, issue otherwise)
+  [i]                 Always open underlying GitHub issue in browser
+  [Space]             Toggle completed / active
+  [A]                 Assign task to multiple squad members
+  [n]                 View / edit notes
+  [p]                 Cycle priority (High / Medium / Low)
+  [c]                 Cycle assignee
+  [d]                 Show all completed tasks modal
+
+Squad Activity Tab (5):
   [m]                 Manage squad (add/delete multiple members, rename, delete squad)
   [s]                 Switch watched squad
   [n]                 Create new squad
@@ -457,20 +469,14 @@ Squad Activity Tab (3):
   [d]                 Remove members from squad
   [o]                 Open event target in browser
 
-Code Search Tab (4):
+Code Search Tab (6):
   [/]                 Focus search query input
   [j/k] or [↑/↓]      Navigate results tree
   [h/l] or [Space]    Expand / Collapse repo or file branch
   [Tab]               Toggle focus between Tree and Code Preview
   [Enter]             Open match in $EDITOR at exact line number
 
-Notifications Tab (5):
-  [j/k] or [↑/↓]      Select notification
-  [Enter] / [o]       Open in browser and mark as read
-  [m]                 Mark selected notification as read
-  [M]                 Mark all notifications as read
-
-GitHub Status Tab (6):
+GitHub Status Tab (7):
   [j/k] or [↑/↓]      Select service component
   [o] / [Enter]       Open githubstatus.com in browser
   [r]                 Refresh GitHub status now

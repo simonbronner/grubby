@@ -432,12 +432,12 @@ func TestRepoTiersRenderingAndSorting(t *testing.T) {
 	if strings.Contains(view, "TIER") {
 		t.Errorf("expected 'TIER' header column to be removed, got:\n%s", view)
 	}
-	if !strings.Contains(view, "🔥 (0) hot-repo") || !strings.Contains(view, "⚡ (0) warm-repo") || !strings.Contains(view, "🧊 (0) cold-repo") || !strings.Contains(view, "💀 (0) dead-repo") {
+	if !strings.Contains(view, "🔥 (0) hot-repo") || !strings.Contains(view, "🌞 (0) warm-repo") || !strings.Contains(view, "🧊 (0) cold-repo") || !strings.Contains(view, "💀 (0) dead-repo") {
 		t.Errorf("expected tier icons next to repo names, got:\n%s", view)
 	}
 
 	// 3. Verify tier count summary banner
-	if !strings.Contains(view, "🔥 1 Hot") || !strings.Contains(view, "⚡ 1 Warm") || !strings.Contains(view, "🧊 1 Cold") || !strings.Contains(view, "💀 1 Dead") {
+	if !strings.Contains(view, "🔥 1 Hot") || !strings.Contains(view, "🌞 1 Warm") || !strings.Contains(view, "🧊 1 Cold") || !strings.Contains(view, "💀 1 Dead") {
 		t.Errorf("expected tier count summary in header banner, got:\n%s", view)
 	}
 }

@@ -22,9 +22,16 @@ const (
 	TaskSubtabSquad
 )
 
+func (m Model) isSquadTasks() bool {
+	if m.ActiveTab == TabSquadTasks {
+		return true
+	}
+	return m.ActiveTaskSubtab == TaskSubtabSquad
+}
+
 func (m Model) getActiveTasks() []github.Task {
 	var list []github.Task
-	if m.ActiveTaskSubtab == TaskSubtabMine {
+	if !m.isSquadTasks() {
 		list = append(list, m.PersonalTasks...)
 	} else {
 		list = append(list, m.SquadTasks...)
@@ -110,7 +117,7 @@ func (m Model) renderTasksView() string {
 	subtabSquadText := fmt.Sprintf(" Squad Tasks (%d) ", squadOpen)
 
 	var subtabMine, subtabSquad string
-	if m.ActiveTaskSubtab == TaskSubtabMine {
+	if !m.isSquadTasks() {
 		subtabMine = ActiveTabStyle.Render(subtabMineText)
 		subtabSquad = InactiveTabStyle.Render(subtabSquadText)
 	} else {
@@ -121,7 +128,7 @@ func (m Model) renderTasksView() string {
 	subtabsRow := lipgloss.JoinHorizontal(lipgloss.Top, subtabMine, "  ", subtabSquad)
 
 	var activeRepo string
-	if m.ActiveTaskSubtab == TaskSubtabMine {
+	if !m.isSquadTasks() {
 		activeRepo = m.getTaskTargetRepoFullName(TaskTargetPersonal)
 	} else {
 		activeRepo = m.getTaskTargetRepoFullName(TaskTargetSquad)
@@ -134,7 +141,11 @@ func (m Model) renderTasksView() string {
 		repoInfoBadge = MetaBarStyle.Render(fmt.Sprintf("  •  Repo: %s  •  [New Task: Enter to create, Esc to cancel]", activeRepo))
 	} else {
 		allDoneBadge := lipgloss.NewStyle().Foreground(lipgloss.Color("#8888AA")).Render(fmt.Sprintf("[d] All Done (%d)", allDoneCount))
-		repoInfoBadge = MetaBarStyle.Render(fmt.Sprintf("  •  Repo: %s  •  %s  •  [a] Add Task  [n] Notes  [Space] Done", activeRepo, allDoneBadge))
+		if m.isSquadTasks() {
+			repoInfoBadge = MetaBarStyle.Render(fmt.Sprintf("  •  Repo: %s  •  %s  •  [a] Add Task  [A] Assign  [n] Notes  [Space] Done", activeRepo, allDoneBadge))
+		} else {
+			repoInfoBadge = MetaBarStyle.Render(fmt.Sprintf("  •  Repo: %s  •  %s  •  [a] Add Task  [n] Notes  [Space] Done", activeRepo, allDoneBadge))
+		}
 	}
 	headerBanner := "  " + subtabsRow + repoInfoBadge
 
@@ -462,7 +473,7 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			target := TaskTargetPersonal
 			isSquad := false
-			if m.ActiveTaskSubtab == TaskSubtabSquad {
+			if m.isSquadTasks() {
 				target = TaskTargetSquad
 				isSquad = true
 			}
@@ -535,7 +546,7 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "tab":
-			if m.ActiveTaskSubtab == TaskSubtabSquad {
+			if m.isSquadTasks() {
 				candidates := m.getSquadTaskAssigneeCandidates()
 				curIdx := 0
 				for i, c := range candidates {
@@ -661,11 +672,13 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "left", "right", "h", "l", "[", "]":
-		// Switch subtabs
-		if m.ActiveTaskSubtab == TaskSubtabMine {
-			m.ActiveTaskSubtab = TaskSubtabSquad
-		} else {
+		// Switch between My Tasks and Squad Tasks
+		if m.isSquadTasks() {
+			m.ActiveTab = TabMyTasks
 			m.ActiveTaskSubtab = TaskSubtabMine
+		} else {
+			m.ActiveTab = TabSquadTasks
+			m.ActiveTaskSubtab = TaskSubtabSquad
 		}
 		m.TaskCursor = 0
 		return m, nil
@@ -675,7 +688,7 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.InlineAdding = true
 		m.InlineNewNotes = ""
 		m.InlineNewPriority = github.PriorityMedium
-		if m.ActiveTaskSubtab == TaskSubtabSquad {
+		if m.isSquadTasks() {
 			m.InlineNewAssignee = ""
 		} else {
 			m.InlineNewAssignee = m.AuthUser
@@ -824,7 +837,7 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "A":
-		if m.ActiveTaskSubtab == TaskSubtabSquad {
+		if m.isSquadTasks() {
 			loc, task := m.getCursorTarget()
 			if task != nil && loc == locActiveTask {
 				m.ActiveModal = ModalAssignSquadTask
@@ -844,7 +857,7 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "c":
 		loc, task := m.getCursorTarget()
 		candidates := m.getSquadTaskAssigneeCandidates()
-		if loc == locInlineNew && m.ActiveTaskSubtab == TaskSubtabSquad {
+		if loc == locInlineNew && m.isSquadTasks() {
 			currentIdx := 0
 			for i, c := range candidates {
 				if c == m.InlineNewAssignee {

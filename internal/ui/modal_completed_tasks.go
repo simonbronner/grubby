@@ -13,7 +13,7 @@ import (
 
 func (m Model) getSortedDoneTasks() []github.Task {
 	var list []github.Task
-	if m.ActiveTaskSubtab == TaskSubtabMine {
+	if !m.isSquadTasks() {
 		list = append(list, m.PersonalDoneTasks...)
 	} else {
 		list = append(list, m.SquadDoneTasks...)
@@ -41,7 +41,7 @@ func (m Model) renderCompletedTasksModal() string {
 	list := m.getSortedDoneTasks()
 
 	subtabName := "My Tasks"
-	if m.ActiveTaskSubtab == TaskSubtabSquad {
+	if m.isSquadTasks() {
 		subtabName = "Squad Tasks"
 	}
 	title := ModalTitleStyle.Render(fmt.Sprintf("Completed Tasks (%d) — %s", len(list), subtabName))

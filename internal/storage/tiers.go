@@ -42,13 +42,13 @@ func TierIcon(tier RepoTier) string {
 	case "hot":
 		return "🔥"
 	case "warm", "active":
-		return "⚡"
+		return "🌞"
 	case "cold", "dormant":
 		return "🧊"
 	case "dead":
 		return "💀"
 	default:
-		return "⚡"
+		return "🌞"
 	}
 }
 
@@ -58,13 +58,13 @@ func TierBadgeText(tier RepoTier) string {
 	case "hot":
 		return "🔥 HOT"
 	case "warm", "active":
-		return "⚡ WARM"
+		return "🌞 WARM"
 	case "cold", "dormant":
 		return "🧊 COLD"
 	case "dead":
 		return "💀 DEAD"
 	default:
-		return "⚡ WARM"
+		return "🌞 WARM"
 	}
 }
 
