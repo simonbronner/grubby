@@ -1,8 +1,10 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -10,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"grubby/internal/github"
+	"grubby/internal/storage"
 )
 
 func (m Model) openEditTaskModal(task github.Task) (tea.Model, tea.Cmd) {
@@ -310,7 +313,45 @@ func (m Model) submitEditTaskModal() (tea.Model, tea.Cmd) {
 		assignees = append(assignees, m.TaskEditAssignee)
 	}
 
+	task.Title = titleText
+	task.Body = bodyText
+	task.Priority = priority
+	task.Assignees = assignees
+	task.UpdatedAt = time.Now()
+
 	m.ActiveModal = ModalNone
-	m.StatusMsg = fmt.Sprintf("Saving changes to task #%d...", task.Number)
+	m = m.updateTaskInSlices(task)
+	if m.DB != nil {
+		_ = m.DB.SaveTask(&task, "pending_update")
+	}
+	m.StatusMsg = fmt.Sprintf("✓ Saved changes to task #%d", task.Number)
+	m.StatusMsgTimer = time.Now().Add(3 * time.Second)
+
+	if m.Debouncer != nil {
+		m.Debouncer.Enqueue(storage.TaskDebounceJob{
+			TaskID:    task.ID,
+			Number:    task.Number,
+			RepoOwner: task.RepoOwner,
+			RepoName:  task.RepoName,
+			Title:     task.Title,
+			Body:      task.Body,
+			Priority:  task.Priority,
+			Assignees: task.Assignees,
+			Labels:    task.Labels,
+			IsSquad:   task.IsSquadTask,
+			Action:    storage.ActionUpdateTask,
+		}, func(ctx context.Context, job *storage.TaskDebounceJob) error {
+			var err error
+			if m.GHClient != nil {
+				_, err = m.GHClient.UpdateTask(ctx, job.RepoOwner, job.RepoName, job.Number, job.Title, job.Body, job.Priority, job.Assignees, job.Labels, job.IsSquad)
+			}
+			if err == nil && m.DB != nil {
+				_ = m.DB.UpdateTaskSyncStatus(job.TaskID, "synced")
+			}
+			return err
+		})
+		return m, nil
+	}
+
 	return m, m.updateTaskCmd(task, titleText, bodyText, priority, assignees)
 }

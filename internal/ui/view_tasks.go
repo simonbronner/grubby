@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"grubby/internal/github"
+	"grubby/internal/storage"
 )
 
 type TaskSubtab int
@@ -484,10 +486,37 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			body := m.InlineNewNotes
 
+			now := time.Now()
+			tempTask := github.Task{
+				ID:          -now.UnixNano(),
+				Number:      0,
+				Title:       titleText,
+				Body:        body,
+				State:       "open",
+				Priority:    priority,
+				RepoOwner:   owner,
+				RepoName:    repo,
+				Author:      m.AuthUser,
+				Assignees:   assignees,
+				Labels:      []string{priority.Label()},
+				CreatedAt:   now,
+				UpdatedAt:   now,
+				IsSquadTask: isSquad,
+			}
+			if isSquad {
+				m.SquadTasks = append([]github.Task{tempTask}, m.SquadTasks...)
+			} else {
+				m.PersonalTasks = append([]github.Task{tempTask}, m.PersonalTasks...)
+			}
+			if m.DB != nil {
+				_ = m.DB.SaveTask(&tempTask, "pending_create")
+			}
 			m.InlineAdding = false
 			m.InlineNewNotes = ""
 			m.InlineNewTitleInput.Reset()
-			m.StatusMsg = fmt.Sprintf("Creating task in %s...", repoFullName)
+			m.TaskCursor = 0
+			m.StatusMsg = fmt.Sprintf("✓ Created task draft in %s (syncing with GitHub...)", repoFullName)
+			m.StatusMsgTimer = time.Now().Add(3 * time.Second)
 			return m, m.createTaskCmd(owner, repo, titleText, body, priority, assignees, isSquad)
 
 		case "ctrl+n":
@@ -540,7 +569,42 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if newTitle != "" {
 				for _, t := range m.getActiveTasks() {
 					if t.ID == m.InlineEditTaskID {
-						m.StatusMsg = fmt.Sprintf("Updating title for task #%d...", t.Number)
+						target := t
+						target.Title = newTitle
+						target.UpdatedAt = time.Now()
+						m = m.updateTaskInSlices(target)
+						if m.DB != nil {
+							_ = m.DB.SaveTask(&target, "pending_update")
+						}
+						m.StatusMsg = fmt.Sprintf("✓ Saved title for task #%d", target.Number)
+						m.StatusMsgTimer = time.Now().Add(3 * time.Second)
+
+						if m.Debouncer != nil {
+							m.Debouncer.Enqueue(storage.TaskDebounceJob{
+								TaskID:    target.ID,
+								Number:    target.Number,
+								RepoOwner: target.RepoOwner,
+								RepoName:  target.RepoName,
+								Title:     target.Title,
+								Body:      target.Body,
+								Priority:  target.Priority,
+								Assignees: target.Assignees,
+								Labels:    target.Labels,
+								IsSquad:   target.IsSquadTask,
+								Action:    storage.ActionUpdateTask,
+							}, func(ctx context.Context, job *storage.TaskDebounceJob) error {
+								var err error
+								if m.GHClient != nil {
+									_, err = m.GHClient.UpdateTask(ctx, job.RepoOwner, job.RepoName, job.Number, job.Title, job.Body, job.Priority, job.Assignees, job.Labels, job.IsSquad)
+								}
+								if err == nil && m.DB != nil {
+									_ = m.DB.UpdateTaskSyncStatus(job.TaskID, "synced")
+								}
+								return err
+							})
+							return m, nil
+						}
+
 						return m, m.updateTaskCmd(t, newTitle, t.Body, t.Priority, t.Assignees)
 					}
 				}
@@ -669,10 +733,22 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		loc, task := m.getCursorTarget()
 		if task != nil {
 			if loc == locCompletedTask {
-				m.StatusMsg = fmt.Sprintf("Reopening task #%d in %s...", task.Number, task.RepoName)
+				target := *task
+				m = m.reopenTaskLocally(target)
+				if m.DB != nil {
+					_ = m.DB.SaveTask(&target, "pending_reopen")
+				}
+				m.StatusMsg = fmt.Sprintf("✓ Reopened task #%d in %s", task.Number, task.RepoName)
+				m.StatusMsgTimer = time.Now().Add(3 * time.Second)
 				return m, m.reopenTaskCmd(*task)
 			} else if loc == locActiveTask {
-				m.StatusMsg = fmt.Sprintf("Completing task #%d in %s...", task.Number, task.RepoName)
+				target := *task
+				m = m.closeTaskLocally(target)
+				if m.DB != nil {
+					_ = m.DB.SaveTask(&target, "pending_close")
+				}
+				m.StatusMsg = fmt.Sprintf("✓ Completed task #%d in %s", task.Number, task.RepoName)
+				m.StatusMsgTimer = time.Now().Add(3 * time.Second)
 				return m, m.closeTaskCmd(*task)
 			}
 		}
@@ -708,7 +784,42 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			default:
 				nextPriority = github.PriorityMedium
 			}
-			m.StatusMsg = fmt.Sprintf("Setting priority %s for task #%d...", nextPriority, task.Number)
+			target := *task
+			target.Priority = nextPriority
+			target.UpdatedAt = time.Now()
+			m = m.updateTaskInSlices(target)
+			if m.DB != nil {
+				_ = m.DB.SaveTask(&target, "pending_update")
+			}
+			m.StatusMsg = fmt.Sprintf("✓ Priority set to %s for task #%d", nextPriority, task.Number)
+			m.StatusMsgTimer = time.Now().Add(3 * time.Second)
+
+			if m.Debouncer != nil {
+				m.Debouncer.Enqueue(storage.TaskDebounceJob{
+					TaskID:    target.ID,
+					Number:    target.Number,
+					RepoOwner: target.RepoOwner,
+					RepoName:  target.RepoName,
+					Title:     target.Title,
+					Body:      target.Body,
+					Priority:  target.Priority,
+					Assignees: target.Assignees,
+					Labels:    target.Labels,
+					IsSquad:   target.IsSquadTask,
+					Action:    storage.ActionPriorityTask,
+				}, func(ctx context.Context, job *storage.TaskDebounceJob) error {
+					var err error
+					if m.GHClient != nil {
+						err = m.GHClient.UpdateTaskPriority(ctx, job.RepoOwner, job.RepoName, job.Number, job.Priority, job.Labels)
+					}
+					if err == nil && m.DB != nil {
+						_ = m.DB.UpdateTaskSyncStatus(job.TaskID, "synced")
+					}
+					return err
+				})
+				return m, nil
+			}
+
 			return m, m.updateTaskPriorityCmd(*task, nextPriority)
 		}
 
@@ -760,7 +871,42 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if nextAssignee != "" {
 				newAssignees = append(newAssignees, nextAssignee)
 			}
-			m.StatusMsg = fmt.Sprintf("Updating assignee for task #%d...", task.Number)
+			target := *task
+			target.Assignees = newAssignees
+			target.UpdatedAt = time.Now()
+			m = m.updateTaskInSlices(target)
+			if m.DB != nil {
+				_ = m.DB.SaveTask(&target, "pending_update")
+			}
+			m.StatusMsg = fmt.Sprintf("✓ Assigned task #%d to %s", target.Number, nextAssignee)
+			m.StatusMsgTimer = time.Now().Add(3 * time.Second)
+
+			if m.Debouncer != nil {
+				m.Debouncer.Enqueue(storage.TaskDebounceJob{
+					TaskID:    target.ID,
+					Number:    target.Number,
+					RepoOwner: target.RepoOwner,
+					RepoName:  target.RepoName,
+					Title:     target.Title,
+					Body:      target.Body,
+					Priority:  target.Priority,
+					Assignees: target.Assignees,
+					Labels:    target.Labels,
+					IsSquad:   target.IsSquadTask,
+					Action:    storage.ActionAssignTask,
+				}, func(ctx context.Context, job *storage.TaskDebounceJob) error {
+					var err error
+					if m.GHClient != nil {
+						err = m.GHClient.UpdateTaskAssignees(ctx, job.RepoOwner, job.RepoName, job.Number, job.Assignees)
+					}
+					if err == nil && m.DB != nil {
+						_ = m.DB.UpdateTaskSyncStatus(job.TaskID, "synced")
+					}
+					return err
+				})
+				return m, nil
+			}
+
 			return m, m.updateTaskAssigneesCmd(*task, newAssignees)
 		}
 

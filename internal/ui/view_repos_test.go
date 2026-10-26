@@ -11,6 +11,7 @@ import (
 	"grubby/internal/config"
 	"grubby/internal/git"
 	"grubby/internal/github"
+	"grubby/internal/storage"
 )
 
 func createTestModel() Model {
@@ -380,5 +381,104 @@ func TestReposKeyHandling_RecordInteractionMovesToTop(t *testing.T) {
 	}
 	if m.RepoCursor != 0 {
 		t.Errorf("expected cursor to be at 0 on repo-b, got %d", m.RepoCursor)
+	}
+}
+
+func TestRepoTiersRenderingAndSorting(t *testing.T) {
+	now := time.Now()
+	repos := []github.Repository{
+		{Name: "dormant-repo", PushedAt: now.Add(-60 * 24 * time.Hour)},
+		{Name: "active-repo", PushedAt: now.Add(-10 * 24 * time.Hour)},
+		{Name: "hot-repo", PushedAt: now.Add(-1 * time.Hour)},
+	}
+
+	tiers := map[string]storage.RepoTier{
+		"dormant-repo": storage.TierDormant,
+		"active-repo":  storage.TierActive,
+		"hot-repo":     storage.TierHot,
+	}
+
+	m := Model{
+		Repos:        repos,
+		RepoTiers:    tiers,
+		GitStatuses:  make(map[string]git.RepoGitStatus),
+		Width:        140,
+		Height:       30,
+		TmuxSessions: make(map[string]TmuxSessionInfo),
+	}
+
+	// 1. Verify sorting: Hot comes first, then Active, then Dormant
+	sorted := m.getDisplayRepos()
+	if len(sorted) != 3 {
+		t.Fatalf("expected 3 repos, got %d", len(sorted))
+	}
+	if sorted[0].Name != "hot-repo" {
+		t.Errorf("expected hot-repo first, got %s", sorted[0].Name)
+	}
+	if sorted[1].Name != "active-repo" {
+		t.Errorf("expected active-repo second, got %s", sorted[1].Name)
+	}
+	if sorted[2].Name != "dormant-repo" {
+		t.Errorf("expected dormant-repo third, got %s", sorted[2].Name)
+	}
+
+	// 2. Verify rendering: TIER column and badges are present
+	view := m.renderReposView()
+	if !strings.Contains(view, "TIER") {
+		t.Errorf("expected 'TIER' header column, got:\n%s", view)
+	}
+	if !strings.Contains(view, "HOT") || !strings.Contains(view, "ACTIVE") || !strings.Contains(view, "DORM") {
+		t.Errorf("expected tier badges [HOT], [ACTIVE], [DORM], got:\n%s", view)
+	}
+
+	// 3. Verify tier count summary banner
+	if !strings.Contains(view, "🔥 1 Hot") || !strings.Contains(view, "⚡ 1 Active") || !strings.Contains(view, "💤 1 Dormant") {
+		t.Errorf("expected tier count summary in header banner, got:\n%s", view)
+	}
+}
+
+func TestRepoInteractionTouchesSQLite(t *testing.T) {
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Now()
+	repos := []github.Repository{
+		{Name: "my-dormant-repo", FullName: "org/my-dormant-repo", PushedAt: now.Add(-60 * 24 * time.Hour)},
+	}
+	if err := db.SaveRepositories(repos, "org"); err != nil {
+		t.Fatalf("SaveRepositories failed: %v", err)
+	}
+	_ = db.SetRepoTier("my-dormant-repo", storage.TierDormant)
+
+	m := Model{
+		DB:           db,
+		Repos:        repos,
+		RepoTiers:    map[string]storage.RepoTier{"my-dormant-repo": storage.TierDormant},
+		GitStatuses:  make(map[string]git.RepoGitStatus),
+		Width:        120,
+		Height:       30,
+		TmuxSessions: make(map[string]TmuxSessionInfo),
+	}
+
+	if tier := m.getRepoTier("my-dormant-repo"); tier != storage.TierDormant {
+		t.Fatalf("expected initial tier dormant, got %v", tier)
+	}
+
+	// User interacts with repo (Enter key)
+	m.RepoCursor = 0
+	updated, _ := m.handleReposKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	// In-memory tier promoted to Hot
+	if tier := m.getRepoTier("my-dormant-repo"); tier != storage.TierHot {
+		t.Errorf("expected in-memory tier to become Hot, got %v", tier)
+	}
+
+	// SQLite database tier promoted to Hot
+	if dbTier := db.GetRepoTier("my-dormant-repo"); dbTier != storage.TierHot {
+		t.Errorf("expected SQLite db tier to become Hot, got %v", dbTier)
 	}
 }

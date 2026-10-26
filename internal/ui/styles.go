@@ -97,6 +97,18 @@ var (
 			Foreground(DangerColor).
 			Bold(true)
 
+	// Repository Tier Badges
+	HotTierBadge = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FF5F56")).
+			Bold(true)
+
+	ActiveTierBadge = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#00D7D7")).
+			Bold(true)
+
+	DormantTierBadge = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#6A6E82"))
+
 	// Status Dots for Tabs
 	StatusHealthyDot = lipgloss.NewStyle().
 				Foreground(SuccessColor).

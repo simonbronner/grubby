@@ -12,6 +12,7 @@ import (
 	"grubby/internal/config"
 	"grubby/internal/git"
 	"grubby/internal/github"
+	"grubby/internal/storage"
 	"grubby/internal/ui"
 )
 
@@ -104,8 +105,17 @@ func main() {
 	// Initialize workspace manager
 	gitMgr := git.NewWorkspaceManager(cfg.WorkspaceDir)
 
+	// Initialize local SQLite database cache
+	dbPath, _ := storage.DefaultDBPath()
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to open SQLite db: %v\n", err)
+	} else {
+		defer db.Close()
+	}
+
 	// Launch TUI
-	initialModel := ui.InitialModel(cfg, ghClient, gitMgr, targetOrg)
+	initialModel := ui.InitialModel(cfg, ghClient, gitMgr, targetOrg, db)
 	p := tea.NewProgram(initialModel, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {

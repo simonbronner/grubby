@@ -21,6 +21,7 @@ import (
 	"grubby/internal/git"
 	"grubby/internal/github"
 	"grubby/internal/search"
+	"grubby/internal/storage"
 )
 
 type TabType int
@@ -73,6 +74,13 @@ type RepoClonedMsg struct {
 	Status     git.RepoGitStatus
 	Err        error
 	PostAction RepoActionType
+}
+
+type SingleRepoLoadedMsg struct {
+	Repo     *github.Repository
+	Events   []github.SquadEvent
+	Security *github.SecurityAlertSummary
+	Err      error
 }
 
 type DataLoadedMsg struct {
@@ -198,6 +206,13 @@ type Model struct {
 	InitialDataLoaded   bool
 	LastRefreshTime     time.Time
 
+	// SQLite & Performance Caching
+	DB            *storage.DB
+	Debouncer     *storage.TaskDebouncer
+	RepoTiers     map[string]storage.RepoTier
+	RequestsMade  int64
+	RequestsSaved int64
+
 	// GitHub Status
 	GitHubStatus          *github.StatusSummary
 	LastStatusCheck       time.Time
@@ -313,7 +328,7 @@ type Model struct {
 	Spinner        spinner.Model
 }
 
-func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceManager, org string) Model {
+func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceManager, org string, dbOpt ...*storage.DB) Model {
 	si := textinput.New()
 	si.Placeholder = "Type search query (e.g. func ValidateToken) and press Enter..."
 	si.Prompt = "🔍 "
@@ -370,6 +385,11 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(SecondaryColor)
 
+	var db *storage.DB
+	if len(dbOpt) > 0 && dbOpt[0] != nil {
+		db = dbOpt[0]
+	}
+
 	m := Model{
 		ActiveTab:             TabRepos,
 		Config:                cfg,
@@ -383,6 +403,8 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 		SeenNotificationIDs:   make(map[string]bool),
 		RawAvatarCache:        make(map[string][]byte),
 		ProfileCache:          make(map[string]github.OrgMember),
+		RepoTiers:             make(map[string]storage.RepoTier),
+		DB:                    db,
 		Loading:               true,
 		InitialDataLoaded:     false,
 		LastRefreshTime:       time.Now(),
@@ -402,6 +424,66 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 		InlineNewTitleInput:   inti,
 		InlineEditTitleInput:  ieti,
 		TaskNotesInput:        tni,
+	}
+
+	if db != nil {
+		made, saved, _ := db.GetRequestStats()
+		if gh != nil {
+			gh.SetInitialRequestStats(made, saved)
+		}
+		m.RequestsMade = made
+		m.RequestsSaved = saved
+
+		// Eagerly read SQLite data for instantaneous UI render
+		if cachedRepos, err := db.GetRepositories(); err == nil && len(cachedRepos) > 0 {
+			m.Repos = cachedRepos
+			m.RepoTiers = db.GetAllRepoTiers()
+			if cachedPRs, err := db.GetPullRequests(); err == nil {
+				m.PRs = cachedPRs
+			}
+			if pTasks, err := db.GetTasks(false, "open"); err == nil {
+				m.PersonalTasks = pTasks
+			}
+			if pDone, err := db.GetTasks(false, "closed"); err == nil {
+				m.PersonalDoneTasks = pDone
+			}
+			if sTasks, err := db.GetTasks(true, "open"); err == nil {
+				m.SquadTasks = sTasks
+			}
+			if sDone, err := db.GetTasks(true, "closed"); err == nil {
+				m.SquadDoneTasks = sDone
+			}
+			if events, err := db.GetSquadEvents(100); err == nil {
+				m.SquadEvents = events
+			}
+			if members, err := db.GetOrgMembers(); err == nil {
+				m.OrgMembers = members
+				for _, mem := range members {
+					m.ProfileCache[strings.ToLower(mem.Login)] = mem
+				}
+			}
+			if sec, err := db.GetSecuritySummaries(); err == nil {
+				m.SecuritySummaries = sec
+			}
+
+			m.InitialDataLoaded = true
+			m.Loading = false
+		}
+
+		m.Debouncer = storage.NewTaskDebouncer(
+			1500*time.Millisecond,
+			func() {
+				if gh != nil {
+					gh.RecordRequestSaved(1)
+				}
+				_ = db.IncrementRequestsSaved(1)
+			},
+			func(job *storage.TaskDebounceJob, err error) {
+				if err == nil {
+					_ = db.UpdateTaskSyncStatus(job.TaskID, "synced")
+				}
+			},
+		)
 	}
 
 	return m
@@ -523,6 +605,17 @@ func (m Model) loadDataCmd() tea.Cmd {
 		allSquad, _ := m.GHClient.FetchTasks(ctx, orgTarget, squadRepo, true)
 		squadTasks, squadDoneTasks, autoClosedSquad := m.GHClient.CheckAndAutoClosePRTasks(ctx, allSquad)
 
+		if m.DB != nil {
+			_ = m.DB.SaveRepositories(repos, m.CurrentOrg)
+			_ = m.DB.SavePullRequests(prs)
+			_ = m.DB.UpdateRepoTiers(prs)
+			_ = m.DB.SaveTasks(append(append([]github.Task{}, personalTasks...), personalDoneTasks...), false, "synced")
+			_ = m.DB.SaveTasks(append(append([]github.Task{}, squadTasks...), squadDoneTasks...), true, "synced")
+			_ = m.DB.SaveSquadEvents(events)
+			_ = m.DB.SaveOrgMembers(orgMembers)
+			_ = m.DB.SaveSecuritySummaries(secAlerts)
+		}
+
 		return DataLoadedMsg{
 			AuthUser:          authUser,
 			Repos:             repos,
@@ -537,6 +630,24 @@ func (m Model) loadDataCmd() tea.Cmd {
 			Notifications:     notifs,
 			OrgMembers:        orgMembers,
 			RateLimit:         m.GHClient.RateLimit(),
+		}
+	}
+}
+
+func (m Model) fetchSingleRepoCmd(owner, repoName string) tea.Cmd {
+	return func() tea.Msg {
+		if m.GHClient == nil || owner == "" || repoName == "" {
+			return nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		repo, events, secAlert, err := m.GHClient.FetchSingleRepo(ctx, owner, repoName)
+		return SingleRepoLoadedMsg{
+			Repo:     repo,
+			Events:   events,
+			Security: secAlert,
+			Err:      err,
 		}
 	}
 }
@@ -835,7 +946,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if time.Since(m.LastRefreshTime) >= 5*time.Minute && !m.Loading {
 			m.Loading = true
 			m.LastRefreshTime = time.Now()
-			m.StatusMsg = "Auto-refreshing data from GitHub..."
+			dormantSkipped := 0
+			if m.DB != nil {
+				_, _, dormant, err := m.DB.GetTierCounts()
+				if err == nil && dormant > 0 {
+					dormantSkipped = dormant
+					if m.GHClient != nil {
+						m.GHClient.RecordRequestSaved(int64(dormant))
+					}
+					_ = m.DB.IncrementRequestsSaved(int64(dormant))
+				}
+			}
+			if dormantSkipped > 0 {
+				m.StatusMsg = fmt.Sprintf("Auto-refreshing Hot & Active repos (%d dormant skipped)...", dormantSkipped)
+			} else {
+				m.StatusMsg = "Auto-refreshing data from GitHub..."
+			}
 			m.StatusMsgTimer = time.Now().Add(4 * time.Second)
 			cmds = append(cmds, m.loadDataCmd(), m.Spinner.Tick)
 		}
@@ -897,6 +1023,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case SingleRepoLoadedMsg:
+		if msg.Err == nil && msg.Repo != nil {
+			found := false
+			for i := range m.Repos {
+				if strings.EqualFold(m.Repos[i].Name, msg.Repo.Name) {
+					m.Repos[i] = *msg.Repo
+					found = true
+					break
+				}
+			}
+			if !found {
+				m.Repos = append(m.Repos, *msg.Repo)
+			}
+
+			if m.RepoTiers == nil {
+				m.RepoTiers = make(map[string]storage.RepoTier)
+			}
+			m.RepoTiers[strings.ToLower(msg.Repo.Name)] = storage.TierHot
+
+			if m.SecuritySummaries != nil && msg.Security != nil {
+				m.SecuritySummaries[msg.Repo.Name] = *msg.Security
+			}
+			if len(msg.Events) > 0 {
+				m.SquadEvents = append(msg.Events, m.SquadEvents...)
+			}
+			if m.DB != nil {
+				_ = m.DB.SaveRepositories([]github.Repository{*msg.Repo}, m.CurrentOrg)
+				_ = m.DB.TouchRepo(msg.Repo.Name)
+				if msg.Security != nil {
+					_ = m.DB.SaveSecuritySummaries(map[string]github.SecurityAlertSummary{msg.Repo.Name: *msg.Security})
+				}
+			}
+			m.StatusMsg = fmt.Sprintf("✓ Refreshed %s (Hot)", msg.Repo.Name)
+			m.StatusMsgTimer = time.Now().Add(3 * time.Second)
+		}
+		return m, nil
+
 	case DataLoadedMsg:
 		m.Loading = false
 		m.InitialDataLoaded = true
@@ -922,6 +1085,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.RateLimit = msg.RateLimit
 		if msg.AuthUser != "" {
 			m.AuthUser = msg.AuthUser
+		}
+		if m.DB != nil {
+			m.RepoTiers = m.DB.GetAllRepoTiers()
+		}
+		if m.GHClient != nil {
+			m.RequestsMade = m.GHClient.RequestsMade()
+			m.RequestsSaved = m.GHClient.RequestsSaved()
 		}
 
 		// Process notifications and alert for new unread items
@@ -1084,10 +1254,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Task != nil {
+			if m.DB != nil {
+				_ = m.DB.SaveTask(msg.Task, "synced")
+			}
+			replaceOrPrepend := func(slice []github.Task) []github.Task {
+				replaced := false
+				for i := range slice {
+					if slice[i].ID < 0 && slice[i].Title == msg.Task.Title && slice[i].RepoName == msg.Task.RepoName {
+						slice[i] = *msg.Task
+						replaced = true
+						break
+					}
+				}
+				if !replaced {
+					slice = append([]github.Task{*msg.Task}, slice...)
+				}
+				return slice
+			}
 			if msg.Task.IsSquadTask {
-				m.SquadTasks = append([]github.Task{*msg.Task}, m.SquadTasks...)
+				m.SquadTasks = replaceOrPrepend(m.SquadTasks)
 			} else {
-				m.PersonalTasks = append([]github.Task{*msg.Task}, m.PersonalTasks...)
+				m.PersonalTasks = replaceOrPrepend(m.PersonalTasks)
 			}
 			m.TaskCursor = 0
 			m.StatusMsg = fmt.Sprintf("✓ Created task #%d in %s", msg.Task.Number, msg.Task.RepoName)
@@ -1102,6 +1289,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Task != nil {
+			if m.DB != nil {
+				_ = m.DB.SaveTask(msg.Task, "synced")
+			}
 			updateInSlice := func(slice []github.Task) []github.Task {
 				for i := range slice {
 					if slice[i].ID == msg.Task.ID || (slice[i].Number == msg.Task.Number && slice[i].RepoName == msg.Task.RepoName) {
@@ -1509,15 +1699,22 @@ func (m Model) renderTopBar() string {
 		secItem = "🛡️ " + strings.Join(parts, " ")
 	}
 
-	// 4. Consolidated Refresh + Requests Per Hour on the far right
+	// 4. Consolidated Refresh + Requests Per Hour + Saved on the far right
 	reqsLastHour := 0
 	if m.RateLimit.Limit > 0 && m.RateLimit.Limit >= m.RateLimit.Remaining {
 		reqsLastHour = m.RateLimit.Limit - m.RateLimit.Remaining
 	}
 
+	reqsSaved := m.RequestsSaved
+	if m.GHClient != nil {
+		reqsSaved = m.GHClient.RequestsSaved()
+	}
+
 	var reqsStr string
-	if m.Width >= 130 {
-		reqsStr = fmt.Sprintf("%d reqs/h", reqsLastHour)
+	if m.Width >= 140 {
+		reqsStr = fmt.Sprintf("%d/h • %d saved", reqsLastHour, reqsSaved)
+	} else if m.Width >= 130 {
+		reqsStr = fmt.Sprintf("%d/h • %dsav", reqsLastHour, reqsSaved)
 	} else {
 		reqsStr = fmt.Sprintf("%d/h", reqsLastHour)
 	}
@@ -1857,8 +2054,102 @@ func (m Model) fetchSquadAvatarsCmd(logins []string) tea.Cmd {
 }
 
 func (m Model) recordRepoInteraction(repoName string) Model {
-	if m.Config != nil && repoName != "" {
+	if repoName == "" {
+		return m
+	}
+	if m.Config != nil {
 		_ = m.Config.RecordRepoInteraction(repoName)
+	}
+	if m.DB != nil {
+		_ = m.DB.TouchRepo(repoName)
+	}
+	if m.RepoTiers == nil {
+		m.RepoTiers = make(map[string]storage.RepoTier)
+	}
+	m.RepoTiers[strings.ToLower(repoName)] = storage.TierHot
+	return m
+}
+
+func (m Model) getRepoTier(repoName string) storage.RepoTier {
+	if m.RepoTiers != nil {
+		if t, ok := m.RepoTiers[strings.ToLower(repoName)]; ok && t != "" {
+			return t
+		}
+	}
+	if m.DB != nil {
+		return m.DB.GetRepoTier(repoName)
+	}
+	return storage.TierActive
+}
+
+func (m Model) getRepoTierCounts() (hot, active, dormant int) {
+	for _, r := range m.Repos {
+		switch m.getRepoTier(r.Name) {
+		case storage.TierHot:
+			hot++
+		case storage.TierDormant:
+			dormant++
+		default:
+			active++
+		}
+	}
+	return hot, active, dormant
+}
+
+func (m Model) closeTaskLocally(target github.Task) Model {
+	now := time.Now()
+	target.State = "closed"
+	target.ClosedAt = &now
+	target.UpdatedAt = now
+	if target.IsSquadTask {
+		var updated []github.Task
+		for _, t := range m.SquadTasks {
+			if (target.ID > 0 && t.ID == target.ID) || (t.Number == target.Number && t.RepoName == target.RepoName) {
+				m.SquadDoneTasks = append([]github.Task{target}, m.SquadDoneTasks...)
+			} else {
+				updated = append(updated, t)
+			}
+		}
+		m.SquadTasks = updated
+	} else {
+		var updated []github.Task
+		for _, t := range m.PersonalTasks {
+			if (target.ID > 0 && t.ID == target.ID) || (t.Number == target.Number && t.RepoName == target.RepoName) {
+				m.PersonalDoneTasks = append([]github.Task{target}, m.PersonalDoneTasks...)
+			} else {
+				updated = append(updated, t)
+			}
+		}
+		m.PersonalTasks = updated
+	}
+	return m
+}
+
+func (m Model) reopenTaskLocally(target github.Task) Model {
+	now := time.Now()
+	target.State = "open"
+	target.ClosedAt = nil
+	target.UpdatedAt = now
+	if target.IsSquadTask {
+		var updatedDone []github.Task
+		for _, t := range m.SquadDoneTasks {
+			if (target.ID > 0 && t.ID == target.ID) || (t.Number == target.Number && t.RepoName == target.RepoName) {
+				m.SquadTasks = append([]github.Task{target}, m.SquadTasks...)
+			} else {
+				updatedDone = append(updatedDone, t)
+			}
+		}
+		m.SquadDoneTasks = updatedDone
+	} else {
+		var updatedDone []github.Task
+		for _, t := range m.PersonalDoneTasks {
+			if (target.ID > 0 && t.ID == target.ID) || (t.Number == target.Number && t.RepoName == target.RepoName) {
+				m.PersonalTasks = append([]github.Task{target}, m.PersonalTasks...)
+			} else {
+				updatedDone = append(updatedDone, t)
+			}
+		}
+		m.PersonalDoneTasks = updatedDone
 	}
 	return m
 }

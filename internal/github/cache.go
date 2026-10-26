@@ -133,8 +133,9 @@ func (c *ETagCache) Invalidate(urlSubstring string) {
 // ETagTransport is an http.RoundTripper that handles ETag / If-None-Match caching.
 // When GitHub returns 304 Not Modified, it serves the cached response with zero rate limit cost.
 type ETagTransport struct {
-	Base  http.RoundTripper
-	Cache *ETagCache
+	Base       http.RoundTripper
+	Cache      *ETagCache
+	OnCacheHit func()
 }
 
 func (t *ETagTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -171,6 +172,9 @@ func (t *ETagTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	// 304 Not Modified: Return cached response with updated rate limit headers!
 	if resp.StatusCode == http.StatusNotModified && hasCached {
+		if t.OnCacheHit != nil {
+			t.OnCacheHit()
+		}
 		resp.Body.Close()
 
 		synthHeader := make(http.Header)

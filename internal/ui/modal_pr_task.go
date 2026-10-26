@@ -396,8 +396,31 @@ Note: GitHub automatically closes this task when the linked pull request is merg
 	owner := parts[0]
 	repo := parts[1]
 
+	now := time.Now()
+	tempTask := github.Task{
+		ID:          -now.UnixNano(),
+		Number:      0,
+		Title:       title,
+		Body:        body,
+		State:       "open",
+		Priority:    priority,
+		RepoOwner:   owner,
+		RepoName:    repo,
+		Author:      m.AuthUser,
+		Assignees:   assignees,
+		Labels:      labels,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		IsSquadTask: true,
+	}
+	m.SquadTasks = append([]github.Task{tempTask}, m.SquadTasks...)
+	if m.DB != nil {
+		_ = m.DB.SaveTask(&tempTask, "pending_create")
+	}
+
 	m.ActiveModal = ModalNone
-	m.StatusMsg = fmt.Sprintf("Creating PR review task for #%d in %s...", pr.Number, repoFullName)
+	m.TaskCursor = 0
+	m.StatusMsg = fmt.Sprintf("✓ Created review task draft for #%d (syncing with GitHub...)", pr.Number)
 	m.StatusMsgTimer = time.Now().Add(4 * time.Second)
 
 	return m, m.createPRTaskCmd(owner, repo, title, body, priority, labels, assignees, true, pr)

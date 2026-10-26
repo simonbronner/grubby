@@ -16,6 +16,7 @@ import (
 	"grubby/internal/config"
 	"grubby/internal/git"
 	"grubby/internal/github"
+	"grubby/internal/storage"
 )
 
 func (m Model) getDisplayRepos() []github.Repository {
@@ -74,6 +75,13 @@ func (m Model) getDisplayRepos() []github.Repository {
 		}
 
 		sort.SliceStable(result, func(i, j int) bool {
+			// 0. Group by Tier priority (Hot=0, Active=1, Dormant=2)
+			tierA := storage.TierPriority(m.getRepoTier(result[i].Name))
+			tierB := storage.TierPriority(m.getRepoTier(result[j].Name))
+			if tierA != tierB {
+				return tierA < tierB
+			}
+
 			actA := m.getRepoLastInteractedTime(result[i].Name, tmuxSessions)
 			actB := m.getRepoLastInteractedTime(result[j].Name, tmuxSessions)
 
@@ -166,7 +174,10 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if err != nil {
 					return m, func() tea.Msg { return StatusToastMsg("Failed to switch session: " + err.Error()) }
 				}
-				return m, func() tea.Msg { return StatusToastMsg(msg) }
+				return m, tea.Batch(
+					func() tea.Msg { return StatusToastMsg(msg) },
+					m.fetchSingleRepoCmd(m.CurrentOrg, repo.Name),
+				)
 			}
 			return m.startCloneWithAction(repo, RepoActionSession)
 		}
@@ -182,7 +193,10 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if err != nil {
 					return m, func() tea.Msg { return StatusToastMsg("Failed to open editor: " + err.Error()) }
 				}
-				return m, func() tea.Msg { return StatusToastMsg(msg) }
+				return m, tea.Batch(
+					func() tea.Msg { return StatusToastMsg(msg) },
+					m.fetchSingleRepoCmd(m.CurrentOrg, repo.Name),
+				)
 			}
 			return m.startCloneWithAction(repo, RepoActionEditor)
 		}
@@ -198,7 +212,10 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if err != nil {
 					return m, func() tea.Msg { return StatusToastMsg("Failed to open shell: " + err.Error()) }
 				}
-				return m, func() tea.Msg { return StatusToastMsg(msg) }
+				return m, tea.Batch(
+					func() tea.Msg { return StatusToastMsg(msg) },
+					m.fetchSingleRepoCmd(m.CurrentOrg, repo.Name),
+				)
 			}
 			return m.startCloneWithAction(repo, RepoActionShell)
 		}
@@ -230,14 +247,19 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m = m.recordRepoInteraction(repo.Name)
 			m.RepoCursor = 0
 			_ = OpenBrowser(repo.URL)
-			return m, func() tea.Msg { return StatusToastMsg("Opened " + repo.Name + " in dedicated browser") }
+			return m, tea.Batch(
+				func() tea.Msg { return StatusToastMsg("Opened " + repo.Name + " in dedicated browser") },
+				m.fetchSingleRepoCmd(m.CurrentOrg, repo.Name),
+			)
 		}
 	case "o":
 		// 'o' opens the repo tabs submenu (issues, pull requests, actions, security, etc.)
 		if len(repos) > 0 && m.RepoCursor < len(repos) {
+			repo := repos[m.RepoCursor]
+			m = m.recordRepoInteraction(repo.Name)
 			m.ActiveModal = ModalRepoTabs
 			m.ModalCursor = 0
-			return m, nil
+			return m, m.fetchSingleRepoCmd(m.CurrentOrg, repo.Name)
 		}
 	case "S":
 		// 'S' opens repository Security (Dependabot) directly in dedicated browser
@@ -247,7 +269,10 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.RepoCursor = 0
 			url := fmt.Sprintf("https://github.com/%s/security/dependabot", repo.FullName)
 			_ = OpenBrowser(url)
-			return m, func() tea.Msg { return StatusToastMsg("Opened Security tab for " + repo.Name) }
+			return m, tea.Batch(
+				func() tea.Msg { return StatusToastMsg("Opened Security tab for " + repo.Name) },
+				m.fetchSingleRepoCmd(m.CurrentOrg, repo.Name),
+			)
 		}
 	case "g":
 		// Open Groups modal for current repo
@@ -351,6 +376,7 @@ func (m Model) renderReposView() string {
 	headerRow := lipgloss.JoinHorizontal(lipgloss.Top,
 		cols.Cursor.Render(""),
 		cols.Name.Render("REPOSITORY"),
+		cols.Tier.Render("TIER"),
 		cols.Sec.Render("SECURITY"),
 		cols.Group.Render("GROUPS"),
 		cols.Git.Render("GIT STATUS"),
@@ -374,18 +400,21 @@ func (m Model) renderReposView() string {
 		filterBadges = append(filterBadges, lipgloss.NewStyle().Foreground(WarningColor).Bold(true).Render("Sort: 🛡️ Most Vulns ↓"))
 	}
 
+	hotCount, activeCount, dormantCount := m.getRepoTierCounts()
+	tierSummary := fmt.Sprintf("🔥 %d Hot  ⚡ %d Active  💤 %d Dormant", hotCount, activeCount, dormantCount)
+
 	if len(filterBadges) > 0 {
 		filterSummary := MetaBarStyle.Render("  🔍 ") + strings.Join(filterBadges, "  ") +
-			MetaBarStyle.Render(fmt.Sprintf("  (%d of %d repos) • [Esc] Clear", len(repos), len(m.Repos)))
+			MetaBarStyle.Render(fmt.Sprintf("  (%d of %d repos) • %s • [Esc] Clear", len(repos), len(m.Repos), tierSummary))
 		rows = append(rows, filterSummary)
+	} else if len(m.Repos) > 0 {
+		tierBar := MetaBarStyle.Render(fmt.Sprintf("  %s  (periodic polling focuses on Hot & Active repos)", tierSummary))
+		rows = append(rows, tierBar)
 	}
 
 	rows = append(rows, renderedHeader)
 
-	visibleCount := m.Height - 8
-	if len(filterBadges) > 0 {
-		visibleCount = m.Height - 9
-	}
+	visibleCount := m.Height - 9
 	if visibleCount < 5 {
 		visibleCount = 10
 	}
@@ -461,7 +490,10 @@ func (m Model) renderReposView() string {
 		}
 
 		// 3. Format Groups
-		groups := m.Config.GetGroupsForRepo(r.Name)
+		var groups []string
+		if m.Config != nil {
+			groups = m.Config.GetGroupsForRepo(r.Name)
+		}
 		groupText := "-"
 		if len(groups) > 0 {
 			groupText = strings.Join(groups, ", ")
@@ -507,6 +539,19 @@ func (m Model) renderReposView() string {
 			}
 		}
 
+		tier := m.getRepoTier(r.Name)
+		var tierBadge string
+		switch tier {
+		case storage.TierHot:
+			tierBadge = HotTierBadge.Render("[🔥 HOT]")
+		case storage.TierActive:
+			tierBadge = ActiveTierBadge.Render("[⚡ ACTIVE]")
+		case storage.TierDormant:
+			tierBadge = DormantTierBadge.Render("[💤 DORM]")
+		default:
+			tierBadge = ActiveTierBadge.Render("[⚡ ACTIVE]")
+		}
+
 		prefix := "  "
 		if i == m.RepoCursor {
 			prefix = "▶ "
@@ -515,6 +560,7 @@ func (m Model) renderReposView() string {
 		rowCells := lipgloss.JoinHorizontal(lipgloss.Top,
 			cols.Cursor.Render(prefix),
 			cols.Name.Render(nameColText),
+			cols.Tier.Render(tierBadge),
 			cols.Sec.Render(secColText),
 			cols.Group.Render(groupText),
 			cols.Git.Render(styledBadge),

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"grubby/internal/github"
+	"grubby/internal/storage"
 )
 
 func (m Model) openTaskNotesModal(target *github.Task, isNew bool) (tea.Model, tea.Cmd) {
@@ -75,8 +77,43 @@ func (m Model) handleTaskNotesModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.TaskNotesTarget != nil {
 			target := *m.TaskNotesTarget
 			newBody := m.TaskNotesInput.Value()
+			target.Body = newBody
+			target.UpdatedAt = time.Now()
+
 			m.ActiveModal = ModalNone
-			m.StatusMsg = fmt.Sprintf("Saving notes for task #%d...", target.Number)
+			m = m.updateTaskInSlices(target)
+			if m.DB != nil {
+				_ = m.DB.SaveTask(&target, "pending_update")
+			}
+			m.StatusMsg = fmt.Sprintf("✓ Saved notes for task #%d", target.Number)
+			m.StatusMsgTimer = time.Now().Add(3 * time.Second)
+
+			if m.Debouncer != nil {
+				m.Debouncer.Enqueue(storage.TaskDebounceJob{
+					TaskID:    target.ID,
+					Number:    target.Number,
+					RepoOwner: target.RepoOwner,
+					RepoName:  target.RepoName,
+					Title:     target.Title,
+					Body:      target.Body,
+					Priority:  target.Priority,
+					Assignees: target.Assignees,
+					Labels:    target.Labels,
+					IsSquad:   target.IsSquadTask,
+					Action:    storage.ActionUpdateTask,
+				}, func(ctx context.Context, job *storage.TaskDebounceJob) error {
+					var err error
+					if m.GHClient != nil {
+						_, err = m.GHClient.UpdateTask(ctx, job.RepoOwner, job.RepoName, job.Number, job.Title, job.Body, job.Priority, job.Assignees, job.Labels, job.IsSquad)
+					}
+					if err == nil && m.DB != nil {
+						_ = m.DB.UpdateTaskSyncStatus(job.TaskID, "synced")
+					}
+					return err
+				})
+				return m, nil
+			}
+
 			return m, m.updateTaskCmd(target, target.Title, newBody, target.Priority, target.Assignees)
 		}
 		m.ActiveModal = ModalNone

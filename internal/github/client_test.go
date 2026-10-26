@@ -273,3 +273,28 @@ func TestNormalizeRepoName(t *testing.T) {
 		}
 	}
 }
+
+func TestRequestTracking(t *testing.T) {
+	client, err := NewClient("dummy-token")
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	client.SetInitialRequestStats(10, 25)
+	if client.RequestsMade() != 10 {
+		t.Errorf("expected 10 requests made, got %d", client.RequestsMade())
+	}
+	if client.RequestsSaved() != 25 {
+		t.Errorf("expected 25 requests saved, got %d", client.RequestsSaved())
+	}
+
+	client.RecordRequestMade()
+	if client.RequestsMade() != 11 {
+		t.Errorf("expected 11 requests made, got %d", client.RequestsMade())
+	}
+
+	client.RecordRequestSaved(5)
+	if client.RequestsSaved() != 30 {
+		t.Errorf("expected 30 requests saved, got %d", client.RequestsSaved())
+	}
+}

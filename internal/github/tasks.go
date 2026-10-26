@@ -174,7 +174,7 @@ func (c *Client) EnsureTaskRepository(ctx context.Context, owner, repo string, i
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return err
 	}
@@ -214,7 +214,7 @@ func (c *Client) EnsureTaskRepository(ctx context.Context, owner, repo string, i
 	creq.Header.Set("Accept", "application/vnd.github+json")
 	creq.Header.Set("Content-Type", "application/json")
 
-	cresp, err := c.httpClient.Do(creq)
+	cresp, err := c.do(creq)
 	if err != nil {
 		return err
 	}
@@ -228,7 +228,7 @@ func (c *Client) EnsureTaskRepository(ctx context.Context, owner, repo string, i
 			fallbackReq.Header.Set("Authorization", "Bearer "+c.token)
 			fallbackReq.Header.Set("Accept", "application/vnd.github+json")
 			fallbackReq.Header.Set("Content-Type", "application/json")
-			if fbResp, fbErr := c.httpClient.Do(fallbackReq); fbErr == nil {
+			if fbResp, fbErr := c.do(fallbackReq); fbErr == nil {
 				c.updateRateLimits(fbResp)
 				fbResp.Body.Close()
 			}
@@ -262,7 +262,7 @@ func (c *Client) ensurePriorityLabels(ctx context.Context, owner, repo string) e
 		req.Header.Set("Accept", "application/vnd.github+json")
 		req.Header.Set("Content-Type", "application/json")
 
-		if resp, err := c.httpClient.Do(req); err == nil {
+		if resp, err := c.do(req); err == nil {
 			c.updateRateLimits(resp)
 			resp.Body.Close()
 		}
@@ -288,7 +288,7 @@ func (c *Client) FetchTasks(ctx context.Context, owner, repo string, isSquad boo
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -401,7 +401,7 @@ func (c *Client) CreateTaskWithLabels(ctx context.Context, owner, repo, title, b
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -464,7 +464,7 @@ func (c *Client) CloseTask(ctx context.Context, owner, repo string, number int) 
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return err
 	}
@@ -493,7 +493,7 @@ func (c *Client) IsPRClosedOrMerged(ctx context.Context, owner, repo string, num
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return false, err
 	}
@@ -533,7 +533,7 @@ func (c *Client) LinkPRToIssue(ctx context.Context, prOwner, prRepo string, prNu
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return err
 	}
@@ -579,7 +579,7 @@ func (c *Client) LinkPRToIssue(ctx context.Context, prOwner, prRepo string, prNu
 	patchReq.Header.Set("Accept", "application/vnd.github+json")
 	patchReq.Header.Set("Content-Type", "application/json")
 
-	patchResp, err := c.httpClient.Do(patchReq)
+	patchResp, err := c.do(patchReq)
 	if err != nil {
 		return err
 	}
@@ -765,7 +765,7 @@ func (c *Client) UpdateTaskPriority(ctx context.Context, owner, repo string, num
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return err
 	}
@@ -794,7 +794,7 @@ func (c *Client) UpdateTaskAssignees(ctx context.Context, owner, repo string, nu
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return err
 	}
@@ -823,7 +823,7 @@ func (c *Client) ReopenTask(ctx context.Context, owner, repo string, number int)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return err
 	}
@@ -880,7 +880,7 @@ func (c *Client) UpdateTask(ctx context.Context, owner, repo string, number int,
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, err
 	}

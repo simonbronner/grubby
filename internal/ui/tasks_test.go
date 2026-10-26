@@ -2,6 +2,7 @@ package ui
 
 import (
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 
 	"grubby/internal/config"
 	"grubby/internal/github"
+	"grubby/internal/storage"
 )
 
 func createTestTasksModel() Model {
@@ -1082,5 +1084,148 @@ func TestPRReviewTask_LaunchAutoUnassignsMultiples(t *testing.T) {
 				t.Fatalf("expected task #303 claimed by simonbronner on 'o', got %v", item.Assignees)
 			}
 		}
+	}
+}
+
+func TestTaskDebouncingAndLocalFirstWrites(t *testing.T) {
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Now()
+	task := github.Task{
+		ID:        1001,
+		Number:    42,
+		Title:     "Original Task",
+		Body:      "Body",
+		State:     "open",
+		Priority:  github.PriorityMedium,
+		RepoName:  "tasks",
+		RepoOwner: "tester",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	_ = db.SaveTask(&task, "synced")
+
+	var coalescedCount int64
+	var flushedCount int64
+	debouncer := storage.NewTaskDebouncer(
+		60*time.Millisecond,
+		func() {
+			atomic.AddInt64(&coalescedCount, 1)
+		},
+		func(job *storage.TaskDebounceJob, err error) {
+			atomic.AddInt64(&flushedCount, 1)
+		},
+	)
+
+	ieti := textinput.New()
+	m := Model{
+		DB:                   db,
+		Debouncer:            debouncer,
+		PersonalTasks:        []github.Task{task},
+		ActiveTaskSubtab:     TaskSubtabMine,
+		InlineEditing:        true,
+		InlineEditTaskID:     1001,
+		InlineEditTitleInput: ieti,
+	}
+
+	// 1. Edit 1: change title to "Edit 1"
+	m.InlineEditTitleInput.SetValue("Edit 1")
+	res, _ := m.handleTasksKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	m = res.(Model)
+
+	// In-memory model must have "Edit 1" immediately (0ms UI latency!)
+	if m.PersonalTasks[0].Title != "Edit 1" {
+		t.Errorf("expected immediate in-memory update to 'Edit 1', got %q", m.PersonalTasks[0].Title)
+	}
+
+	// SQLite database must have "Edit 1" immediately!
+	dbTasks, _ := db.GetTasks(false, "open")
+	if len(dbTasks) != 1 || dbTasks[0].Title != "Edit 1" {
+		t.Fatalf("expected SQLite to be updated immediately to 'Edit 1', got %v", dbTasks)
+	}
+
+	// 2. Rapid Edit 2 (within 60ms): change title to "Edit 2"
+	m.InlineEditing = true
+	m.InlineEditTaskID = 1001
+	m.InlineEditTitleInput.SetValue("Edit 2")
+	res, _ = m.handleTasksKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	m = res.(Model)
+
+	if m.PersonalTasks[0].Title != "Edit 2" {
+		t.Errorf("expected immediate in-memory update to 'Edit 2', got %q", m.PersonalTasks[0].Title)
+	}
+
+	// 3. Rapid Edit 3 (within 60ms): change title to "Final Edit 3"
+	m.InlineEditing = true
+	m.InlineEditTaskID = 1001
+	m.InlineEditTitleInput.SetValue("Final Edit 3")
+	res, _ = m.handleTasksKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	m = res.(Model)
+
+	if m.PersonalTasks[0].Title != "Final Edit 3" {
+		t.Errorf("expected immediate in-memory update to 'Final Edit 3', got %q", m.PersonalTasks[0].Title)
+	}
+
+	// Wait for debounce window to fire
+	time.Sleep(120 * time.Millisecond)
+
+	// 2 edits were coalesced (2 requests saved!)
+	if atomic.LoadInt64(&coalescedCount) != 2 {
+		t.Errorf("expected 2 coalesced edits, got %d", coalescedCount)
+	}
+	// Exactly 1 flush
+	if atomic.LoadInt64(&flushedCount) != 1 {
+		t.Errorf("expected exactly 1 flush callback, got %d", flushedCount)
+	}
+}
+
+func TestInitialModel_EagerSQLiteLoading(t *testing.T) {
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Now()
+	repos := []github.Repository{
+		{Name: "my-cached-repo", FullName: "org/my-cached-repo", PushedAt: now},
+	}
+	_ = db.SaveRepositories(repos, "org")
+	_ = db.SetRepoTier("my-cached-repo", storage.TierHot)
+
+	tasks := []github.Task{
+		{ID: 200, Number: 1, Title: "Cached Task", State: "open", RepoOwner: "org", RepoName: "my-cached-repo"},
+	}
+	_ = db.SaveTask(&tasks[0], "synced")
+
+	_ = db.IncrementRequestsMade(10)
+	_ = db.IncrementRequestsSaved(40)
+
+	cfg := &config.Config{Version: 1}
+	m := InitialModel(cfg, nil, nil, "org", db)
+
+	// Instantaneous load from SQLite!
+	if !m.InitialDataLoaded {
+		t.Errorf("expected InitialDataLoaded to be true immediately from SQLite")
+	}
+	if m.Loading {
+		t.Errorf("expected Loading to be false immediately when data is cached")
+	}
+	if len(m.Repos) != 1 || m.Repos[0].Name != "my-cached-repo" {
+		t.Fatalf("expected 1 cached repo loaded, got %v", m.Repos)
+	}
+	if tier := m.getRepoTier("my-cached-repo"); tier != storage.TierHot {
+		t.Errorf("expected repo tier Hot, got %v", tier)
+	}
+	if len(m.PersonalTasks) != 1 || m.PersonalTasks[0].Title != "Cached Task" {
+		t.Fatalf("expected 1 cached personal task loaded, got %v", m.PersonalTasks)
+	}
+	if m.RequestsMade != 10 || m.RequestsSaved != 40 {
+		t.Errorf("expected 10 made / 40 saved requests loaded, got made=%d saved=%d", m.RequestsMade, m.RequestsSaved)
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -41,6 +42,8 @@ type Client struct {
 	graphqlRateLimit RateLimitInfo // GraphQL
 	proxyUsed        string
 	cache            *ETagCache
+	requestsMade     int64
+	requestsSaved    int64
 }
 
 func (c *Client) ProxyUsed() string {
@@ -187,17 +190,8 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 		etagCache = NewETagCache(cachePath)
 	}
 
-	transportWithCache := &ETagTransport{
-		Base:  transport,
-		Cache: etagCache,
-	}
-
-	return &Client{
-		token: opts.Token,
-		httpClient: &http.Client{
-			Transport: transportWithCache,
-			Timeout:   timeout,
-		},
+	c := &Client{
+		token:     opts.Token,
 		proxyUsed: proxyStr,
 		cache:     etagCache,
 		rateLimit: RateLimitInfo{
@@ -212,7 +206,50 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 			Used:      0,
 			Reset:     time.Now().Add(1 * time.Hour),
 		},
-	}, nil
+	}
+
+	transportWithCache := &ETagTransport{
+		Base:  transport,
+		Cache: etagCache,
+		OnCacheHit: func() {
+			atomic.AddInt64(&c.requestsSaved, 1)
+		},
+	}
+
+	c.httpClient = &http.Client{
+		Transport: transportWithCache,
+		Timeout:   timeout,
+	}
+
+	return c, nil
+}
+
+func (c *Client) do(req *http.Request) (*http.Response, error) {
+	atomic.AddInt64(&c.requestsMade, 1)
+	return c.httpClient.Do(req)
+}
+
+func (c *Client) RequestsMade() int64 {
+	return atomic.LoadInt64(&c.requestsMade)
+}
+
+func (c *Client) RequestsSaved() int64 {
+	return atomic.LoadInt64(&c.requestsSaved)
+}
+
+func (c *Client) RecordRequestMade() {
+	atomic.AddInt64(&c.requestsMade, 1)
+}
+
+func (c *Client) RecordRequestSaved(delta int64) {
+	if delta > 0 {
+		atomic.AddInt64(&c.requestsSaved, delta)
+	}
+}
+
+func (c *Client) SetInitialRequestStats(made, saved int64) {
+	atomic.StoreInt64(&c.requestsMade, made)
+	atomic.StoreInt64(&c.requestsSaved, saved)
 }
 
 // NewClient creates a new GitHub API client using default options
@@ -272,7 +309,7 @@ func (c *Client) GetAuthenticatedUser(ctx context.Context) (string, error) {
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return "", err
 	}
@@ -331,7 +368,7 @@ func (c *Client) queryGraphQL(ctx context.Context, query string, variables map[s
 		req.Header.Set("Authorization", "Bearer "+c.token)
 		req.Header.Set("Content-Type", "application/json")
 
-		resp, err = c.httpClient.Do(req)
+		resp, err = c.do(req)
 		if err != nil {
 			lastErr = err
 			if ctx.Err() != nil {
@@ -750,6 +787,186 @@ query($searchQuery: String!) {
 	return repos, prs, commitEvents, securityMap, nil
 }
 
+// FetchSingleRepo fetches metadata, default branch commit history, and vulnerability alerts for a single repo.
+func (c *Client) FetchSingleRepo(ctx context.Context, owner, repoName string) (*Repository, []SquadEvent, *SecurityAlertSummary, error) {
+	cleanOwner := strings.TrimSpace(owner)
+	cleanRepo := strings.TrimSpace(repoName)
+	if cleanOwner == "" || cleanRepo == "" {
+		return nil, nil, nil, fmt.Errorf("owner and repo required")
+	}
+
+	query := `
+query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    name
+    description
+    pushedAt
+    updatedAt
+    isPrivate
+    url
+    sshUrl
+    defaultBranchRef {
+      name
+      target {
+        ... on Commit {
+          history(first: 10) {
+            nodes {
+              oid
+              message
+              committedDate
+              author {
+                name
+                user {
+                  login
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    vulnerabilityAlerts(first: 20, states: OPEN) {
+      totalCount
+      nodes {
+        securityVulnerability {
+          severity
+          package {
+            name
+          }
+        }
+      }
+    }
+  }
+}
+`
+	var resp struct {
+		Repository *struct {
+			Name             string    `json:"name"`
+			Description      *string   `json:"description"`
+			PushedAt         time.Time `json:"pushedAt"`
+			UpdatedAt        time.Time `json:"updatedAt"`
+			IsPrivate        bool      `json:"isPrivate"`
+			URL              string    `json:"url"`
+			SSHURL           string    `json:"sshUrl"`
+			DefaultBranchRef *struct {
+				Name   string `json:"name"`
+				Target *struct {
+					History struct {
+						Nodes []struct {
+							OID           string    `json:"oid"`
+							Message       string    `json:"message"`
+							CommittedDate time.Time `json:"committedDate"`
+							Author        struct {
+								Name string `json:"name"`
+								User *struct {
+									Login string `json:"login"`
+								} `json:"user"`
+							} `json:"author"`
+						} `json:"nodes"`
+					} `json:"history"`
+				} `json:"target"`
+			} `json:"defaultBranchRef"`
+			VulnerabilityAlerts struct {
+				TotalCount int `json:"totalCount"`
+				Nodes      []struct {
+					SecurityVulnerability struct {
+						Severity string `json:"severity"`
+						Package  struct {
+							Name string `json:"name"`
+						} `json:"package"`
+					} `json:"securityVulnerability"`
+				} `json:"nodes"`
+			} `json:"vulnerabilityAlerts"`
+		} `json:"repository"`
+	}
+
+	err := c.queryGraphQL(ctx, query, map[string]interface{}{"owner": cleanOwner, "name": cleanRepo}, &resp)
+	if err != nil || resp.Repository == nil {
+		return nil, nil, nil, err
+	}
+
+	node := resp.Repository
+	desc := ""
+	if node.Description != nil {
+		desc = *node.Description
+	}
+	defBranch := "main"
+	if node.DefaultBranchRef != nil && node.DefaultBranchRef.Name != "" {
+		defBranch = node.DefaultBranchRef.Name
+	}
+
+	repo := &Repository{
+		Name:          node.Name,
+		FullName:      cleanOwner + "/" + node.Name,
+		Description:   desc,
+		PushedAt:      node.PushedAt,
+		UpdatedAt:     node.UpdatedAt,
+		DefaultBranch: defBranch,
+		IsPrivate:     node.IsPrivate,
+		URL:           node.URL,
+		SSHURL:        node.SSHURL,
+	}
+
+	var commitEvents []SquadEvent
+	if node.DefaultBranchRef != nil && node.DefaultBranchRef.Target != nil {
+		for _, cNode := range node.DefaultBranchRef.Target.History.Nodes {
+			actor := ""
+			if cNode.Author.User != nil && cNode.Author.User.Login != "" {
+				actor = cNode.Author.User.Login
+			} else if cNode.Author.Name != "" {
+				actor = cNode.Author.Name
+			}
+			msg := strings.Split(cNode.Message, "\n")[0]
+			if len(msg) > 60 {
+				msg = msg[:57] + "..."
+			}
+			normRepo := NormalizeRepoName(node.Name)
+			commitEvents = append(commitEvents, SquadEvent{
+				Actor:     actor,
+				Action:    "Committed",
+				Repo:      normRepo,
+				Target:    fmt.Sprintf("%s:%s", normRepo, defBranch),
+				Details:   msg,
+				Timestamp: cNode.CommittedDate,
+			})
+		}
+	}
+
+	crit, high, med, low := 0, 0, 0, 0
+	var packages []string
+	seenPkg := make(map[string]bool)
+	for _, va := range node.VulnerabilityAlerts.Nodes {
+		pkgName := va.SecurityVulnerability.Package.Name
+		if pkgName != "" && !seenPkg[pkgName] {
+			seenPkg[pkgName] = true
+			packages = append(packages, pkgName)
+		}
+		switch strings.ToUpper(va.SecurityVulnerability.Severity) {
+		case "CRITICAL":
+			crit++
+		case "HIGH":
+			high++
+		case "MODERATE":
+			med++
+		case "LOW":
+			low++
+		}
+	}
+
+	secSummary := &SecurityAlertSummary{
+		Repo:        node.Name,
+		Critical:    crit,
+		High:        high,
+		Medium:      med,
+		Low:         low,
+		Total:       node.VulnerabilityAlerts.TotalCount,
+		Packages:    packages,
+		LastScanned: time.Now(),
+	}
+
+	return repo, commitEvents, secSummary, nil
+}
+
 type OrgMember struct {
 	ID         string `json:"id"`
 	DatabaseID int64  `json:"database_id"`
@@ -827,7 +1044,7 @@ query($login: String!) {
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	httpResp, err := c.httpClient.Do(req)
+	httpResp, err := c.do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -909,7 +1126,7 @@ query($login: String!) {
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	httpResp, err := c.httpClient.Do(req)
+	httpResp, err := c.do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -1031,7 +1248,7 @@ func (c *Client) DownloadAvatar(ctx context.Context, avatarURL string) ([]byte, 
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -1073,7 +1290,7 @@ func (c *Client) FetchSquadActivity(ctx context.Context, members []string, commi
 		req.Header.Set("Authorization", "Bearer "+c.token)
 		req.Header.Set("Accept", "application/vnd.github+json")
 
-		resp, err := c.httpClient.Do(req)
+		resp, err := c.do(req)
 		if err != nil {
 			continue
 		}
@@ -1247,7 +1464,7 @@ func (c *Client) TriggerCopilotReview(ctx context.Context, owner, repo string, p
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return err
 	}
@@ -1268,7 +1485,7 @@ func (c *Client) TriggerCopilotReview(ctx context.Context, owner, repo string, p
 		return err
 	}
 	creq.Header.Set("Authorization", "Bearer "+c.token)
-	cresp, err := c.httpClient.Do(creq)
+	cresp, err := c.do(creq)
 	if err != nil {
 		return err
 	}
@@ -1291,7 +1508,7 @@ func (c *Client) FetchNotifications(ctx context.Context) ([]Notification, error)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -1353,7 +1570,7 @@ func (c *Client) MarkNotificationRead(ctx context.Context, threadID string) erro
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return err
 	}
@@ -1376,7 +1593,7 @@ func (c *Client) MarkAllNotificationsRead(ctx context.Context) error {
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return err
 	}

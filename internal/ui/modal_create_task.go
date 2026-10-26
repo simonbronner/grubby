@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -273,8 +274,36 @@ func (m Model) submitCreateTaskModal() (tea.Model, tea.Cmd) {
 		assignees = append(assignees, m.TaskCreateAssignee)
 	}
 
+	now := time.Now()
+	tempTask := github.Task{
+		ID:          -now.UnixNano(),
+		Number:      0,
+		Title:       titleText,
+		Body:        bodyText,
+		State:       "open",
+		Priority:    priority,
+		RepoOwner:   owner,
+		RepoName:    repo,
+		Author:      m.AuthUser,
+		Assignees:   assignees,
+		Labels:      []string{priority.Label()},
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		IsSquadTask: isSquad,
+	}
+	if isSquad {
+		m.SquadTasks = append([]github.Task{tempTask}, m.SquadTasks...)
+	} else {
+		m.PersonalTasks = append([]github.Task{tempTask}, m.PersonalTasks...)
+	}
+	if m.DB != nil {
+		_ = m.DB.SaveTask(&tempTask, "pending_create")
+	}
+
 	m.ActiveModal = ModalNone
-	m.StatusMsg = fmt.Sprintf("Creating task in %s...", repoFullName)
+	m.TaskCursor = 0
+	m.StatusMsg = fmt.Sprintf("✓ Created task draft in %s (syncing with GitHub...)", repoFullName)
+	m.StatusMsgTimer = time.Now().Add(3 * time.Second)
 	return m, m.createTaskCmd(owner, repo, titleText, bodyText, priority, assignees, isSquad)
 }
 

@@ -1,12 +1,15 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"grubby/internal/storage"
 )
 
 func (m Model) renderAssignSquadTaskModal() string {
@@ -250,10 +253,40 @@ func (m Model) handleAssignSquadTaskModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cm
 
 				task := *m.AssignTaskTarget
 				task.Assignees = newAssignees
+				task.UpdatedAt = time.Now()
 				m = m.updateTaskInSlices(task)
+				if m.DB != nil {
+					_ = m.DB.SaveTask(&task, "pending_update")
+				}
 				m.ActiveModal = ModalNone
-				m.StatusMsg = fmt.Sprintf("Updating assignees for task #%d...", task.Number)
-				m.StatusMsgTimer = time.Now().Add(4 * time.Second)
+				m.StatusMsg = fmt.Sprintf("✓ Assigned task #%d to %s", task.Number, strings.Join(newAssignees, ", "))
+				m.StatusMsgTimer = time.Now().Add(3 * time.Second)
+
+				if m.Debouncer != nil {
+					m.Debouncer.Enqueue(storage.TaskDebounceJob{
+						TaskID:    task.ID,
+						Number:    task.Number,
+						RepoOwner: task.RepoOwner,
+						RepoName:  task.RepoName,
+						Title:     task.Title,
+						Body:      task.Body,
+						Priority:  task.Priority,
+						Assignees: newAssignees,
+						Labels:    task.Labels,
+						IsSquad:   task.IsSquadTask,
+						Action:    storage.ActionAssignTask,
+					}, func(ctx context.Context, job *storage.TaskDebounceJob) error {
+						var err error
+						if m.GHClient != nil {
+							err = m.GHClient.UpdateTaskAssignees(ctx, job.RepoOwner, job.RepoName, job.Number, job.Assignees)
+						}
+						if err == nil && m.DB != nil {
+							_ = m.DB.UpdateTaskSyncStatus(job.TaskID, "synced")
+						}
+						return err
+					})
+					return m, nil
+				}
 
 				return m, m.updateTaskAssigneesCmd(task, newAssignees)
 			}
