@@ -192,8 +192,8 @@ func TestTopBarAndFooterRendering(t *testing.T) {
 	if !strings.Contains(topBar, "ᘛ( ᵔ ᴗ ᵔ*)ᘚ") {
 		t.Errorf("expected topBar to contain Hobbit mascot")
 	}
-	// Must contain tabs including Tab 6 Status
-	if (!strings.Contains(topBar, "1: Repos") && !strings.Contains(topBar, "1: Repositories")) || !strings.Contains(topBar, "6: Status") {
+	// Must contain tabs including Status
+	if (!strings.Contains(topBar, "1: Repos") && !strings.Contains(topBar, "1: Repositories")) || !strings.Contains(topBar, "Status") {
 		t.Errorf("expected topBar to contain tabs, got:\n%s", topBar)
 	}
 	// Must contain status healthy dot (green)

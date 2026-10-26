@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -28,6 +29,7 @@ const (
 	TabRepos TabType = iota
 	TabPRs
 	TabSquad
+	TabTasks
 	TabSearch
 	TabNotifications
 	TabStatus
@@ -47,6 +49,10 @@ const (
 	ModalFilterPR
 	ModalCreateSquad
 	ModalManageSquad
+	ModalCreateTask
+	ModalEditTask
+	ModalTaskNotes
+	ModalCompletedTasks
 )
 
 type RepoActionType int
@@ -68,15 +74,65 @@ type RepoClonedMsg struct {
 }
 
 type DataLoadedMsg struct {
-	AuthUser      string
-	Repos         []github.Repository
-	PRs           []github.PullRequest
-	SquadEvents   []github.SquadEvent
-	Security      map[string]github.SecurityAlertSummary
-	Notifications []github.Notification
-	OrgMembers    []github.OrgMember
-	RateLimit     github.RateLimitInfo
-	Err           error
+	AuthUser          string
+	Repos             []github.Repository
+	PRs               []github.PullRequest
+	SquadEvents       []github.SquadEvent
+	PersonalTasks     []github.Task
+	PersonalDoneTasks []github.Task
+	SquadTasks        []github.Task
+	SquadDoneTasks    []github.Task
+	Security          map[string]github.SecurityAlertSummary
+	Notifications     []github.Notification
+	OrgMembers        []github.OrgMember
+	RateLimit         github.RateLimitInfo
+	Err               error
+}
+
+type TasksLoadedMsg struct {
+	PersonalTasks     []github.Task
+	PersonalDoneTasks []github.Task
+	SquadTasks        []github.Task
+	SquadDoneTasks    []github.Task
+	Err               error
+}
+
+type TaskCreatedMsg struct {
+	Task *github.Task
+	Err  error
+}
+
+type TaskUpdatedMsg struct {
+	Task *github.Task
+	Err  error
+}
+
+type TaskClosedMsg struct {
+	TaskID   int64
+	Number   int
+	RepoName string
+	IsSquad  bool
+	Err      error
+}
+
+type TaskReopenedMsg struct {
+	TaskID   int64
+	Number   int
+	RepoName string
+	IsSquad  bool
+	Err      error
+}
+
+type TaskPriorityUpdatedMsg struct {
+	TaskID   int64
+	Priority github.TaskPriority
+	Err      error
+}
+
+type TaskAssigneesUpdatedMsg struct {
+	TaskID    int64
+	Assignees []string
+	Err       error
 }
 
 type GitHubStatusLoadedMsg struct {
@@ -163,6 +219,48 @@ type Model struct {
 
 	SquadCursor int
 
+	// Tasks
+	PersonalTasks          []github.Task
+	PersonalDoneTasks      []github.Task
+	SquadTasks             []github.Task
+	SquadDoneTasks         []github.Task
+	ActiveTaskSubtab       TaskSubtab
+	TaskShowDone           bool
+	TaskCursor             int
+	TaskCreateTarget       TaskTarget
+	TaskCreateTitleInput   textinput.Model
+	TaskCreateBodyInput    textarea.Model
+	TaskCreatePriority     github.TaskPriority
+	TaskCreateAssignee     string
+	TaskCreateFocusedField int
+
+	// Inline Task Management
+	InlineAdding           bool
+	InlineNewTitleInput    textinput.Model
+	InlineNewNotes         string
+	InlineNewPriority      github.TaskPriority
+	InlineNewAssignee      string
+
+	InlineEditing          bool
+	InlineEditTaskID       int64
+	InlineEditTitleInput   textinput.Model
+
+	// Notes Modal
+	TaskNotesTarget        *github.Task
+	TaskNotesIsNewTask     bool
+	TaskNotesInput         textarea.Model
+
+	// Completed Tasks Modal
+	CompletedTasksCursor   int
+
+	// Task Details & Editing
+	TaskEditTarget         github.Task
+	TaskEditTitleInput     textinput.Model
+	TaskEditBodyInput      textarea.Model
+	TaskEditPriority       github.TaskPriority
+	TaskEditAssignee       string
+	TaskEditFocusedField   int
+
 	NotifCursor int
 
 	// Search View
@@ -214,6 +312,34 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 	prfi.CharLimit = 50
 	prfi.Width = 40
 
+	tcbi := textarea.New()
+	tcbi.Placeholder = "Optional task notes/context"
+	tcbi.ShowLineNumbers = false
+	tcbi.SetHeight(5)
+	tcbi.SetWidth(60)
+
+	tebi := textarea.New()
+	tebi.Placeholder = "Task notes/details..."
+	tebi.ShowLineNumbers = false
+	tebi.SetHeight(5)
+	tebi.SetWidth(60)
+
+	inti := textinput.New()
+	inti.Placeholder = "What needs to be done? (Enter to create, Esc to cancel)"
+	inti.Prompt = ""
+	inti.CharLimit = 120
+
+	ieti := textinput.New()
+	ieti.Placeholder = "Task title... (Enter to save, Esc to cancel)"
+	ieti.Prompt = ""
+	ieti.CharLimit = 120
+
+	tni := textarea.New()
+	tni.Placeholder = "Task notes/details (Enter for newline, Esc to save)..."
+	tni.ShowLineNumbers = false
+	tni.SetHeight(8)
+	tni.SetWidth(65)
+
 	vp := viewport.New(60, 20)
 
 	sp := spinner.New()
@@ -247,6 +373,11 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 		SelectedRepoGroups:    make(map[string]bool),
 		Spinner:               sp,
 		TmuxSessions:          GetTmuxSessions(),
+		TaskCreateBodyInput:   tcbi,
+		TaskEditBodyInput:     tebi,
+		InlineNewTitleInput:   inti,
+		InlineEditTitleInput:  ieti,
+		TaskNotesInput:        tni,
 	}
 
 	return m
@@ -352,15 +483,49 @@ func (m Model) loadDataCmd() tea.Cmd {
 			}
 		}
 
+		// Fetch Tasks for Personal and Squad
+		allPersonal, _ := m.GHClient.FetchTasks(ctx, authUser, "tasks", false)
+		var personalTasks, personalDoneTasks []github.Task
+		for _, t := range allPersonal {
+			if t.State == "closed" {
+				personalDoneTasks = append(personalDoneTasks, t)
+			} else {
+				personalTasks = append(personalTasks, t)
+			}
+		}
+
+		squadName := "default-squad"
+		if m.Config != nil && m.Config.ActiveSquad != "" {
+			squadName = m.Config.ActiveSquad
+		}
+		squadRepo := fmt.Sprintf("%s-tasks", squadName)
+		orgTarget := m.CurrentOrg
+		if orgTarget == "" {
+			orgTarget = authUser
+		}
+		allSquad, _ := m.GHClient.FetchTasks(ctx, orgTarget, squadRepo, true)
+		var squadTasks, squadDoneTasks []github.Task
+		for _, t := range allSquad {
+			if t.State == "closed" {
+				squadDoneTasks = append(squadDoneTasks, t)
+			} else {
+				squadTasks = append(squadTasks, t)
+			}
+		}
+
 		return DataLoadedMsg{
-			AuthUser:      authUser,
-			Repos:         repos,
-			PRs:           prs,
-			SquadEvents:   events,
-			Security:      secAlerts,
-			Notifications: notifs,
-			OrgMembers:    orgMembers,
-			RateLimit:     m.GHClient.RateLimit(),
+			AuthUser:          authUser,
+			Repos:             repos,
+			PRs:               prs,
+			SquadEvents:       events,
+			PersonalTasks:     personalTasks,
+			PersonalDoneTasks: personalDoneTasks,
+			SquadTasks:        squadTasks,
+			SquadDoneTasks:    squadDoneTasks,
+			Security:          secAlerts,
+			Notifications:     notifs,
+			OrgMembers:        orgMembers,
+			RateLimit:         m.GHClient.RateLimit(),
 		}
 	}
 }
@@ -386,6 +551,133 @@ func (m Model) runSearchCmd(query string) tea.Cmd {
 			Results: results,
 			Query:   query,
 			Err:     err,
+		}
+	}
+}
+
+func (m Model) loadTasksCmd() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		user := m.AuthUser
+		if user == "" {
+			user = m.CurrentOrg
+		}
+		allPersonal, _ := m.GHClient.FetchTasks(ctx, user, "tasks", false)
+		var personalTasks, personalDoneTasks []github.Task
+		for _, t := range allPersonal {
+			if t.State == "closed" {
+				personalDoneTasks = append(personalDoneTasks, t)
+			} else {
+				personalTasks = append(personalTasks, t)
+			}
+		}
+
+		squadName := "default-squad"
+		if m.Config != nil && m.Config.ActiveSquad != "" {
+			squadName = m.Config.ActiveSquad
+		}
+		squadRepo := fmt.Sprintf("%s-tasks", squadName)
+		org := m.CurrentOrg
+		if org == "" {
+			org = user
+		}
+		allSquad, _ := m.GHClient.FetchTasks(ctx, org, squadRepo, true)
+		var squadTasks, squadDoneTasks []github.Task
+		for _, t := range allSquad {
+			if t.State == "closed" {
+				squadDoneTasks = append(squadDoneTasks, t)
+			} else {
+				squadTasks = append(squadTasks, t)
+			}
+		}
+
+		return TasksLoadedMsg{
+			PersonalTasks:     personalTasks,
+			PersonalDoneTasks: personalDoneTasks,
+			SquadTasks:        squadTasks,
+			SquadDoneTasks:    squadDoneTasks,
+		}
+	}
+}
+
+func (m Model) createTaskCmd(owner, repo, title, body string, priority github.TaskPriority, assignees []string, isSquad bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+
+		task, err := m.GHClient.CreateTask(ctx, owner, repo, title, body, priority, assignees, isSquad)
+		return TaskCreatedMsg{Task: task, Err: err}
+	}
+}
+
+func (m Model) updateTaskCmd(target github.Task, title, body string, priority github.TaskPriority, assignees []string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+
+		task, err := m.GHClient.UpdateTask(ctx, target.RepoOwner, target.RepoName, target.Number, title, body, priority, assignees, target.Labels, target.IsSquadTask)
+		return TaskUpdatedMsg{Task: task, Err: err}
+	}
+}
+
+func (m Model) closeTaskCmd(target github.Task) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		err := m.GHClient.CloseTask(ctx, target.RepoOwner, target.RepoName, target.Number)
+		return TaskClosedMsg{
+			TaskID:   target.ID,
+			Number:   target.Number,
+			RepoName: target.RepoName,
+			IsSquad:  target.IsSquadTask,
+			Err:      err,
+		}
+	}
+}
+
+func (m Model) reopenTaskCmd(target github.Task) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		err := m.GHClient.ReopenTask(ctx, target.RepoOwner, target.RepoName, target.Number)
+		return TaskReopenedMsg{
+			TaskID:   target.ID,
+			Number:   target.Number,
+			RepoName: target.RepoName,
+			IsSquad:  target.IsSquadTask,
+			Err:      err,
+		}
+	}
+}
+
+func (m Model) updateTaskPriorityCmd(target github.Task, newPriority github.TaskPriority) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		err := m.GHClient.UpdateTaskPriority(ctx, target.RepoOwner, target.RepoName, target.Number, newPriority, target.Labels)
+		return TaskPriorityUpdatedMsg{
+			TaskID:   target.ID,
+			Priority: newPriority,
+			Err:      err,
+		}
+	}
+}
+
+func (m Model) updateTaskAssigneesCmd(target github.Task, assignees []string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		err := m.GHClient.UpdateTaskAssignees(ctx, target.RepoOwner, target.RepoName, target.Number, assignees)
+		return TaskAssigneesUpdatedMsg{
+			TaskID:    target.ID,
+			Assignees: assignees,
+			Err:       err,
 		}
 	}
 }
@@ -508,6 +800,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Repos = msg.Repos
 		m.PRs = msg.PRs
 		m.SquadEvents = msg.SquadEvents
+		m.PersonalTasks = msg.PersonalTasks
+		m.SquadTasks = msg.SquadTasks
 		m.SecuritySummaries = msg.Security
 		m.OrgMembers = msg.OrgMembers
 		m.RateLimit = msg.RateLimit
@@ -655,6 +949,189 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.StatusMsg = string(msg)
 		m.StatusMsgTimer = time.Now().Add(4 * time.Second)
 
+	case TasksLoadedMsg:
+		if msg.Err == nil {
+			m.PersonalTasks = msg.PersonalTasks
+			m.PersonalDoneTasks = msg.PersonalDoneTasks
+			m.SquadTasks = msg.SquadTasks
+			m.SquadDoneTasks = msg.SquadDoneTasks
+		}
+		return m, nil
+
+	case TaskCreatedMsg:
+		if msg.Err != nil {
+			m.StatusMsg = fmt.Sprintf("Failed to create task: %v", msg.Err)
+			m.StatusMsgTimer = time.Now().Add(5 * time.Second)
+			return m, nil
+		}
+		if msg.Task != nil {
+			if msg.Task.IsSquadTask {
+				m.SquadTasks = append([]github.Task{*msg.Task}, m.SquadTasks...)
+			} else {
+				m.PersonalTasks = append([]github.Task{*msg.Task}, m.PersonalTasks...)
+			}
+			m.TaskCursor = 0
+			m.StatusMsg = fmt.Sprintf("✓ Created task #%d in %s", msg.Task.Number, msg.Task.RepoName)
+			m.StatusMsgTimer = time.Now().Add(4 * time.Second)
+		}
+		return m, nil
+
+	case TaskUpdatedMsg:
+		if msg.Err != nil {
+			m.StatusMsg = fmt.Sprintf("Failed to update task: %v", msg.Err)
+			m.StatusMsgTimer = time.Now().Add(5 * time.Second)
+			return m, nil
+		}
+		if msg.Task != nil {
+			updateInSlice := func(slice []github.Task) []github.Task {
+				for i := range slice {
+					if slice[i].ID == msg.Task.ID || (slice[i].Number == msg.Task.Number && slice[i].RepoName == msg.Task.RepoName) {
+						slice[i].Title = msg.Task.Title
+						slice[i].Body = msg.Task.Body
+						slice[i].Priority = msg.Task.Priority
+						slice[i].Assignees = msg.Task.Assignees
+						slice[i].Labels = msg.Task.Labels
+						slice[i].UpdatedAt = msg.Task.UpdatedAt
+						break
+					}
+				}
+				return slice
+			}
+			m.PersonalTasks = updateInSlice(m.PersonalTasks)
+			m.PersonalDoneTasks = updateInSlice(m.PersonalDoneTasks)
+			m.SquadTasks = updateInSlice(m.SquadTasks)
+			m.SquadDoneTasks = updateInSlice(m.SquadDoneTasks)
+			m.StatusMsg = fmt.Sprintf("✓ Saved changes to task #%d", msg.Task.Number)
+			m.StatusMsgTimer = time.Now().Add(4 * time.Second)
+		}
+		return m, nil
+
+	case TaskClosedMsg:
+		if msg.Err != nil {
+			m.StatusMsg = fmt.Sprintf("Failed to complete task: %v", msg.Err)
+			m.StatusMsgTimer = time.Now().Add(5 * time.Second)
+			return m, nil
+		}
+		now := time.Now()
+		if msg.IsSquad {
+			var updated []github.Task
+			for _, t := range m.SquadTasks {
+				if (msg.TaskID > 0 && t.ID == msg.TaskID) || (t.Number == msg.Number && t.RepoName == msg.RepoName) {
+					t.State = "closed"
+					t.ClosedAt = &now
+					t.UpdatedAt = now
+					m.SquadDoneTasks = append([]github.Task{t}, m.SquadDoneTasks...)
+				} else {
+					updated = append(updated, t)
+				}
+			}
+			m.SquadTasks = updated
+		} else {
+			var updated []github.Task
+			for _, t := range m.PersonalTasks {
+				if (msg.TaskID > 0 && t.ID == msg.TaskID) || (t.Number == msg.Number && t.RepoName == msg.RepoName) {
+					t.State = "closed"
+					t.ClosedAt = &now
+					t.UpdatedAt = now
+					m.PersonalDoneTasks = append([]github.Task{t}, m.PersonalDoneTasks...)
+				} else {
+					updated = append(updated, t)
+				}
+			}
+			m.PersonalTasks = updated
+		}
+		if m.TaskCursor >= len(m.getDisplayTasks()) && m.TaskCursor > 0 {
+			m.TaskCursor = len(m.getDisplayTasks()) - 1
+		}
+		m.StatusMsg = fmt.Sprintf("✓ Completed task #%d (press 'd' to view done tasks)", msg.Number)
+		m.StatusMsgTimer = time.Now().Add(4 * time.Second)
+		return m, nil
+
+	case TaskReopenedMsg:
+		if msg.Err != nil {
+			m.StatusMsg = fmt.Sprintf("Failed to reopen task: %v", msg.Err)
+			m.StatusMsgTimer = time.Now().Add(5 * time.Second)
+			return m, nil
+		}
+		now := time.Now()
+		if msg.IsSquad {
+			var updatedDone []github.Task
+			for _, t := range m.SquadDoneTasks {
+				if (msg.TaskID > 0 && t.ID == msg.TaskID) || (t.Number == msg.Number && t.RepoName == msg.RepoName) {
+					t.State = "open"
+					t.ClosedAt = nil
+					t.UpdatedAt = now
+					m.SquadTasks = append([]github.Task{t}, m.SquadTasks...)
+				} else {
+					updatedDone = append(updatedDone, t)
+				}
+			}
+			m.SquadDoneTasks = updatedDone
+		} else {
+			var updatedDone []github.Task
+			for _, t := range m.PersonalDoneTasks {
+				if (msg.TaskID > 0 && t.ID == msg.TaskID) || (t.Number == msg.Number && t.RepoName == msg.RepoName) {
+					t.State = "open"
+					t.ClosedAt = nil
+					t.UpdatedAt = now
+					m.PersonalTasks = append([]github.Task{t}, m.PersonalTasks...)
+				} else {
+					updatedDone = append(updatedDone, t)
+				}
+			}
+			m.PersonalDoneTasks = updatedDone
+		}
+		if m.TaskCursor >= len(m.getDisplayTasks()) && m.TaskCursor > 0 {
+			m.TaskCursor = len(m.getDisplayTasks()) - 1
+		}
+		m.StatusMsg = fmt.Sprintf("✓ Reopened task #%d (now active)", msg.Number)
+		m.StatusMsgTimer = time.Now().Add(4 * time.Second)
+		return m, nil
+
+	case TaskPriorityUpdatedMsg:
+		if msg.Err != nil {
+			m.StatusMsg = fmt.Sprintf("Failed to update priority: %v", msg.Err)
+			m.StatusMsgTimer = time.Now().Add(5 * time.Second)
+			return m, nil
+		}
+		updatePrio := func(slice []github.Task) {
+			for i := range slice {
+				if slice[i].ID == msg.TaskID {
+					slice[i].Priority = msg.Priority
+					break
+				}
+			}
+		}
+		updatePrio(m.PersonalTasks)
+		updatePrio(m.PersonalDoneTasks)
+		updatePrio(m.SquadTasks)
+		updatePrio(m.SquadDoneTasks)
+		m.StatusMsg = fmt.Sprintf("✓ Set priority to %s", msg.Priority)
+		m.StatusMsgTimer = time.Now().Add(4 * time.Second)
+		return m, nil
+
+	case TaskAssigneesUpdatedMsg:
+		if msg.Err != nil {
+			m.StatusMsg = fmt.Sprintf("Failed to update assignees: %v", msg.Err)
+			m.StatusMsgTimer = time.Now().Add(5 * time.Second)
+			return m, nil
+		}
+		updateAssignees := func(slice []github.Task) {
+			for i := range slice {
+				if slice[i].ID == msg.TaskID {
+					slice[i].Assignees = msg.Assignees
+					break
+				}
+			}
+		}
+		updateAssignees(m.PersonalTasks)
+		updateAssignees(m.PersonalDoneTasks)
+		updateAssignees(m.SquadTasks)
+		updateAssignees(m.SquadDoneTasks)
+		m.StatusMsg = "✓ Updated task assignee"
+		m.StatusMsgTimer = time.Now().Add(4 * time.Second)
+		return m, nil
+
 	case tea.KeyMsg:
 		// Modal Key Handling
 		if m.ActiveModal != ModalNone {
@@ -689,22 +1166,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ActiveTab = TabSquad
 			return m, m.emitSquadMemberAvatarsCmd()
 		case "4":
-			m.ActiveTab = TabSearch
+			m.ActiveTab = TabTasks
 			return m, nil
 		case "5":
-			m.ActiveTab = TabNotifications
+			m.ActiveTab = TabSearch
 			return m, nil
 		case "6":
+			m.ActiveTab = TabNotifications
+			return m, nil
+		case "7":
 			m.ActiveTab = TabStatus
 			return m, nil
 		case "tab":
-			m.ActiveTab = (m.ActiveTab + 1) % 6
+			m.ActiveTab = (m.ActiveTab + 1) % 7
 			if m.ActiveTab == TabSquad {
 				return m, m.emitSquadMemberAvatarsCmd()
 			}
 			return m, nil
 		case "shift+tab":
-			m.ActiveTab = (m.ActiveTab + 5) % 6
+			m.ActiveTab = (m.ActiveTab + 6) % 7
 			if m.ActiveTab == TabSquad {
 				return m, m.emitSquadMemberAvatarsCmd()
 			}
@@ -729,6 +1209,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handlePRsKeys(msg)
 		case TabSquad:
 			return m.handleSquadKeys(msg)
+		case TabTasks:
+			return m.handleTasksKeys(msg)
 		case TabSearch:
 			return m.handleSearchKeys(msg)
 		case TabNotifications:
@@ -762,6 +1244,8 @@ func (m Model) View() string {
 		body = m.renderPRsView()
 	case TabSquad:
 		body = m.renderSquadView()
+	case TabTasks:
+		body = m.renderTasksView()
 	case TabSearch:
 		body = m.renderSearchView()
 	case TabNotifications:
@@ -783,7 +1267,7 @@ func (m Model) View() string {
 
 func (m Model) renderTopBar() string {
 	// 1. Hobbit avatar mascot on the left
-	hobbitBadge := HeaderStyle.Render(" ᘛ( ᵔ ᴗ ᵔ*)ᘚ ")
+	hobbitBadge := HeaderStyle.Render("ᘛ( ᵔ ᴗ ᵔ*)ᘚ")
 
 	// 2. Tabs immediately to the right of the mascot
 	unreadNotifs := 0
@@ -810,15 +1294,22 @@ func (m Model) renderTopBar() string {
 		}
 	}
 
+	totalOpenTasks := len(m.PersonalTasks) + len(m.SquadTasks)
+	taskCountStr := ""
+	if totalOpenTasks > 0 {
+		taskCountStr = fmt.Sprintf(" (%d)", totalOpenTasks)
+	}
+
 	var tabs []string
-	if m.Width >= 140 {
+	if m.Width >= 145 {
 		tabs = []string{
 			"1: Repositories",
 			fmt.Sprintf("2: Pull Requests (%d)", len(m.PRs)),
 			"3: Squad Activity",
-			"4: Code Search",
-			fmt.Sprintf("5: Notifications (%d)", unreadNotifs),
-			fmt.Sprintf("6: Status %s", statusDot),
+			fmt.Sprintf("4: Tasks (%d)", totalOpenTasks),
+			"5: Code Search",
+			fmt.Sprintf("6: Notifications (%d)", unreadNotifs),
+			fmt.Sprintf("7: Status %s", statusDot),
 		}
 	} else if m.Width >= 115 {
 		prCountStr := ""
@@ -833,13 +1324,14 @@ func (m Model) renderTopBar() string {
 			"1: Repos",
 			fmt.Sprintf("2: PRs%s", prCountStr),
 			"3: Squad",
-			"4: Search",
-			fmt.Sprintf("5: Notifs%s", notifCountStr),
-			fmt.Sprintf("6: Status %s", statusDot),
+			fmt.Sprintf("4: Tasks%s", taskCountStr),
+			"5: Search",
+			fmt.Sprintf("6: Notifs%s", notifCountStr),
+			fmt.Sprintf("7: Status %s", statusDot),
 		}
 	} else {
 		tabs = []string{
-			"1: Repos", "2: PRs", "3: Squad", "4: Search", "5: Notifs", fmt.Sprintf("6: %s", statusDot),
+			"1: Repos", "2: PRs", "3: Squad", "4: Tasks", "5: Search", "6: Notifs", fmt.Sprintf("7: %s", statusDot),
 		}
 	}
 
@@ -853,7 +1345,7 @@ func (m Model) renderTopBar() string {
 	}
 
 	tabsRow := lipgloss.JoinHorizontal(lipgloss.Top, renderedTabs...)
-	leftPart := lipgloss.JoinHorizontal(lipgloss.Top, hobbitBadge, "  ", tabsRow)
+	leftPart := lipgloss.JoinHorizontal(lipgloss.Top, hobbitBadge, " ", tabsRow)
 
 	// 3. Security vulnerabilities indicator placed between tabs and refresh
 	totalCrit := 0
@@ -917,7 +1409,11 @@ func (m Model) renderTopBar() string {
 
 		mins := int(untilNext.Minutes())
 		secs := int(untilNext.Seconds()) % 60
-		refreshStr = fmt.Sprintf("⟳ %s (%d:%02d)", sinceStr, mins, secs)
+		if m.Width >= 125 {
+			refreshStr = fmt.Sprintf("⟳ %s (%d:%02d)", sinceStr, mins, secs)
+		} else {
+			refreshStr = fmt.Sprintf("⟳ %s", sinceStr)
+		}
 	} else {
 		refreshStr = "⟳ Ready"
 	}
@@ -941,12 +1437,14 @@ func (m Model) renderTopBar() string {
 			gap2 = 1
 		}
 		fullLine = leftPart + strings.Repeat(" ", gap1) + secItem + strings.Repeat(" ", gap2) + rightText
-	} else if m.Width >= leftWidth+secWidth+2 {
-		padding := m.Width - leftWidth - secWidth
-		fullLine = leftPart + strings.Repeat(" ", padding) + secItem
+	} else if m.Width >= leftWidth+secWidth+rightWidth+1 {
+		fullLine = leftPart + " " + secItem + " " + rightText
 	} else if m.Width >= leftWidth+rightWidth+2 {
 		padding := m.Width - leftWidth - rightWidth
 		fullLine = leftPart + strings.Repeat(" ", padding) + rightText
+	} else if m.Width >= leftWidth+secWidth+2 {
+		padding := m.Width - leftWidth - secWidth
+		fullLine = leftPart + strings.Repeat(" ", padding) + secItem
 	} else if rightWidth > 0 && m.Width >= leftWidth+rightWidth {
 		fullLine = leftPart + rightText
 	} else {
@@ -975,6 +1473,14 @@ func (m Model) renderFooter() string {
 		}
 	case TabSquad:
 		help = "[m] Manage Squad  [s] Switch Squad  [n] New Squad  [r] Refresh  [?] Help"
+	case TabTasks:
+		if m.InlineAdding {
+			help = "[Enter] Create Task  [Esc] Cancel  [n] Add Notes  [p] Priority  [c] Assign"
+		} else if m.InlineEditing {
+			help = "[Enter] Save Title  [Esc] Cancel  [n] Edit Notes  [p] Priority  [c] Assign"
+		} else {
+			help = "[a] Add  [Enter] Edit Title  [Space] Toggle Done  [n] Notes  [p] Priority  [c] Assign  [d] All Done  [o] Web  [?] Help"
+		}
 	case TabSearch:
 		help = "[/] Query  [j/k] Nodes  [h/l/Space] Toggle  [Tab] Switch Viewport  [Enter] Open Editor  [?] Help"
 	case TabNotifications:
@@ -1051,6 +1557,20 @@ func distributeEvenly(items []string, totalWidth int) string {
 		}
 	}
 	return b.String()
+}
+
+func (m Model) getOpenTasksCount(subtab TaskSubtab) int {
+	if subtab == TaskSubtabMine {
+		return len(m.PersonalTasks)
+	}
+	return len(m.SquadTasks)
+}
+
+func (m Model) getDoneTasksCount(subtab TaskSubtab) int {
+	if subtab == TaskSubtabMine {
+		return len(m.PersonalDoneTasks)
+	}
+	return len(m.SquadDoneTasks)
 }
 
 // Helpers for opening in browser or editor
