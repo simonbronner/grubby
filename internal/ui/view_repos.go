@@ -412,7 +412,7 @@ func (m Model) renderReposView() string {
 	}
 
 	hotCount, warmCount, coldCount, deadCount := m.getRepoTierCounts()
-	tierSummary := fmt.Sprintf("🔥 %d Hot  ⚡ %d Warm  ❄️ %d Cold  💀 %d Dead", hotCount, warmCount, coldCount, deadCount)
+	tierSummary := fmt.Sprintf("🔥 %d Hot  ⚡ %d Warm  🧊 %d Cold  💀 %d Dead", hotCount, warmCount, coldCount, deadCount)
 
 	if len(filterBadges) > 0 {
 		filterSummary := MetaBarStyle.Render("  🔍 ") + strings.Join(filterBadges, "  ") +
