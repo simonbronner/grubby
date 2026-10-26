@@ -235,13 +235,24 @@ func (m Model) renderTasksView() string {
 			isCurrent := (rowIdx == m.TaskCursor)
 
 			var prioBadge string
-			switch t.Priority {
-			case github.PriorityHigh:
-				prioBadge = lipgloss.NewStyle().Bold(true).Foreground(DangerColor).Render("[🔴 HIGH]")
-			case github.PriorityLow:
-				prioBadge = lipgloss.NewStyle().Foreground(SuccessColor).Render("[🟢 LOW]")
-			default:
-				prioBadge = lipgloss.NewStyle().Foreground(WarningColor).Render("[🟡 MED]")
+			if t.IsPRReview() {
+				switch t.Priority {
+				case github.PriorityHigh:
+					prioBadge = lipgloss.NewStyle().Bold(true).Foreground(DangerColor).Render("[⑂ HIGH]")
+				case github.PriorityLow:
+					prioBadge = lipgloss.NewStyle().Foreground(SuccessColor).Render("[⑂ LOW]")
+				default:
+					prioBadge = lipgloss.NewStyle().Foreground(WarningColor).Render("[⑂ MED]")
+				}
+			} else {
+				switch t.Priority {
+				case github.PriorityHigh:
+					prioBadge = lipgloss.NewStyle().Bold(true).Foreground(DangerColor).Render("[🔴 HIGH]")
+				case github.PriorityLow:
+					prioBadge = lipgloss.NewStyle().Foreground(SuccessColor).Render("[🟢 LOW]")
+				default:
+					prioBadge = lipgloss.NewStyle().Foreground(WarningColor).Render("[🟡 MED]")
+				}
 			}
 
 			var titleDisplay string
@@ -249,6 +260,10 @@ func (m Model) renderTasksView() string {
 				titleDisplay = m.InlineEditTitleInput.View()
 			} else {
 				titleDisplay = strings.ReplaceAll(strings.ReplaceAll(t.Title, "\r", " "), "\n", " ")
+				if t.IsPRReview() {
+					prPrefix := lipgloss.NewStyle().Foreground(lipgloss.Color("#A371F7")).Bold(true).Render("⑂ ")
+					titleDisplay = prPrefix + titleDisplay
+				}
 				if len(titleDisplay) > titleW-2 && titleW > 3 {
 					titleDisplay = titleDisplay[:titleW-3] + "…"
 				}
@@ -322,17 +337,33 @@ func (m Model) renderTasksView() string {
 			isCurrent := (curIdx == m.TaskCursor)
 
 			var prioBadge string
-			switch t.Priority {
-			case github.PriorityHigh:
-				prioBadge = lipgloss.NewStyle().Foreground(DangerColor).Render("[✓ HIGH]")
-			case github.PriorityLow:
-				prioBadge = lipgloss.NewStyle().Foreground(SuccessColor).Render("[✓ LOW]")
-			default:
-				prioBadge = lipgloss.NewStyle().Foreground(WarningColor).Render("[✓ MED]")
+			if t.IsPRReview() {
+				switch t.Priority {
+				case github.PriorityHigh:
+					prioBadge = lipgloss.NewStyle().Foreground(DangerColor).Render("[✓⑂ HIGH]")
+				case github.PriorityLow:
+					prioBadge = lipgloss.NewStyle().Foreground(SuccessColor).Render("[✓⑂ LOW]")
+				default:
+					prioBadge = lipgloss.NewStyle().Foreground(WarningColor).Render("[✓⑂ MED]")
+				}
+			} else {
+				switch t.Priority {
+				case github.PriorityHigh:
+					prioBadge = lipgloss.NewStyle().Foreground(DangerColor).Render("[✓ HIGH]")
+				case github.PriorityLow:
+					prioBadge = lipgloss.NewStyle().Foreground(SuccessColor).Render("[✓ LOW]")
+				default:
+					prioBadge = lipgloss.NewStyle().Foreground(WarningColor).Render("[✓ MED]")
+				}
 			}
 
 			displayTitle := strings.ReplaceAll(strings.ReplaceAll(t.Title, "\r", " "), "\n", " ")
-			displayTitle = "✓ " + displayTitle
+			if t.IsPRReview() {
+				prPrefix := lipgloss.NewStyle().Foreground(lipgloss.Color("#A371F7")).Render("⑂ ")
+				displayTitle = "✓ " + prPrefix + displayTitle
+			} else {
+				displayTitle = "✓ " + displayTitle
+			}
 			if len(displayTitle) > titleW-2 && titleW > 3 {
 				displayTitle = displayTitle[:titleW-3] + "…"
 			}
@@ -588,15 +619,27 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "enter", "e":
 		loc, task := m.getCursorTarget()
-		if loc == locActiveTask && task != nil {
-			m.InlineEditing = true
-			m.InlineEditTaskID = task.ID
-			ieti := textinput.New()
-			ieti.SetValue(task.Title)
-			ieti.Prompt = ""
-			ieti.Focus()
-			m.InlineEditTitleInput = ieti
-			return m, textinput.Blink
+		if task != nil {
+			if task.IsPRReview() {
+				targetURL := task.PRURL()
+				if targetURL == "" {
+					targetURL = task.URL
+				}
+				_ = OpenBrowser(targetURL)
+				return m, func() tea.Msg {
+					return StatusToastMsg(fmt.Sprintf("Opened PR in browser: %s", targetURL))
+				}
+			}
+			if loc == locActiveTask {
+				m.InlineEditing = true
+				m.InlineEditTaskID = task.ID
+				ieti := textinput.New()
+				ieti.SetValue(task.Title)
+				ieti.Prompt = ""
+				ieti.Focus()
+				m.InlineEditTitleInput = ieti
+				return m, textinput.Blink
+			}
 		}
 
 	case " ", "x":
@@ -689,10 +732,18 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "o":
 		// Open in browser
 		_, task := m.getCursorTarget()
-		if task != nil && task.URL != "" {
-			_ = OpenBrowser(task.URL)
-			return m, func() tea.Msg {
-				return StatusToastMsg(fmt.Sprintf("Opened task #%d in browser", task.Number))
+		if task != nil {
+			targetURL := task.URL
+			if task.IsPRReview() {
+				if prURL := task.PRURL(); prURL != "" {
+					targetURL = prURL
+				}
+			}
+			if targetURL != "" {
+				_ = OpenBrowser(targetURL)
+				return m, func() tea.Msg {
+					return StatusToastMsg(fmt.Sprintf("Opened in browser: %s", targetURL))
+				}
 			}
 		}
 	}

@@ -467,3 +467,192 @@ func TestTaskWebAndRowSpacing(t *testing.T) {
 		t.Errorf("expected renderTasksView to end with an empty row spacer, got last line %q", lines[len(lines)-1])
 	}
 }
+
+func TestPRReviewTask_OpenModalFromPRView(t *testing.T) {
+	m := createTestTasksModel()
+	m.ActiveTab = TabPRs
+	m.AuthUser = "simon"
+	m.CurrentOrg = "my-org"
+	m.PRs = []github.PullRequest{
+		{
+			Number: 42,
+			Title:  "Fix database connection leak",
+			Repo:   "backend-service",
+			Author: "alice",
+			URL:    "https://github.com/my-org/backend-service/pull/42",
+		},
+	}
+	m.PRCursor = 0
+
+	// Press 't' on PR view to open PR review task modal
+	res, cmd := m.handlePRsKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	m = res.(Model)
+	if cmd != nil {
+		t.Errorf("expected nil cmd when opening modal")
+	}
+	if m.ActiveModal != ModalCreatePRTask {
+		t.Fatalf("expected ActiveModal == ModalCreatePRTask, got %v", m.ActiveModal)
+	}
+	if m.PRTaskTarget.Number != 42 {
+		t.Errorf("expected PRTaskTarget.Number == 42, got %d", m.PRTaskTarget.Number)
+	}
+	if m.PRTaskAssignMode != 0 {
+		t.Errorf("expected default PRTaskAssignMode == 0 (Entire Squad), got %d", m.PRTaskAssignMode)
+	}
+	if m.PRTaskPriority != github.PriorityMedium {
+		t.Errorf("expected default PRTaskPriority == medium, got %s", m.PRTaskPriority)
+	}
+
+	// Verify modal renders PR info and options
+	view := m.renderCreatePRTaskModal()
+	if !strings.Contains(view, "Fix database connection leak") {
+		t.Errorf("expected modal to render PR title")
+	}
+	if !strings.Contains(view, "Entire Squad") {
+		t.Errorf("expected modal to render Entire Squad option")
+	}
+	if !strings.Contains(view, "pr-review") {
+		t.Errorf("expected modal to render pr-review label")
+	}
+
+	// Cycle priority with 'p'
+	res, _ = m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = res.(Model)
+	if m.PRTaskPriority != github.PriorityHigh {
+		t.Errorf("expected priority High after pressing 'p', got %s", m.PRTaskPriority)
+	}
+
+	// Switch assign mode with 'a'
+	res, _ = m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = res.(Model)
+	if m.PRTaskAssignMode != 1 {
+		t.Errorf("expected assign mode 1 (Individual), got %d", m.PRTaskAssignMode)
+	}
+
+	// Submit modal with 'Enter'
+	res, submitCmd := m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	m = res.(Model)
+	if submitCmd == nil {
+		t.Fatalf("expected createPRTaskCmd on Enter")
+	}
+	if m.ActiveModal != ModalNone {
+		t.Errorf("expected modal to close after submitting")
+	}
+}
+
+func TestPRReviewTask_SpecialRenderingAndContextualEnter(t *testing.T) {
+	m := createTestTasksModel()
+	m.ActiveTab = TabTasks
+	m.ActiveTaskSubtab = TaskSubtabSquad
+	m.Width = 100
+	m.Height = 30
+
+	now := time.Now()
+	// Add a PR review task to SquadTasks
+	prTask := github.Task{
+		ID:          999,
+		Number:      301,
+		Title:       "Review PR #42: Fix database connection leak (backend-service)",
+		Body:        "Review pull request: https://github.com/my-org/backend-service/pull/42\n\nRepository: backend-service\nAuthor: @alice",
+		Priority:    github.PriorityHigh,
+		Assignees:   []string{"bob"},
+		Labels:      []string{"priority: high", github.LabelPRReview},
+		RepoName:    "core-team-tasks",
+		UpdatedAt:   now,
+		IsSquadTask: true,
+	}
+	m.SquadTasks = append([]github.Task{prTask}, m.SquadTasks...)
+
+	// Top task is now the PR review task
+	m.TaskCursor = 0
+	_, cursorTask := m.getCursorTarget()
+	if cursorTask == nil || !cursorTask.IsPRReview() {
+		t.Fatalf("expected cursor task to be a PR review task")
+	}
+	if cursorTask.PRURL() != "https://github.com/my-org/backend-service/pull/42" {
+		t.Errorf("unexpected PRURL: %s", cursorTask.PRURL())
+	}
+
+	// 1. Verify special badge [⑂ HIGH] and ⑂ in tasks view
+	view := m.renderTasksView()
+	if !strings.Contains(view, "[⑂ HIGH]") {
+		t.Errorf("expected view to render [⑂ HIGH] badge for PR review task, got:\n%s", view)
+	}
+
+	// 2. Verify footer displays contextual [Enter/o] Open PR
+	footer := m.renderFooter()
+	if !strings.Contains(footer, "[Enter/o] Open PR") {
+		t.Errorf("expected footer to display '[Enter/o] Open PR', got: %s", footer)
+	}
+	if strings.Contains(footer, "[Enter] Edit Title") {
+		t.Errorf("footer should NOT display '[Enter] Edit Title' when on a PR review task")
+	}
+
+	// 3. Press 'Enter' on PR review task -> MUST open PR, and MUST NOT enter InlineEditing!
+	res, enterCmd := m.handleTasksKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	m = res.(Model)
+	if m.InlineEditing {
+		t.Errorf("expected InlineEditing == false on PR review task, title must be immutable!")
+	}
+	if enterCmd == nil {
+		t.Fatalf("expected toast command from opening PR in browser")
+	}
+	toastMsg := enterCmd().(StatusToastMsg)
+	if !strings.Contains(string(toastMsg), "Opened PR in browser") {
+		t.Errorf("expected toast 'Opened PR in browser', got: %s", toastMsg)
+	}
+}
+
+func TestPRReviewTask_CompletedRenderingAndEnter(t *testing.T) {
+	m := createTestTasksModel()
+	m.ActiveTab = TabTasks
+	m.ActiveTaskSubtab = TaskSubtabSquad
+	m.Width = 100
+	m.Height = 30
+
+	now := time.Now()
+	// Add completed PR review task
+	closedTask := github.Task{
+		ID:          998,
+		Number:      300,
+		Title:       "Review PR #41: Add caching layer (backend-service)",
+		Body:        "Review pull request: https://github.com/my-org/backend-service/pull/41",
+		Priority:    github.PriorityMedium,
+		Assignees:   []string{"alice"},
+		Labels:      []string{github.LabelPRReview},
+		RepoName:    "core-team-tasks",
+		ClosedAt:    &now,
+		UpdatedAt:   now,
+		IsSquadTask: true,
+	}
+	m.SquadDoneTasks = []github.Task{closedTask}
+
+	// 1. Verify rendering in tasks view (recent completed section)
+	view := m.renderTasksView()
+	if !strings.Contains(view, "[✓⑂ MED]") {
+		t.Errorf("expected view to render [✓⑂ MED] badge in completed section")
+	}
+
+	// 2. Open completed tasks modal
+	m.ActiveModal = ModalCompletedTasks
+	m.CompletedTasksCursor = 0
+
+	modalView := m.renderCompletedTasksModal()
+	if !strings.Contains(modalView, "[✓⑂ MED]") {
+		t.Errorf("expected modal to render [✓⑂ MED]")
+	}
+	if !strings.Contains(modalView, "[Enter/o] Open PR") {
+		t.Errorf("expected modal help line to show '[Enter/o] Open PR'")
+	}
+
+	// 3. Press Enter on completed PR review task -> opens PR in browser
+	res, cmd := m.handleCompletedTasksModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	_ = res.(Model)
+	if cmd == nil {
+		t.Fatalf("expected command from Enter in completed tasks modal")
+	}
+	toastMsg := cmd().(StatusToastMsg)
+	if !strings.Contains(string(toastMsg), "Opened PR in browser") {
+		t.Errorf("expected toast 'Opened PR in browser', got: %s", toastMsg)
+	}
+}

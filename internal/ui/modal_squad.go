@@ -40,6 +40,8 @@ func (m Model) handleModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleTaskNotesModalKeys(msg)
 	case ModalCompletedTasks:
 		return m.handleCompletedTasksModalKeys(msg)
+	case ModalCreatePRTask:
+		return m.handleCreatePRTaskModalKeys(msg)
 	case ModalHelp:
 		if msg.String() == "esc" || msg.String() == "q" || msg.String() == "?" {
 			m.ActiveModal = ModalNone
@@ -78,6 +80,8 @@ func (m Model) renderModalOverlay(baseView string) string {
 		modalContent = m.renderTaskNotesModal()
 	case ModalCompletedTasks:
 		modalContent = m.renderCompletedTasksModal()
+	case ModalCreatePRTask:
+		modalContent = m.renderCreatePRTaskModal()
 	case ModalHelp:
 		modalContent = m.renderHelpModal()
 	}
@@ -420,10 +424,22 @@ Repositories Tab (1):
 
 Pull Requests Tab (2):
   [j/k] or [↑/↓]      Select pull request
+  [t]                 Create PR review task in squad tasks
   [f]                 Filter PRs by title, repo, or author
   [o]                 Open PR in browser
   [p]                 Trigger GitHub Copilot PR review
   [c]                 Checkout PR branch in local workspace
+
+Tasks Tab:
+  [j/k] or [↑/↓]      Select task
+  [a]                 Add new task inline
+  [Enter]             Edit task title (or Open PR directly if PR review task)
+  [Space]             Toggle completed / active
+  [n]                 View / edit notes
+  [p]                 Cycle priority (High / Medium / Low)
+  [c]                 Cycle assignee
+  [d]                 Show all completed tasks modal
+  [o]                 Open task in browser
 
 Squad Activity Tab (3):
   [m]                 Manage squad (add/delete multiple members, rename, delete squad)

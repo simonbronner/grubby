@@ -17,6 +17,8 @@ const (
 	PriorityHigh   TaskPriority = "high"
 	PriorityMedium TaskPriority = "medium"
 	PriorityLow    TaskPriority = "low"
+
+	LabelPRReview = "pr-review"
 )
 
 // Rank returns sorting rank (1 = high, 2 = medium, 3 = low).
@@ -82,6 +84,32 @@ type Task struct {
 	ClosedAt    *time.Time   `json:"closed_at,omitempty"`
 	URL         string       `json:"html_url"`
 	IsSquadTask bool         `json:"is_squad_task"`
+}
+
+// IsPRReview returns true if this task represents a pull request review.
+func (t Task) IsPRReview() bool {
+	for _, l := range t.Labels {
+		clean := strings.ToLower(strings.TrimSpace(l))
+		if clean == LabelPRReview || clean == "pr review" || clean == "pr_review" {
+			return true
+		}
+	}
+	return false
+}
+
+// PRURL extracts the linked pull request URL from the task body or returns an empty string.
+func (t Task) PRURL() string {
+	for _, word := range strings.Fields(t.Body) {
+		idx := strings.Index(word, "https://github.com/")
+		if idx >= 0 {
+			sub := word[idx:]
+			if strings.Contains(sub, "/pull/") {
+				sub = strings.TrimRight(sub, ".,);\"'>)]")
+				return sub
+			}
+		}
+	}
+	return ""
 }
 
 type rawGithubIssue struct {
@@ -198,6 +226,7 @@ func (c *Client) ensurePriorityLabels(ctx context.Context, owner, repo string) e
 		{Name: "priority: high", Color: "d73a4a", Desc: "High priority task"},
 		{Name: "priority: medium", Color: "fbca04", Desc: "Medium priority task"},
 		{Name: "priority: low", Color: "0e8a16", Desc: "Low priority task"},
+		{Name: LabelPRReview, Color: "8250df", Desc: "Pull request review task"},
 	}
 
 	for _, l := range labels {
@@ -298,8 +327,13 @@ func (c *Client) FetchTasks(ctx context.Context, owner, repo string, isSquad boo
 	return tasks, nil
 }
 
-// CreateTask creates a new issue in the target repository.
+// CreateTask creates a new issue in the target repository with default priority label.
 func (c *Client) CreateTask(ctx context.Context, owner, repo, title, body string, priority TaskPriority, assignees []string, isSquad bool) (*Task, error) {
+	return c.CreateTaskWithLabels(ctx, owner, repo, title, body, priority, nil, assignees, isSquad)
+}
+
+// CreateTaskWithLabels creates a new issue in the target repository with specified extra labels (such as pr-review).
+func (c *Client) CreateTaskWithLabels(ctx context.Context, owner, repo, title, body string, priority TaskPriority, extraLabels []string, assignees []string, isSquad bool) (*Task, error) {
 	cleanOwner := strings.TrimSpace(owner)
 	cleanRepo := strings.TrimSpace(repo)
 	cleanTitle := strings.TrimSpace(title)
@@ -314,10 +348,18 @@ func (c *Client) CreateTask(ctx context.Context, owner, repo, title, body string
 	// Ensure repo exists
 	_ = c.EnsureTaskRepository(ctx, cleanOwner, cleanRepo, isSquad)
 
+	labels := []string{priority.Label()}
+	for _, l := range extraLabels {
+		clean := strings.TrimSpace(l)
+		if clean != "" && clean != priority.Label() {
+			labels = append(labels, clean)
+		}
+	}
+
 	payload := map[string]interface{}{
 		"title":     cleanTitle,
 		"body":      body,
-		"labels":    []string{priority.Label()},
+		"labels":    labels,
 		"assignees": assignees,
 	}
 

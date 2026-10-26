@@ -81,3 +81,81 @@ func TestTaskPriority_RankAndLabel(t *testing.T) {
 		t.Errorf("expected priority: low, got %s", PriorityLow.Label())
 	}
 }
+
+func TestTask_IsPRReview(t *testing.T) {
+	tests := []struct {
+		name     string
+		labels   []string
+		expected bool
+	}{
+		{
+			name:     "contains pr-review label",
+			labels:   []string{"priority: medium", "pr-review"},
+			expected: true,
+		},
+		{
+			name:     "contains PR-REVIEW uppercase",
+			labels:   []string{"PR-REVIEW"},
+			expected: true,
+		},
+		{
+			name:     "contains pr review with space",
+			labels:   []string{"pr review"},
+			expected: true,
+		},
+		{
+			name:     "regular task without pr label",
+			labels:   []string{"priority: high", "bug"},
+			expected: false,
+		},
+		{
+			name:     "no labels",
+			labels:   nil,
+			expected: false,
+		},
+	}
+
+	for _, tc := range tests {
+		task := Task{Labels: tc.labels}
+		if task.IsPRReview() != tc.expected {
+			t.Errorf("[%s] expected IsPRReview == %v, got %v", tc.name, tc.expected, task.IsPRReview())
+		}
+	}
+}
+
+func TestTask_PRURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		expected string
+	}{
+		{
+			name:     "standard review body",
+			body:     "Review pull request: https://github.com/my-org/my-repo/pull/42\n\nRepository: my-repo\nAuthor: @alice",
+			expected: "https://github.com/my-org/my-repo/pull/42",
+		},
+		{
+			name:     "markdown link",
+			body:     "Please check [PR](https://github.com/my-org/my-repo/pull/105) for changes.",
+			expected: "https://github.com/my-org/my-repo/pull/105",
+		},
+		{
+			name:     "trailing punctuation",
+			body:     "Linked PR: https://github.com/my-org/my-repo/pull/99.",
+			expected: "https://github.com/my-org/my-repo/pull/99",
+		},
+		{
+			name:     "no PR in body",
+			body:     "General task without pull request link",
+			expected: "",
+		},
+	}
+
+	for _, tc := range tests {
+		task := Task{Body: tc.body}
+		actual := task.PRURL()
+		if actual != tc.expected {
+			t.Errorf("[%s] expected PRURL %q, got %q", tc.name, tc.expected, actual)
+		}
+	}
+}

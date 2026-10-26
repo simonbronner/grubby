@@ -102,17 +102,33 @@ func (m Model) renderCompletedTasksModal() string {
 		t := list[i]
 
 		var prioBadge string
-		switch t.Priority {
-		case github.PriorityHigh:
-			prioBadge = lipgloss.NewStyle().Foreground(DangerColor).Render("[✓ HIGH]")
-		case github.PriorityLow:
-			prioBadge = lipgloss.NewStyle().Foreground(SuccessColor).Render("[✓ LOW]")
-		default:
-			prioBadge = lipgloss.NewStyle().Foreground(WarningColor).Render("[✓ MED]")
+		if t.IsPRReview() {
+			switch t.Priority {
+			case github.PriorityHigh:
+				prioBadge = lipgloss.NewStyle().Foreground(DangerColor).Render("[✓⑂ HIGH]")
+			case github.PriorityLow:
+				prioBadge = lipgloss.NewStyle().Foreground(SuccessColor).Render("[✓⑂ LOW]")
+			default:
+				prioBadge = lipgloss.NewStyle().Foreground(WarningColor).Render("[✓⑂ MED]")
+			}
+		} else {
+			switch t.Priority {
+			case github.PriorityHigh:
+				prioBadge = lipgloss.NewStyle().Foreground(DangerColor).Render("[✓ HIGH]")
+			case github.PriorityLow:
+				prioBadge = lipgloss.NewStyle().Foreground(SuccessColor).Render("[✓ LOW]")
+			default:
+				prioBadge = lipgloss.NewStyle().Foreground(WarningColor).Render("[✓ MED]")
+			}
 		}
 
 		displayTitle := strings.ReplaceAll(strings.ReplaceAll(t.Title, "\r", " "), "\n", " ")
-		displayTitle = "✓ " + displayTitle
+		if t.IsPRReview() {
+			prPrefix := lipgloss.NewStyle().Foreground(lipgloss.Color("#A371F7")).Render("⑂ ")
+			displayTitle = "✓ " + prPrefix + displayTitle
+		} else {
+			displayTitle = "✓ " + displayTitle
+		}
 		if len(displayTitle) > titleW-2 && titleW > 3 {
 			displayTitle = displayTitle[:titleW-3] + "…"
 		}
@@ -161,7 +177,11 @@ func (m Model) renderCompletedTasksModal() string {
 		}
 	}
 
-	helpLine := MetaBarStyle.Render("  [Space] Reopen  •  [n] View Notes  •  [o] Web  •  [j/k] Navigate  •  [Esc] Close")
+	helpLineText := "  [Space] Reopen  •  [n] View Notes  •  [o] Web  •  [j/k] Navigate  •  [Esc] Close"
+	if len(list) > 0 && m.CompletedTasksCursor < len(list) && list[m.CompletedTasksCursor].IsPRReview() {
+		helpLineText = "  [Enter/o] Open PR  •  [Space] Reopen  •  [n] View Notes  •  [j/k] Navigate  •  [Esc] Close"
+	}
+	helpLine := MetaBarStyle.Render(helpLineText)
 	rows = append(rows, "", helpLine)
 
 	return ModalBoxStyle.Render(strings.Join(rows, "\n"))
@@ -221,13 +241,34 @@ func (m Model) handleCompletedTasksModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd
 			return m.openTaskNotesModal(&target, false)
 		}
 
+	case "enter":
+		if len(list) > 0 && m.CompletedTasksCursor < len(list) {
+			target := list[m.CompletedTasksCursor]
+			if target.IsPRReview() {
+				targetURL := target.PRURL()
+				if targetURL == "" {
+					targetURL = target.URL
+				}
+				_ = OpenBrowser(targetURL)
+				return m, func() tea.Msg {
+					return StatusToastMsg(fmt.Sprintf("Opened PR in browser: %s", targetURL))
+				}
+			}
+		}
+
 	case "o":
 		if len(list) > 0 && m.CompletedTasksCursor < len(list) {
 			target := list[m.CompletedTasksCursor]
-			if target.URL != "" {
-				_ = OpenBrowser(target.URL)
+			targetURL := target.URL
+			if target.IsPRReview() {
+				if prURL := target.PRURL(); prURL != "" {
+					targetURL = prURL
+				}
+			}
+			if targetURL != "" {
+				_ = OpenBrowser(targetURL)
 				return m, func() tea.Msg {
-					return StatusToastMsg(fmt.Sprintf("Opened task #%d in browser", target.Number))
+					return StatusToastMsg(fmt.Sprintf("Opened in browser: %s", targetURL))
 				}
 			}
 		}

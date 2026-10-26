@@ -77,6 +77,19 @@ func (m Model) handlePRsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			_ = OpenBrowser(pr.URL)
 			return m, func() tea.Msg { return StatusToastMsg(fmt.Sprintf("Opened PR #%d in browser", pr.Number)) }
 		}
+	case "t":
+		if len(prs) > 0 && m.PRCursor < len(prs) {
+			pr := prs[m.PRCursor]
+			m.ActiveModal = ModalCreatePRTask
+			m.PRTaskTarget = pr
+			m.PRTaskAssignMode = 0 // Squad (all except me)
+			m.PRTaskPriority = github.PriorityMedium
+			m.PRTaskFocusedField = 0
+			m.PRTaskActiveButton = 0
+			m.PRTaskAssignee = ""
+			m.PRTaskAssigneeIndex = 0
+			return m, nil
+		}
 	case "p":
 		// Trigger Copilot review
 		if len(prs) > 0 && m.PRCursor < len(prs) {

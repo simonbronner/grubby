@@ -53,6 +53,7 @@ const (
 	ModalEditTask
 	ModalTaskNotes
 	ModalCompletedTasks
+	ModalCreatePRTask
 )
 
 type RepoActionType int
@@ -252,6 +253,15 @@ type Model struct {
 
 	// Completed Tasks Modal
 	CompletedTasksCursor   int
+
+	// PR Review Task Modal
+	PRTaskTarget           github.PullRequest
+	PRTaskAssignMode       int // 0: Squad (all except me), 1: Individual, 2: Myself
+	PRTaskAssignee         string
+	PRTaskAssigneeIndex    int
+	PRTaskPriority         github.TaskPriority
+	PRTaskFocusedField     int // 0: Assignee mode, 1: Priority, 2: Buttons
+	PRTaskActiveButton     int // 0: Create, 1: Cancel
 
 	// Task Details & Editing
 	TaskEditTarget         github.Task
@@ -610,6 +620,59 @@ func (m Model) createTaskCmd(owner, repo, title, body string, priority github.Ta
 		task, err := m.GHClient.CreateTask(ctx, owner, repo, title, body, priority, assignees, isSquad)
 		return TaskCreatedMsg{Task: task, Err: err}
 	}
+}
+
+func (m Model) createPRTaskCmd(owner, repo, title, body string, priority github.TaskPriority, labels []string, assignees []string, isSquad bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+
+		task, err := m.GHClient.CreateTaskWithLabels(ctx, owner, repo, title, body, priority, labels, assignees, isSquad)
+		return TaskCreatedMsg{Task: task, Err: err}
+	}
+}
+
+func (m Model) getSquadReviewCandidates(prAuthor string) []string {
+	var list []string
+	me := strings.ToLower(strings.TrimSpace(m.AuthUser))
+	author := strings.ToLower(strings.TrimSpace(prAuthor))
+	seen := make(map[string]bool)
+
+	if m.Config != nil {
+		squad := m.Config.GetActiveSquad()
+		if squad != nil {
+			for _, mem := range squad.Members {
+				clean := strings.TrimSpace(mem)
+				lower := strings.ToLower(clean)
+				if lower == "" || lower == me || lower == author || seen[lower] {
+					continue
+				}
+				seen[lower] = true
+				list = append(list, clean)
+			}
+		}
+	}
+	return list
+}
+
+func (m Model) getSquadIndividualCandidates() []string {
+	var list []string
+	seen := make(map[string]bool)
+	if m.Config != nil {
+		squad := m.Config.GetActiveSquad()
+		if squad != nil {
+			for _, mem := range squad.Members {
+				clean := strings.TrimSpace(mem)
+				lower := strings.ToLower(clean)
+				if lower == "" || seen[lower] {
+					continue
+				}
+				seen[lower] = true
+				list = append(list, clean)
+			}
+		}
+	}
+	return list
 }
 
 func (m Model) updateTaskCmd(target github.Task, title, body string, priority github.TaskPriority, assignees []string) tea.Cmd {
@@ -1467,9 +1530,9 @@ func (m Model) renderFooter() string {
 		}
 	case TabPRs:
 		if m.PRFilter != "" {
-			help = "[f] Filter  [Esc] Clear Filter  [o] Browser  [p] Copilot Review  [c] Checkout Branch  [?] Help"
+			help = "[f] Filter  [Esc] Clear Filter  [t] Create Task  [o] Browser  [p] Copilot Review  [c] Checkout Branch  [?] Help"
 		} else {
-			help = "[f] Filter  [o] Browser  [p] Copilot Review  [c] Checkout Branch  [r] Refresh  [?] Help"
+			help = "[f] Filter  [t] Create Task  [o] Browser  [p] Copilot Review  [c] Checkout Branch  [r] Refresh  [?] Help"
 		}
 	case TabSquad:
 		help = "[m] Manage Squad  [s] Switch Squad  [n] New Squad  [r] Refresh  [?] Help"
@@ -1479,7 +1542,12 @@ func (m Model) renderFooter() string {
 		} else if m.InlineEditing {
 			help = "[Enter] Save Title  [Esc] Cancel  [n] Edit Notes  [p] Priority  [c] Assign"
 		} else {
-			help = "[a] Add  [Enter] Edit Title  [Space] Toggle Done  [n] Notes  [p] Priority  [c] Assign  [d] All Done  [o] Web  [?] Help"
+			_, cursorTask := m.getCursorTarget()
+			if cursorTask != nil && cursorTask.IsPRReview() {
+				help = "[a] Add  [Enter/o] Open PR  [Space] Toggle Done  [n] Notes  [p] Priority  [c] Assign  [d] All Done  [?] Help"
+			} else {
+				help = "[a] Add  [Enter] Edit Title  [Space] Toggle Done  [n] Notes  [p] Priority  [c] Assign  [d] All Done  [o] Web  [?] Help"
+			}
 		}
 	case TabSearch:
 		help = "[/] Query  [j/k] Nodes  [h/l/Space] Toggle  [Tab] Switch Viewport  [Enter] Open Editor  [?] Help"
