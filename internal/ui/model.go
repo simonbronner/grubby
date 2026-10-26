@@ -1204,6 +1204,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleSearchKeys(msg)
 		}
 
+		// When editing or adding a task inline, route keystrokes directly to task keys (disabling global hotkeys)
+		if m.ActiveTab == TabTasks && (m.InlineEditing || m.InlineAdding) {
+			return m.handleTasksKeys(msg)
+		}
+
 		// Global Key Handling (only active when not typing in an input field)
 		switch msg.String() {
 		case "ctrl+c":
@@ -1277,6 +1282,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.ActiveTab == TabSearch && m.SearchInput.Focused() {
 		var cmd tea.Cmd
 		m.SearchInput, cmd = m.SearchInput.Update(msg)
+		cmds = append(cmds, cmd)
+	}
+	if m.ActiveTab == TabTasks && m.InlineEditing {
+		var cmd tea.Cmd
+		m.InlineEditTitleInput, cmd = m.InlineEditTitleInput.Update(msg)
+		cmds = append(cmds, cmd)
+	} else if m.ActiveTab == TabTasks && m.InlineAdding {
+		var cmd tea.Cmd
+		m.InlineNewTitleInput, cmd = m.InlineNewTitleInput.Update(msg)
 		cmds = append(cmds, cmd)
 	}
 
@@ -1529,9 +1543,12 @@ func (m Model) renderFooter() string {
 		help = "[m] Manage Squad  [s] Switch Squad  [n] New Squad  [r] Refresh  [?] Help"
 	case TabTasks:
 		if m.InlineAdding {
-			help = "[Enter] Create Task  [Esc] Cancel  [n] Add Notes  [p] Priority  [c] Assign"
+			help = "[Enter] Create Task  [Esc] Cancel  [ctrl+n] Notes  [ctrl+p] Priority"
+			if m.ActiveTaskSubtab == TaskSubtabSquad {
+				help += "  [Tab] Assignee"
+			}
 		} else if m.InlineEditing {
-			help = "[Enter] Save Title  [Esc] Cancel  [n] Edit Notes  [p] Priority  [c] Assign"
+			help = "[Enter] Save Title  [Esc] Cancel"
 		} else {
 			_, cursorTask := m.getCursorTarget()
 			if cursorTask != nil && cursorTask.IsPRReview() {

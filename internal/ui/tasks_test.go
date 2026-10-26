@@ -263,6 +263,124 @@ func TestTaskInlineEditing(t *testing.T) {
 	}
 }
 
+func TestTaskInlineEditing_HotkeysDisabledUntilFinished(t *testing.T) {
+	m := createTestTasksModel()
+	m.ActiveTab = TabTasks
+	m.TaskCursor = 0 // Top task
+
+	// 1. Enter edit mode via m.Update
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = res.(Model)
+	if !m.InlineEditing {
+		t.Fatalf("expected InlineEditing == true")
+	}
+
+	// 2. Header and Footer should reflect editing mode without regular hotkeys
+	footer := m.renderFooter()
+	if !strings.Contains(footer, "[Enter] Save Title  [Esc] Cancel") {
+		t.Errorf("footer should show save/cancel prompt, got: %s", footer)
+	}
+	if strings.Contains(footer, "[a] Add") || strings.Contains(footer, "[Space] Toggle Done") || strings.Contains(footer, "[?] Help") {
+		t.Errorf("footer should NOT display regular task hotkeys while editing title: %s", footer)
+	}
+
+	header := m.renderTasksView()
+	if !strings.Contains(header, "[Editing Title: Enter to save, Esc to cancel]") {
+		t.Errorf("header should show editing banner, got: %s", header)
+	}
+	if strings.Contains(header, "[a] Add Task") || strings.Contains(header, "[Space] Done") {
+		t.Errorf("header banner should NOT display task hotkeys while editing: %s", header)
+	}
+
+	// 3. Global hotkey 'q' must NOT quit - it should type 'q' into input
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	m = res.(Model)
+	if cmd != nil {
+		// Verify cmd is not tea.Quit
+		msg := cmd()
+		if _, ok := msg.(tea.QuitMsg); ok {
+			t.Fatalf("'q' while editing title should NOT quit the application!")
+		}
+	}
+	if !m.InlineEditing {
+		t.Fatalf("InlineEditing should remain true while typing")
+	}
+
+	// 4. Global hotkey '1' must NOT switch to Repos tab
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	m = res.(Model)
+	if m.ActiveTab != TabTasks {
+		t.Fatalf("expected ActiveTab to stay TabTasks, got %d", m.ActiveTab)
+	}
+
+	// 5. Global hotkey '?' must NOT open Help modal
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	m = res.(Model)
+	if m.ActiveModal != ModalNone {
+		t.Fatalf("expected ActiveModal to remain ModalNone, got %v", m.ActiveModal)
+	}
+
+	// 6. Global hotkey 'r' must NOT trigger refresh
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	m = res.(Model)
+	if m.Loading {
+		t.Fatalf("'r' should NOT trigger data refresh while editing title")
+	}
+
+	// 7. Tasks hotkey 'a' must NOT start InlineAdding
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = res.(Model)
+	if m.InlineAdding {
+		t.Fatalf("'a' should NOT trigger InlineAdding while editing title")
+	}
+
+	// 8. Tasks hotkey 'd' must NOT open Completed Tasks modal
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	m = res.(Model)
+	if m.ActiveModal == ModalCompletedTasks {
+		t.Fatalf("'d' should NOT open ModalCompletedTasks while editing title")
+	}
+
+	// 9. Tasks hotkey 'Space' must NOT toggle done
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	m = res.(Model)
+	if len(m.PersonalDoneTasks) != 0 { // Started with 0 done tasks, should remain 0
+		t.Fatalf("Space should NOT toggle task done while editing title")
+	}
+
+	// 10. Pressing 'Esc' finishes editing and restores hotkeys
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = res.(Model)
+	if m.InlineEditing {
+		t.Fatalf("expected InlineEditing == false after pressing Esc")
+	}
+
+	// Normal hotkeys should be restored in footer
+	restoredFooter := m.renderFooter()
+	if !strings.Contains(restoredFooter, "[Enter] Edit Title") || !strings.Contains(restoredFooter, "[a] Add") {
+		t.Errorf("expected regular hotkeys restored after exiting edit mode, got: %s", restoredFooter)
+	}
+
+	// 11. Test Ctrl+C also finishes editing without quitting
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = res.(Model)
+	if !m.InlineEditing {
+		t.Fatalf("expected InlineEditing == true")
+	}
+
+	res, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = res.(Model)
+	if cmd != nil {
+		msg := cmd()
+		if _, ok := msg.(tea.QuitMsg); ok {
+			t.Fatalf("Ctrl+C while editing title should cancel editing, not quit")
+		}
+	}
+	if m.InlineEditing {
+		t.Fatalf("expected InlineEditing == false after Ctrl+C")
+	}
+}
+
 func TestTaskNotesModal(t *testing.T) {
 	m := createTestTasksModel()
 	m.TaskCursor = 3 // select #101 which has body notes "Has some body notes here"

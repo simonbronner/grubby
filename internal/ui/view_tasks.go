@@ -125,8 +125,15 @@ func (m Model) renderTasksView() string {
 		activeRepo = m.getTaskTargetRepoFullName(TaskTargetSquad)
 	}
 
-	allDoneBadge := lipgloss.NewStyle().Foreground(lipgloss.Color("#8888AA")).Render(fmt.Sprintf("[d] All Done (%d)", allDoneCount))
-	repoInfoBadge := MetaBarStyle.Render(fmt.Sprintf("  •  Repo: %s  •  %s  •  [a] Add Task  [n] Notes  [Space] Done", activeRepo, allDoneBadge))
+	var repoInfoBadge string
+	if m.InlineEditing {
+		repoInfoBadge = MetaBarStyle.Render(fmt.Sprintf("  •  Repo: %s  •  [Editing Title: Enter to save, Esc to cancel]", activeRepo))
+	} else if m.InlineAdding {
+		repoInfoBadge = MetaBarStyle.Render(fmt.Sprintf("  •  Repo: %s  •  [New Task: Enter to create, Esc to cancel]", activeRepo))
+	} else {
+		allDoneBadge := lipgloss.NewStyle().Foreground(lipgloss.Color("#8888AA")).Render(fmt.Sprintf("[d] All Done (%d)", allDoneCount))
+		repoInfoBadge = MetaBarStyle.Render(fmt.Sprintf("  •  Repo: %s  •  %s  •  [a] Add Task  [n] Notes  [Space] Done", activeRepo, allDoneBadge))
+	}
 	headerBanner := "  " + subtabsRow + repoInfoBadge
 
 	// 2. Table Layout
@@ -437,7 +444,7 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// 1. Handling keys while Inline Adding
 	if m.InlineAdding {
 		switch msg.String() {
-		case "esc":
+		case "esc", "ctrl+c":
 			m.InlineAdding = false
 			m.InlineNewNotes = ""
 			m.InlineNewTitleInput.Reset()
@@ -521,7 +528,7 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// 2. Handling keys while Inline Editing an existing task's title
 	if m.InlineEditing {
 		switch msg.String() {
-		case "esc":
+		case "esc", "ctrl+c":
 			m.InlineEditing = false
 			m.StatusMsg = "Cancelled editing title"
 			m.StatusMsgTimer = time.Now().Add(2 * time.Second)
