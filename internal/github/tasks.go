@@ -592,10 +592,90 @@ func (c *Client) LinkPRToIssue(ctx context.Context, prOwner, prRepo string, prNu
 	return nil
 }
 
+type PRRef struct {
+	Owner  string
+	Repo   string
+	Number int
+}
+
+type PRStatus struct {
+	State    string
+	Merged   bool
+	MergedAt *time.Time
+	ClosedAt *time.Time
+}
+
+// BatchGetPRStatuses retrieves the state and merged status of multiple pull requests in a single GraphQL call.
+func (c *Client) BatchGetPRStatuses(ctx context.Context, refs []PRRef) (map[PRRef]PRStatus, error) {
+	result := make(map[PRRef]PRStatus)
+	if len(refs) == 0 {
+		return result, nil
+	}
+
+	unique := make(map[PRRef]bool)
+	var cleanRefs []PRRef
+	for _, r := range refs {
+		if r.Owner != "" && r.Repo != "" && r.Number > 0 && !unique[r] {
+			unique[r] = true
+			cleanRefs = append(cleanRefs, r)
+		}
+	}
+	if len(cleanRefs) == 0 {
+		return result, nil
+	}
+
+	var queryParts []string
+	queryParts = append(queryParts, "query {")
+	for i, r := range cleanRefs {
+		escapedOwner := strings.ReplaceAll(r.Owner, `"`, `\"`)
+		escapedRepo := strings.ReplaceAll(r.Repo, `"`, `\"`)
+		queryParts = append(queryParts, fmt.Sprintf(
+			`  p%d: repository(owner: "%s", name: "%s") { pullRequest(number: %d) { state merged mergedAt closedAt } }`,
+			i, escapedOwner, escapedRepo, r.Number,
+		))
+	}
+	queryParts = append(queryParts, "}")
+	query := strings.Join(queryParts, "\n")
+
+	var rawResp map[string]map[string]struct {
+		State    string     `json:"state"`
+		Merged   bool       `json:"merged"`
+		MergedAt *time.Time `json:"mergedAt"`
+		ClosedAt *time.Time `json:"closedAt"`
+	}
+
+	if err := c.queryGraphQL(ctx, query, nil, &rawResp); err != nil {
+		return nil, err
+	}
+
+	for i, r := range cleanRefs {
+		key := fmt.Sprintf("p%d", i)
+		if repoData, ok := rawResp[key]; ok {
+			if prData, prOk := repoData["pullRequest"]; prOk {
+				result[r] = PRStatus{
+					State:    prData.State,
+					Merged:   prData.Merged,
+					MergedAt: prData.MergedAt,
+					ClosedAt: prData.ClosedAt,
+				}
+			}
+		}
+	}
+
+	return result, nil
+}
+
 // CheckAndAutoClosePRTasks inspects all open tasks to check if their linked pull requests have been closed or merged,
 // automatically closing the corresponding GitHub issues and returning the updated open and done task slices.
+// It batches all PR status checks into a single GraphQL query to minimize network calls and rate limit usage.
 func (c *Client) CheckAndAutoClosePRTasks(ctx context.Context, tasks []Task) (openTasks []Task, doneTasks []Task, autoClosedCount int) {
-	for _, t := range tasks {
+	type taskPRInfo struct {
+		taskIndex int
+		ref       PRRef
+	}
+
+	var openPRTasks []taskPRInfo
+	for i, t := range tasks {
 		if t.State == "closed" {
 			doneTasks = append(doneTasks, t)
 			continue
@@ -613,11 +693,39 @@ func (c *Client) CheckAndAutoClosePRTasks(ctx context.Context, tasks []Task) (op
 			continue
 		}
 
-		isClosed, err := c.IsPRClosedOrMerged(ctx, owner, repo, number)
-		if err == nil && isClosed {
-			// Auto-close on GitHub
+		openPRTasks = append(openPRTasks, taskPRInfo{
+			taskIndex: i,
+			ref:       PRRef{Owner: owner, Repo: repo, Number: number},
+		})
+	}
+
+	if len(openPRTasks) == 0 {
+		return openTasks, doneTasks, 0
+	}
+
+	var refs []PRRef
+	for _, item := range openPRTasks {
+		refs = append(refs, item.ref)
+	}
+
+	statuses, err := c.BatchGetPRStatuses(ctx, refs)
+	if err != nil {
+		// Fallback: keep tasks open if batch query fails
+		for _, item := range openPRTasks {
+			openTasks = append(openTasks, tasks[item.taskIndex])
+		}
+		return openTasks, doneTasks, 0
+	}
+
+	for _, item := range openPRTasks {
+		t := tasks[item.taskIndex]
+		st, found := statuses[item.ref]
+		if found && (st.State == "CLOSED" || st.State == "MERGED" || st.Merged) {
 			_ = c.CloseTask(ctx, t.RepoOwner, t.RepoName, t.Number)
 			now := time.Now()
+			if st.ClosedAt != nil {
+				now = *st.ClosedAt
+			}
 			t.State = "closed"
 			t.ClosedAt = &now
 			t.UpdatedAt = now
@@ -627,6 +735,7 @@ func (c *Client) CheckAndAutoClosePRTasks(ctx context.Context, tasks []Task) (op
 			openTasks = append(openTasks, t)
 		}
 	}
+
 	return openTasks, doneTasks, autoClosedCount
 }
 

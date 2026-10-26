@@ -13,15 +13,17 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 )
 
 type RateLimitInfo struct {
-	Remaining int
-	Limit     int
-	Reset     time.Time
+	Remaining int       `json:"remaining"`
+	Limit     int       `json:"limit"`
+	Used      int       `json:"used"`
+	Reset     time.Time `json:"reset"`
 }
 
 type ClientOptions struct {
@@ -29,13 +31,16 @@ type ClientOptions struct {
 	ProxyURL           string
 	InsecureSkipVerify bool
 	Timeout            time.Duration
+	CachePath          string
 }
 
 type Client struct {
-	token      string
-	httpClient *http.Client
-	rateLimit  RateLimitInfo
-	proxyUsed  string
+	token            string
+	httpClient       *http.Client
+	rateLimit        RateLimitInfo // Core REST
+	graphqlRateLimit RateLimitInfo // GraphQL
+	proxyUsed        string
+	cache            *ETagCache
 }
 
 func (c *Client) ProxyUsed() string {
@@ -170,16 +175,41 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 		_ = os.Setenv("GIT_SSL_NO_VERIFY", "true")
 	}
 
+	// ETag Cache resolution
+	cachePath := opts.CachePath
+	if cachePath == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			cachePath = filepath.Join(home, ".config", "grubby", "cache.json")
+		}
+	}
+	var etagCache *ETagCache
+	if cachePath != "" {
+		etagCache = NewETagCache(cachePath)
+	}
+
+	transportWithCache := &ETagTransport{
+		Base:  transport,
+		Cache: etagCache,
+	}
+
 	return &Client{
 		token: opts.Token,
 		httpClient: &http.Client{
-			Transport: transport,
+			Transport: transportWithCache,
 			Timeout:   timeout,
 		},
 		proxyUsed: proxyStr,
+		cache:     etagCache,
 		rateLimit: RateLimitInfo{
 			Remaining: 5000,
 			Limit:     5000,
+			Used:      0,
+			Reset:     time.Now().Add(1 * time.Hour),
+		},
+		graphqlRateLimit: RateLimitInfo{
+			Remaining: 5000,
+			Limit:     5000,
+			Used:      0,
 			Reset:     time.Now().Add(1 * time.Hour),
 		},
 	}, nil
@@ -196,20 +226,40 @@ func (c *Client) RateLimit() RateLimitInfo {
 	return c.rateLimit
 }
 
+func (c *Client) GraphQLRateLimit() RateLimitInfo {
+	return c.graphqlRateLimit
+}
+
 func (c *Client) updateRateLimits(resp *http.Response) {
+	if resp == nil {
+		return
+	}
+
+	target := &c.rateLimit
+	if resp.Header.Get("X-Ratelimit-Resource") == "graphql" {
+		target = &c.graphqlRateLimit
+	}
+
 	if rem := resp.Header.Get("X-Ratelimit-Remaining"); rem != "" {
 		if val, err := strconv.Atoi(rem); err == nil {
-			c.rateLimit.Remaining = val
+			target.Remaining = val
 		}
 	}
 	if lim := resp.Header.Get("X-Ratelimit-Limit"); lim != "" {
 		if val, err := strconv.Atoi(lim); err == nil {
-			c.rateLimit.Limit = val
+			target.Limit = val
 		}
+	}
+	if used := resp.Header.Get("X-Ratelimit-Used"); used != "" {
+		if val, err := strconv.Atoi(used); err == nil {
+			target.Used = val
+		}
+	} else if target.Limit > 0 && target.Limit >= target.Remaining {
+		target.Used = target.Limit - target.Remaining
 	}
 	if rst := resp.Header.Get("X-Ratelimit-Reset"); rst != "" {
 		if val, err := strconv.ParseInt(rst, 10, 64); err == nil {
-			c.rateLimit.Reset = time.Unix(val, 0)
+			target.Reset = time.Unix(val, 0)
 		}
 	}
 }

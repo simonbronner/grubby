@@ -1,6 +1,11 @@
 package github
 
 import (
+	"bytes"
+	"context"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -204,5 +209,200 @@ func TestParsePRURL(t *testing.T) {
 			t.Errorf("ParsePRURL(%q) = (%q, %q, %d, %v), want (%q, %q, %d, %v)",
 				tc.url, owner, repo, number, ok, tc.wantOwner, tc.wantRepo, tc.wantNumber, tc.wantOK)
 		}
+	}
+}
+
+func TestBatchGetPRStatuses(t *testing.T) {
+	mock := mockRoundTripper(func(req *http.Request) (*http.Response, error) {
+		if !strings.Contains(req.URL.String(), "graphql") {
+			t.Errorf("expected request to graphql, got %s", req.URL.String())
+		}
+		bodyBytes, _ := io.ReadAll(req.Body)
+		bodyStr := string(bodyBytes)
+		if !strings.Contains(bodyStr, "p0: repository") || !strings.Contains(bodyStr, "p1: repository") {
+			t.Errorf("graphql query missing expected aliases: %s", bodyStr)
+		}
+
+		respJSON := `{
+			"data": {
+				"p0": {
+					"pullRequest": {
+						"state": "OPEN",
+						"merged": false,
+						"mergedAt": null,
+						"closedAt": null
+					}
+				},
+				"p1": {
+					"pullRequest": {
+						"state": "MERGED",
+						"merged": true,
+						"mergedAt": "2026-10-25T10:00:00Z",
+						"closedAt": "2026-10-25T10:00:00Z"
+					}
+				}
+			}
+		}`
+
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader([]byte(respJSON))),
+			Request:    req,
+		}, nil
+	})
+
+	client := &Client{
+		token: "dummy",
+		httpClient: &http.Client{
+			Transport: mock,
+		},
+	}
+
+	refs := []PRRef{
+		{Owner: "owner1", Repo: "repo1", Number: 10},
+		{Owner: "owner2", Repo: "repo2", Number: 20},
+	}
+
+	statuses, err := client.BatchGetPRStatuses(context.Background(), refs)
+	if err != nil {
+		t.Fatalf("BatchGetPRStatuses failed: %v", err)
+	}
+
+	if len(statuses) != 2 {
+		t.Fatalf("expected 2 statuses, got %d", len(statuses))
+	}
+
+	st0 := statuses[refs[0]]
+	if st0.State != "OPEN" || st0.Merged {
+		t.Errorf("expected OPEN and not merged for ref 0, got %+v", st0)
+	}
+
+	st1 := statuses[refs[1]]
+	if st1.State != "MERGED" || !st1.Merged || st1.ClosedAt == nil {
+		t.Errorf("expected MERGED with ClosedAt for ref 1, got %+v", st1)
+	}
+}
+
+func TestCheckAndAutoClosePRTasks(t *testing.T) {
+	closedCalled := false
+	mock := mockRoundTripper(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.String(), "graphql") {
+			respJSON := `{
+				"data": {
+					"p0": {
+						"pullRequest": {
+							"state": "MERGED",
+							"merged": true,
+							"mergedAt": "2026-10-26T00:00:00Z",
+							"closedAt": "2026-10-26T00:00:00Z"
+						}
+					},
+					"p1": {
+						"pullRequest": {
+							"state": "OPEN",
+							"merged": false
+						}
+					}
+				}
+			}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader([]byte(respJSON))),
+				Request:    req,
+			}, nil
+		}
+
+		if req.Method == "PATCH" && strings.Contains(req.URL.Path, "/issues/1") {
+			closedCalled = true
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"state":"closed"}`))),
+				Request:    req,
+			}, nil
+		}
+
+		t.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Body:       io.NopCloser(bytes.NewReader(nil)),
+			Request:    req,
+		}, nil
+	})
+
+	client := &Client{
+		token: "dummy",
+		httpClient: &http.Client{
+			Transport: mock,
+		},
+	}
+
+	tasks := []Task{
+		{
+			ID:        1,
+			Number:    1,
+			RepoOwner: "owner1",
+			RepoName:  "repo1",
+			Title:     "Review PR 1",
+			Body:      "Review: https://github.com/owner1/repo1/pull/1",
+			Labels:    []string{"pr-review"},
+			State:     "open",
+		},
+		{
+			ID:        2,
+			Number:    2,
+			RepoOwner: "owner1",
+			RepoName:  "repo1",
+			Title:     "Review PR 2",
+			Body:      "Review: https://github.com/owner1/repo1/pull/2",
+			Labels:    []string{"pr-review"},
+			State:     "open",
+		},
+		{
+			ID:        3,
+			Number:    3,
+			RepoOwner: "owner1",
+			RepoName:  "repo1",
+			Title:     "Regular task",
+			Body:      "No PR here",
+			State:     "open",
+		},
+		{
+			ID:        4,
+			Number:    4,
+			RepoOwner: "owner1",
+			RepoName:  "repo1",
+			Title:     "Already done",
+			State:     "closed",
+		},
+	}
+
+	openTasks, doneTasks, autoClosedCount := client.CheckAndAutoClosePRTasks(context.Background(), tasks)
+
+	if autoClosedCount != 1 {
+		t.Errorf("expected autoClosedCount == 1, got %d", autoClosedCount)
+	}
+	if !closedCalled {
+		t.Errorf("expected CloseTask API call for task 1")
+	}
+
+	if len(openTasks) != 2 {
+		t.Errorf("expected 2 open tasks (t2, t3), got %d", len(openTasks))
+	}
+	if len(doneTasks) != 2 {
+		t.Errorf("expected 2 done tasks (t1, t4), got %d", len(doneTasks))
+	}
+
+	// Verify t1 was closed
+	var foundT1 bool
+	for _, dt := range doneTasks {
+		if dt.ID == 1 {
+			foundT1 = true
+			if dt.State != "closed" {
+				t.Errorf("expected t1 to be closed, got %s", dt.State)
+			}
+		}
+	}
+	if !foundT1 {
+		t.Errorf("expected t1 in doneTasks")
 	}
 }
