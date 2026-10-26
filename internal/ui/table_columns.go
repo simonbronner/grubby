@@ -5,39 +5,44 @@ import "github.com/charmbracelet/lipgloss"
 type RepoColumns struct {
 	Cursor       lipgloss.Style
 	Name         lipgloss.Style
-	Sec          lipgloss.Style
-	Group        lipgloss.Style
+	Summary      lipgloss.Style
 	Git          lipgloss.Style
 	Session      lipgloss.Style
 	Last         lipgloss.Style
 	Path         lipgloss.Style
 
 	NameWidth    int
-	GroupWidth   int
+	SummaryWidth int
 	SessionWidth int
 	PathWidth    int
+
+	// Backward compatibility aliases
+	Sec        lipgloss.Style
+	Group      lipgloss.Style
+	GroupWidth int
 }
 
 func computeRepoColumns(termWidth int) RepoColumns {
 	w := termWidth - 2
 	// Minimum width:
-	// Cursor (3) + Sec (16) + Git (16) + Session (12) + Last (13) + MinName (22) + MinGroup (12) + MinPath (18) = 112
-	if w < 112 {
-		w = 112
+	// Cursor (3) + Summary (28) + Git (16) + Session (12) + Last (13) + MinName (26) + MinPath (16) = 114
+	if w < 114 {
+		w = 114
 	}
 
-	fixedWidth := 3 + 16 + 16 + 12 + 13 // 60
+	summaryW := 28
+	fixedWidth := 3 + summaryW + 16 + 12 + 13 // 72
 	elastic := w - fixedWidth
 
-	nameW := elastic * 35 / 100
-	if nameW < 22 {
-		nameW = 22
+	nameW := elastic * 60 / 100
+	if nameW < 26 {
+		nameW = 26
 	}
-	groupW := elastic * 20 / 100
-	if groupW < 12 {
-		groupW = 12
+	pathW := elastic - nameW
+	if pathW < 16 {
+		pathW = 16
+		nameW = elastic - pathW
 	}
-	pathW := elastic - nameW - groupW
 
 	colStyle := func(width int) lipgloss.Style {
 		return lipgloss.NewStyle().Width(width).MaxHeight(1).Inline(true)
@@ -46,16 +51,20 @@ func computeRepoColumns(termWidth int) RepoColumns {
 	return RepoColumns{
 		Cursor:       colStyle(3),
 		Name:         colStyle(nameW),
-		Sec:          colStyle(16),
-		Group:        colStyle(groupW),
+		Summary:      colStyle(summaryW),
 		Git:          colStyle(16),
 		Session:      colStyle(12),
 		Last:         colStyle(13),
 		Path:         colStyle(pathW),
 		NameWidth:    nameW,
-		GroupWidth:   groupW,
+		SummaryWidth: summaryW,
 		SessionWidth: 12,
 		PathWidth:    pathW,
+
+		// Backward compatibility aliases
+		Sec:        colStyle(summaryW),
+		Group:      colStyle(0),
+		GroupWidth: 0,
 	}
 }
 

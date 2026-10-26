@@ -439,6 +439,7 @@ query($login: String!) {
   repositoryOwner(login: $login) {
     repositories(first: 50, orderBy: {field: PUSHED_AT, direction: DESC}) {
       nodes {
+        databaseId
         name
         description
         pushedAt
@@ -483,6 +484,7 @@ query($login: String!) {
 }
 `
 	type repoNode struct {
+		DatabaseID       *int64    `json:"databaseId"`
 		Name             string    `json:"name"`
 		Description      *string   `json:"description"`
 		PushedAt         time.Time `json:"pushedAt"`
@@ -537,6 +539,7 @@ query($login: String!) {
   repositoryOwner(login: $login) {
     repositories(first: 50, orderBy: {field: PUSHED_AT, direction: DESC}) {
       nodes {
+        databaseId
         name
         description
         pushedAt
@@ -597,7 +600,13 @@ query($login: String!) {
 			defBranch = node.DefaultBranchRef.Name
 		}
 
+		var repoID int64
+		if node.DatabaseID != nil {
+			repoID = *node.DatabaseID
+		}
+
 		repo := Repository{
+			ID:            repoID,
 			Name:          node.Name,
 			FullName:      owner + "/" + node.Name,
 			Description:   desc,
@@ -806,6 +815,7 @@ func (c *Client) FetchSingleRepo(ctx context.Context, owner, repoName string) (*
 	query := `
 query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
+    databaseId
     name
     description
     pushedAt
@@ -849,6 +859,7 @@ query($owner: String!, $name: String!) {
 `
 	var resp struct {
 		Repository *struct {
+			DatabaseID       *int64    `json:"databaseId"`
 			Name             string    `json:"name"`
 			Description      *string   `json:"description"`
 			PushedAt         time.Time `json:"pushedAt"`
@@ -903,7 +914,13 @@ query($owner: String!, $name: String!) {
 		defBranch = node.DefaultBranchRef.Name
 	}
 
+	var repoID int64
+	if node.DatabaseID != nil {
+		repoID = *node.DatabaseID
+	}
+
 	repo := &Repository{
+		ID:            repoID,
 		Name:          node.Name,
 		FullName:      cleanOwner + "/" + node.Name,
 		Description:   desc,

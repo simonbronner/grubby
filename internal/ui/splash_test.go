@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestRenderSplashArt(t *testing.T) {
@@ -43,6 +45,7 @@ func TestRenderSplashScreen_AvatarBoundingBox(t *testing.T) {
 		Width:             100,
 		Height:            30,
 		InitialDataLoaded: false,
+		SplashDismissed:   false,
 		CurrentOrg:        "acme",
 	}
 
@@ -56,12 +59,47 @@ func TestRenderSplashScreen_AvatarBoundingBox(t *testing.T) {
 
 	cmd := m.emitSplashImageCmd()
 	if cmd == nil {
-		t.Errorf("expected non-nil splash image cmd when InitialDataLoaded is false")
+		t.Errorf("expected non-nil splash image cmd when SplashDismissed is false")
 	}
 
-	m.InitialDataLoaded = true
+	m.SplashDismissed = true
 	cmdLoaded := m.emitSplashImageCmd()
 	if cmdLoaded != nil {
-		t.Errorf("expected nil splash image cmd when InitialDataLoaded is true")
+		t.Errorf("expected nil splash image cmd when SplashDismissed is true")
+	}
+}
+
+func TestSplashScreen_DismissTimerAndInstantKeyBypass(t *testing.T) {
+	m := Model{
+		Width:           100,
+		Height:          30,
+		SplashDismissed: false,
+		CurrentOrg:      "acme",
+	}
+
+	// 1. Initially view renders splash screen
+	view := m.View()
+	if !strings.Contains(view, "G R U B B Y") {
+		t.Errorf("expected splash screen to be displayed initially")
+	}
+
+	// 2. Pressing a key immediately bypasses splash screen
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	upModel := updated.(Model)
+	if !upModel.SplashDismissed {
+		t.Errorf("expected splash screen dismissed on keypress")
+	}
+
+	// 3. SplashDoneMsg also dismisses splash screen
+	m2 := Model{
+		Width:           100,
+		Height:          30,
+		SplashDismissed: false,
+		CurrentOrg:      "acme",
+	}
+	updated2, _ := m2.Update(SplashDoneMsg{})
+	upModel2 := updated2.(Model)
+	if !upModel2.SplashDismissed {
+		t.Errorf("expected splash screen dismissed on SplashDoneMsg")
 	}
 }

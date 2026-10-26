@@ -49,6 +49,7 @@ func createTestModel() Model {
 		SecuritySummaries: secSummaries,
 		GitStatuses:       make(map[string]git.RepoGitStatus),
 		RepoFilterInput:   rfi,
+		SplashDismissed:   true,
 	}
 }
 
@@ -369,18 +370,25 @@ func TestReposKeyHandling_RecordInteractionMovesToTop(t *testing.T) {
 		t.Fatalf("expected repo-a at pos 0 initially, got %s", display[0].Name)
 	}
 
-	// Cursor is at 1 (repo-b), user presses Enter to open web
-	m.RepoCursor = 1
+	// Cursor is on repo-b, user presses Enter to open web
+	for idx, it := range m.getRepoTableItems() {
+		if it.Kind == ItemRepo && it.Repo != nil && it.Repo.Name == "repo-b" {
+			m.RepoCursor = idx
+			break
+		}
+	}
 	updated, _ := m.handleReposKeys(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(Model)
 
-	// repo-b was interacted with just now, so it should move to pos 0
+	// repo-b was interacted with just now, so it should move to pos 0 in getDisplayRepos()
 	newDisplay := m.getDisplayRepos()
 	if newDisplay[0].Name != "repo-b" {
 		t.Errorf("expected repo-b to move to pos 0 after interaction, got %s", newDisplay[0].Name)
 	}
-	if m.RepoCursor != 0 {
-		t.Errorf("expected cursor to be at 0 on repo-b, got %d", m.RepoCursor)
+	// And cursor follows repo-b in table items
+	items := m.getRepoTableItems()
+	if m.RepoCursor < len(items) && (items[m.RepoCursor].Repo == nil || items[m.RepoCursor].Repo.Name != "repo-b") {
+		t.Errorf("expected cursor to follow repo-b, got item: %+v", items[m.RepoCursor])
 	}
 }
 
@@ -427,16 +435,31 @@ func TestRepoTiersRenderingAndSorting(t *testing.T) {
 		t.Errorf("expected dead-repo fourth, got %s", sorted[3].Name)
 	}
 
-	// 2. Verify rendering: tier icon is to the left of repo name, and TIER column is removed
+	// 2. Verify rendering: tier headers as tree nodes, and TIER column is removed
 	view := m.renderReposView()
-	if strings.Contains(view, "TIER") {
+	if strings.Contains(view, "  TIER  ") {
 		t.Errorf("expected 'TIER' header column to be removed, got:\n%s", view)
 	}
-	if !strings.Contains(view, "🔥 (0) hot-repo") || !strings.Contains(view, "🌞 (0) warm-repo") || !strings.Contains(view, "🧊 (0) cold-repo") || !strings.Contains(view, "💀 (0) dead-repo") {
-		t.Errorf("expected tier icons next to repo names, got:\n%s", view)
+	if !strings.Contains(view, "▼ 🔥 HOT") || !strings.Contains(view, "▼ 🌞 WARM") || !strings.Contains(view, "▼ 🧊 COLD") || !strings.Contains(view, "▶ 💀 DEAD") {
+		t.Errorf("expected tier tree nodes, got:\n%s", view)
+	}
+	// Dead tier is collapsed by default: dead-repo should not be visible
+	if strings.Contains(view, "dead-repo") {
+		t.Errorf("expected dead-repo to be hidden when Dead tier is collapsed, got:\n%s", view)
+	}
+	// Space to expand hint shown on collapsed Dead tier
+	if !strings.Contains(view, "[Space to expand]") {
+		t.Errorf("expected '[Space to expand]' hint on collapsed Dead tier, got:\n%s", view)
 	}
 
-	// 3. Verify tier count summary banner
+	// 3. Expand Dead tier -> dead-repo should appear
+	m.CollapsedTiers = map[storage.RepoTier]bool{storage.TierDead: false}
+	viewExpanded := m.renderReposView()
+	if !strings.Contains(viewExpanded, "dead-repo") {
+		t.Errorf("expected dead-repo to be visible after expanding Dead tier, got:\n%s", viewExpanded)
+	}
+
+	// 4. Verify tier count summary banner
 	if !strings.Contains(view, "🔥 1 Hot") || !strings.Contains(view, "🌞 1 Warm") || !strings.Contains(view, "🧊 1 Cold") || !strings.Contains(view, "💀 1 Dead") {
 		t.Errorf("expected tier count summary in header banner, got:\n%s", view)
 	}
@@ -448,11 +471,16 @@ func TestRepoOpenPRsFilteredWithPKey(t *testing.T) {
 		{Name: "other-repo", FullName: "my-org/other-repo"},
 	}
 	m := Model{
-		ActiveTab: TabRepos,
-		Repos:     repos,
-		RepoCursor: 0,
-		Width:     140,
-		Height:    30,
+		ActiveTab:  TabRepos,
+		Repos:      repos,
+		Width:      140,
+		Height:     30,
+	}
+	for idx, it := range m.getRepoTableItems() {
+		if it.Kind == ItemRepo && it.Repo != nil && it.Repo.Name == "my-service" {
+			m.RepoCursor = idx
+			break
+		}
 	}
 
 	updated, cmd := m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
@@ -502,8 +530,13 @@ func TestRepoInteractionTouchesSQLite(t *testing.T) {
 		t.Fatalf("expected initial tier cold, got %v", tier)
 	}
 
-	// User interacts with repo (Enter key)
-	m.RepoCursor = 0
+	// User interacts with repo (Enter key on my-cold-repo)
+	for idx, it := range m.getRepoTableItems() {
+		if it.Kind == ItemRepo && it.Repo != nil && it.Repo.Name == "my-cold-repo" {
+			m.RepoCursor = idx
+			break
+		}
+	}
 	updated, _ := m.handleReposKeys(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(Model)
 
@@ -577,3 +610,172 @@ func TestRepoInteractionPushesToTopOfTier(t *testing.T) {
 		t.Errorf("expected dead-1 to remain at position 3, got %s", sortedAfter[3].Name)
 	}
 }
+
+func TestCollapsibleTierTree_TogglingAndAutoExpansion(t *testing.T) {
+	now := time.Now()
+	repos := []github.Repository{
+		{ID: 101, Name: "hot-repo", PushedAt: now.Add(-1 * time.Hour)},
+		{ID: 102, Name: "warm-repo", PushedAt: now.Add(-5 * 24 * time.Hour)},
+		{ID: 103, Name: "dead-repo", PushedAt: now.Add(-400 * 24 * time.Hour)},
+	}
+	tiers := map[string]storage.RepoTier{
+		"hot-repo":  storage.TierHot,
+		"warm-repo": storage.TierWarm,
+		"dead-repo": storage.TierDead,
+	}
+
+	m := Model{
+		Repos:           repos,
+		RepoTiers:       tiers,
+		GitStatuses:     make(map[string]git.RepoGitStatus),
+		Width:           120,
+		Height:          30,
+		SplashDismissed: true,
+		CollapsedTiers:  map[storage.RepoTier]bool{storage.TierDead: true},
+	}
+
+	// 1. Initial State:
+	// Hot tier (Header + hot-repo)
+	// Warm tier (Header + warm-repo)
+	// Dead tier (Header only, collapsed)
+	items := m.getRepoTableItems()
+	if len(items) != 5 {
+		t.Fatalf("expected 5 table items (Hot Hdr + Repo, Warm Hdr + Repo, Dead Hdr), got %d", len(items))
+	}
+	if items[4].Kind != ItemTierHeader || items[4].Tier != storage.TierDead || items[4].Expanded {
+		t.Errorf("expected item 4 to be collapsed Dead tier header, got: %+v", items[4])
+	}
+
+	// 2. Cursor on Dead tier header (index 4), press Space -> expands
+	m.RepoCursor = 4
+	updated, _ := m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	m = updated.(Model)
+	if m.isTierCollapsed(storage.TierDead) {
+		t.Fatalf("expected Dead tier to be expanded after Space")
+	}
+	itemsAfterExpand := m.getRepoTableItems()
+	if len(itemsAfterExpand) != 6 {
+		t.Fatalf("expected 6 items after expanding Dead tier (now includes dead-repo), got %d", len(itemsAfterExpand))
+	}
+	if itemsAfterExpand[5].Kind != ItemRepo || itemsAfterExpand[5].Repo.Name != "dead-repo" {
+		t.Errorf("expected item 5 to be dead-repo, got: %+v", itemsAfterExpand[5])
+	}
+
+	// 3. Cursor on dead-repo (index 5), press 'h' -> collapses Dead tier and lands cursor back on Dead header
+	m.RepoCursor = 5
+	updated, _ = m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	m = updated.(Model)
+	if !m.isTierCollapsed(storage.TierDead) {
+		t.Fatalf("expected Dead tier to be collapsed after pressing 'h' on child repo")
+	}
+	if m.RepoCursor != 4 {
+		t.Errorf("expected cursor to jump to Dead header at index 4, got %d", m.RepoCursor)
+	}
+
+	// 4. Auto-expansion during search ('/' or '#')
+	// Filter by "dead"
+	m.RepoFilter = "dead"
+	if m.isTierCollapsed(storage.TierDead) {
+		t.Errorf("expected Dead tier to auto-expand when search query is active")
+	}
+	autoExpandedItems := m.getRepoTableItems()
+	// Only Dead tier matches "dead" -> Dead Header + dead-repo = 2 items
+	if len(autoExpandedItems) != 2 {
+		t.Fatalf("expected 2 items for 'dead' query (Header + dead-repo), got %d", len(autoExpandedItems))
+	}
+
+	// 5. Esc clears search and restores collapsed state
+	updated, _ = m.handleReposKeys(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.RepoFilter != "" {
+		t.Errorf("expected RepoFilter to be cleared, got %q", m.RepoFilter)
+	}
+	if !m.isTierCollapsed(storage.TierDead) {
+		t.Errorf("expected Dead tier to be collapsed again after clearing search")
+	}
+}
+
+func TestSummaryColumnAndInlineLabelsRendering(t *testing.T) {
+	now := time.Now()
+	repos := []github.Repository{
+		{ID: 101, Name: "auth-svc", PushedAt: now.Add(-1 * time.Hour)},
+	}
+	tiers := map[string]storage.RepoTier{
+		"auth-svc": storage.TierHot,
+	}
+	secSummaries := map[string]github.SecurityAlertSummary{
+		"auth-svc": {Total: 5, Critical: 1, High: 2, Medium: 2},
+	}
+	prs := []github.PullRequest{
+		{Repo: "auth-svc", Number: 10, State: "OPEN"},
+		{Repo: "auth-svc", Number: 11, State: "OPEN"},
+	}
+	personalTasks := []github.Task{
+		{RepoName: "auth-svc", Number: 1, State: "open"},
+	}
+	squadTasks := []github.Task{
+		{RepoName: "auth-svc", Number: 2, State: "open"},
+		{RepoName: "auth-svc", Number: 3, State: "open"},
+	}
+
+	m := Model{
+		Repos:             repos,
+		RepoTiers:         tiers,
+		SecuritySummaries: secSummaries,
+		PRs:               prs,
+		PersonalTasks:     personalTasks,
+		SquadTasks:        squadTasks,
+		RepoLabels: map[int64][]string{
+			101: {"backend", "core"},
+		},
+		GitStatuses:     make(map[string]git.RepoGitStatus),
+		Width:           140,
+		Height:          30,
+		SplashDismissed: true,
+	}
+
+	view := m.renderReposView()
+
+	// 1. Verify inline labels #backend and #core are rendered
+	if !strings.Contains(view, "#backend") || !strings.Contains(view, "#core") {
+		t.Errorf("expected inline labels #backend and #core in repo view, got:\n%s", view)
+	}
+
+	// 2. Verify SUMMARY column content: Security [1c 2h 2m+] • ⑂ (2) • ⊙ (3)
+	if !strings.Contains(view, "1c") || !strings.Contains(view, "2h") || !strings.Contains(view, "2m+") {
+		t.Errorf("expected security badges in summary column, got:\n%s", view)
+	}
+	if !strings.Contains(view, "⑂ (2)") {
+		t.Errorf("expected ⑂ (2) in summary column, got:\n%s", view)
+	}
+	if !strings.Contains(view, "⊙ (3)") {
+		t.Errorf("expected ⊙ (3) for 1 personal + 2 squad tasks in summary column, got:\n%s", view)
+	}
+
+	// 3. Verify single spinner indicator in top tier bar when Loading is true
+	m.Loading = true
+	loadingView := m.renderReposView()
+	if !strings.Contains(loadingView, "Syncing...") {
+		t.Errorf("expected 'Syncing...' in tier bar when Loading is true, got:\n%s", loadingView)
+	}
+}
+
+func TestHotkeyHashOpensLabelFilterModal(t *testing.T) {
+	repos := []github.Repository{
+		{ID: 101, Name: "auth-svc"},
+	}
+	m := Model{
+		Repos:           repos,
+		Width:           120,
+		Height:          30,
+		SplashDismissed: true,
+	}
+
+	// Press '#' -> opens ModalFilterGroup
+	updated, _ := m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'#'}})
+	m = updated.(Model)
+	if m.ActiveModal != ModalFilterGroup {
+		t.Errorf("expected ModalFilterGroup when pressing '#', got %v", m.ActiveModal)
+	}
+}
+

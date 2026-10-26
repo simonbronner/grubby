@@ -7,18 +7,18 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// View by Group Modal
+// View by Group/Label Modal
 
 func (m Model) renderFilterGroupModal() string {
-	title := ModalTitleStyle.Render("View by Group")
+	title := ModalTitleStyle.Render("Filter by Label [#]")
 
 	var lines []string
 	lines = append(lines, title)
-	lines = append(lines, "Select a group to filter repositories, or [All Groups] to view all. [Esc] to exit.\n")
+	lines = append(lines, "Select a label to filter repositories, or [All Repositories] to view all. [Esc] to exit.\n")
 
-	groups := m.Config.Groups
+	labels := m.getAllAvailableLabels()
 
-	// Option 0: All Groups
+	// Option 0: All Repositories
 	cursor := "  "
 	if m.ModalCursor == 0 {
 		cursor = "▶ "
@@ -27,24 +27,35 @@ func (m Model) renderFilterGroupModal() string {
 	if m.RepoGroupFilter == "" {
 		allPrefix = "[✓]"
 	}
-	allLine := fmt.Sprintf("%s%s All Groups (%d total repositories)", cursor, allPrefix, len(m.Repos))
+	allLine := fmt.Sprintf("%s%s All Repositories (%d total)", cursor, allPrefix, len(m.Repos))
 	if m.ModalCursor == 0 {
 		lines = append(lines, SelectedRowStyle.Render(allLine))
 	} else {
 		lines = append(lines, NormalRowStyle.Render(allLine))
 	}
 
-	for i, g := range groups {
+	for i, l := range labels {
 		cursor = "  "
 		if m.ModalCursor == i+1 {
 			cursor = "▶ "
 		}
 		checked := "[ ]"
-		if strings.EqualFold(m.RepoGroupFilter, g.Name) {
+		cleanFilter := strings.ToLower(strings.TrimPrefix(m.RepoGroupFilter, "#"))
+		if cleanFilter != "" && strings.EqualFold(cleanFilter, l) {
 			checked = "[✓]"
 		}
 
-		line := fmt.Sprintf("%s%s %-20s (%d repos)", cursor, checked, g.DisplayName, len(g.Repos))
+		cnt := 0
+		for _, r := range m.Repos {
+			for _, repoLbl := range m.getRepoLabels(&r) {
+				if strings.EqualFold(repoLbl, l) {
+					cnt++
+					break
+				}
+			}
+		}
+
+		line := fmt.Sprintf("%s%s #%-20s (%d repos)", cursor, checked, l, cnt)
 		if m.ModalCursor == i+1 {
 			lines = append(lines, SelectedRowStyle.Render(line))
 		} else {
@@ -52,16 +63,16 @@ func (m Model) renderFilterGroupModal() string {
 		}
 	}
 
-	if len(groups) == 0 {
-		lines = append(lines, "\n  No groups created yet. Press [g] on any repository to create one!")
+	if len(labels) == 0 {
+		lines = append(lines, "\n  No labels created yet. Press [g] on any repository to create one!")
 	}
 
 	return ModalBoxStyle.Render(strings.Join(lines, "\n"))
 }
 
 func (m Model) handleFilterGroupModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	groups := m.Config.Groups
-	totalOptions := 1 + len(groups)
+	labels := m.getAllAvailableLabels()
+	totalOptions := 1 + len(labels)
 
 	switch msg.String() {
 	case "esc", "q":
@@ -82,12 +93,21 @@ func (m Model) handleFilterGroupModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.RepoCursor = 0
 		if m.ModalCursor == 0 {
 			m.RepoGroupFilter = ""
-			return m, func() tea.Msg { return StatusToastMsg("Showing all repository groups") }
+			return m, func() tea.Msg { return StatusToastMsg("Showing all repositories") }
 		}
-		selected := groups[m.ModalCursor-1]
-		m.RepoGroupFilter = selected.Name
+		selected := labels[m.ModalCursor-1]
+		m.RepoGroupFilter = selected
+		cnt := 0
+		for _, r := range m.Repos {
+			for _, repoLbl := range m.getRepoLabels(&r) {
+				if strings.EqualFold(repoLbl, selected) {
+					cnt++
+					break
+				}
+			}
+		}
 		return m, func() tea.Msg {
-			return StatusToastMsg(fmt.Sprintf("Filtered by group: %s (%d repos)", selected.DisplayName, len(selected.Repos)))
+			return StatusToastMsg(fmt.Sprintf("Filtered by label: #%s (%d repos)", selected, cnt))
 		}
 	}
 	return m, nil

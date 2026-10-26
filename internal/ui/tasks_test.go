@@ -110,6 +110,7 @@ func createTestTasksModel() Model {
 		PersonalTasks:        personalTasks,
 		SquadTasks:           squadTasks,
 		InitialDataLoaded:    true,
+		SplashDismissed:      true,
 		Width:                120,
 		Height:               30,
 		InlineNewTitleInput:  inti,

@@ -422,3 +422,56 @@ func TestDeletePullRequest(t *testing.T) {
 		t.Fatalf("expected 1 PR with number 43, got %+v", remaining)
 	}
 }
+
+func TestRepoLabelsStorage(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	// 1. Save labels for repo 101 in squad "core-team"
+	err := db.SaveRepoLabels(101, "auth-service", []string{"backend", "auth", "core"}, "core-team")
+	if err != nil {
+		t.Fatalf("SaveRepoLabels failed: %v", err)
+	}
+
+	// 2. Save labels for repo 102 in squad "core-team"
+	err = db.SaveRepoLabels(102, "web-app", []string{"frontend", "react"}, "core-team")
+	if err != nil {
+		t.Fatalf("SaveRepoLabels failed: %v", err)
+	}
+
+	// 3. Query by squad
+	byID, err := db.GetRepoLabelsForSquad("core-team")
+	if err != nil {
+		t.Fatalf("GetRepoLabelsForSquad failed: %v", err)
+	}
+	if len(byID[101]) != 3 || len(byID[102]) != 2 {
+		t.Errorf("unexpected labels by ID: %+v", byID)
+	}
+
+	byName, err := db.GetRepoLabelsByNameForSquad("core-team")
+	if err != nil {
+		t.Fatalf("GetRepoLabelsByNameForSquad failed: %v", err)
+	}
+	if len(byName["auth-service"]) != 3 || len(byName["web-app"]) != 2 {
+		t.Errorf("unexpected labels by name: %+v", byName)
+	}
+
+	// 4. Query all unique labels in squad
+	unique, err := db.GetAllUniqueLabels("core-team")
+	if err != nil {
+		t.Fatalf("GetAllUniqueLabels failed: %v", err)
+	}
+	if len(unique) != 5 {
+		t.Errorf("expected 5 unique labels, got %d: %v", len(unique), unique)
+	}
+
+	// 5. Update labels for repo 101 (overwrite)
+	err = db.SaveRepoLabels(101, "auth-service", []string{"backend", "security"}, "core-team")
+	if err != nil {
+		t.Fatalf("SaveRepoLabels overwrite failed: %v", err)
+	}
+	updated, _ := db.GetRepoLabelsForSquad("core-team")
+	if len(updated[101]) != 2 || updated[101][0] != "auth" && updated[101][1] != "security" && updated[101][0] != "backend" {
+		t.Errorf("expected updated labels [backend, security], got: %v", updated[101])
+	}
+}

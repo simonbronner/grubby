@@ -9,18 +9,19 @@ import (
 
 type RepoTabOption struct {
 	Name string
+	Key  string
 	Path string
 }
 
 var repoTabOptions = []RepoTabOption{
-	{Name: "Code (Overview)", Path: ""},
-	{Name: "Pull Requests", Path: "/pulls"},
-	{Name: "Issues", Path: "/issues"},
-	{Name: "Actions (CI/CD)", Path: "/actions"},
-	{Name: "Security (Dependabot)", Path: "/security/dependabot"},
-	{Name: "Releases & Tags", Path: "/releases"},
-	{Name: "Insights (Pulse)", Path: "/pulse"},
-	{Name: "Settings", Path: "/settings"},
+	{Name: "Code (Overview)", Key: "c", Path: ""},
+	{Name: "Pull Requests", Key: "p", Path: "/pulls"},
+	{Name: "Issues", Key: "i", Path: "/issues"},
+	{Name: "Actions (CI/CD)", Key: "a", Path: "/actions"},
+	{Name: "Dependabot (Security)", Key: "d", Path: "/security/dependabot"},
+	{Name: "Releases & Tags", Key: "r", Path: "/releases"},
+	{Name: "Insights (Pulse)", Key: "n", Path: "/pulse"},
+	{Name: "Settings", Key: "s", Path: "/settings"},
 }
 
 func (m Model) renderRepoTabsModal() string {
@@ -34,7 +35,7 @@ func (m Model) renderRepoTabsModal() string {
 
 	var lines []string
 	lines = append(lines, title)
-	lines = append(lines, "Use [↑/↓] or [1-8] to choose tab, [Enter] to open in dedicated browser, [Esc] to exit.\n")
+	lines = append(lines, "Use [↑/↓] or [c/p/i/a/d/r/n/s] to choose tab, [Enter] to open in dedicated browser, [Esc] to exit.\n")
 
 	for i, opt := range repoTabOptions {
 		cursor := "  "
@@ -43,7 +44,7 @@ func (m Model) renderRepoTabsModal() string {
 		}
 
 		url := fmt.Sprintf("https://github.com/%s%s", repo.FullName, opt.Path)
-		line := fmt.Sprintf("%s[%d] %-24s %s", cursor, i+1, opt.Name, url)
+		line := fmt.Sprintf("%s[%s] %-24s %s", cursor, opt.Key, opt.Name, url)
 		if i == m.ModalCursor {
 			lines = append(lines, SelectedRowStyle.Render(line))
 		} else {
@@ -61,6 +62,22 @@ func (m Model) handleRepoTabsModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	repo := repos[m.RepoCursor]
+
+	key := strings.ToLower(msg.String())
+
+	// Match mnemonic letter hotkeys
+	for _, opt := range repoTabOptions {
+		if key == opt.Key {
+			m.ActiveModal = ModalNone
+			m = m.recordRepoInteraction(repo.Name)
+			m.RepoCursor = 0
+			url := fmt.Sprintf("https://github.com/%s%s", repo.FullName, opt.Path)
+			_ = OpenBrowser(url)
+			return m, func() tea.Msg {
+				return StatusToastMsg(fmt.Sprintf("Opened %s %s in dedicated browser", repo.Name, opt.Name))
+			}
+		}
+	}
 
 	switch msg.String() {
 	case "esc", "q":

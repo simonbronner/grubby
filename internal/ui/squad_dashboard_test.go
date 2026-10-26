@@ -317,6 +317,7 @@ func TestSquadAvatarPlacements_ExactRowAlignmentAndBounds(t *testing.T) {
 		Height:            35,
 		ActiveTab:         TabSquad,
 		InitialDataLoaded: true,
+		SplashDismissed:   true,
 		RawAvatarCache: map[string][]byte{
 			"simonb":  []byte("fake-image-bytes-simonb"),
 			"octocat": []byte("fake-image-bytes-octocat"),

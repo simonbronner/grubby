@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,7 +60,13 @@ const (
 	ModalCompletedTasks
 	ModalCreatePRTask
 	ModalAssignSquadTask
+
+	// Aliases for Labels
+	ModalFilterLabel  = ModalFilterGroup
+	ModalManageLabels = ModalManageGroups
 )
+
+type SplashDoneMsg struct{}
 
 type RepoActionType int
 
@@ -222,6 +229,12 @@ type Model struct {
 	LastStatusCheck       time.Time
 	PrevComponentStatuses map[string]string
 	StatusCursor          int
+
+	// Splash Screen & Tier Tree
+	SplashDismissed  bool
+	CollapsedTiers   map[storage.RepoTier]bool
+	RepoLabels       map[int64][]string
+	RepoLabelsByName map[string][]string
 
 	// Squad Management
 	ManagedSquadName     string
@@ -429,9 +442,19 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 		InlineNewTitleInput:   inti,
 		InlineEditTitleInput:  ieti,
 		TaskNotesInput:        tni,
+		SplashDismissed:       false,
+		CollapsedTiers:        map[storage.RepoTier]bool{storage.TierDead: true},
+		RepoLabels:            make(map[int64][]string),
+		RepoLabelsByName:      make(map[string][]string),
 	}
 
 	if db != nil {
+		if labels, err := db.GetRepoLabelsForSquad(cfg.ActiveSquad); err == nil && len(labels) > 0 {
+			m.RepoLabels = labels
+		}
+		if nameLabels, err := db.GetRepoLabelsByNameForSquad(cfg.ActiveSquad); err == nil && len(nameLabels) > 0 {
+			m.RepoLabelsByName = nameLabels
+		}
 		made, saved, _ := db.GetRequestStats()
 		if gh != nil {
 			gh.SetInitialRequestStats(made, saved)
@@ -503,6 +526,9 @@ func (m Model) Init() tea.Cmd {
 		m.Spinner.Tick,
 		autoRefreshTickCmd(),
 		m.emitSplashImageCmd(),
+		tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+			return SplashDoneMsg{}
+		}),
 	)
 }
 
@@ -917,7 +943,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Height = msg.Height
 		m.SearchPreview.Width = (m.Width / 2) - 4
 		m.SearchPreview.Height = m.Height - 12
-		if !m.InitialDataLoaded {
+		if !m.SplashDismissed {
 			return m, m.emitSplashImageCmd()
 		}
 		if m.ActiveTab == TabSquad {
@@ -928,10 +954,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.Spinner, cmd = m.Spinner.Update(msg)
-		if !m.InitialDataLoaded {
+		if !m.SplashDismissed {
 			return m, tea.Batch(cmd, m.emitSplashImageCmd())
 		}
 		return m, cmd
+
+	case SplashDoneMsg:
+		m.SplashDismissed = true
+		return m, nil
 
 	case AutoRefreshTickMsg:
 		m.TmuxSessions = GetTmuxSessions()
@@ -1519,6 +1549,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if !m.SplashDismissed {
+			m.SplashDismissed = true
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			return m, nil
+		}
+
 		// Modal Key Handling
 		if m.ActiveModal != ModalNone {
 			prevModal := m.ActiveModal
@@ -1638,7 +1676,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	if m.Width == 0 || !m.InitialDataLoaded {
+	if m.Width == 0 || !m.SplashDismissed {
 		return m.renderSplashScreen()
 	}
 
@@ -2284,3 +2322,24 @@ func (m Model) getRepoLastInteractedTime(repoName string, tmuxSessions map[strin
 
 	return t
 }
+
+func (m Model) syncSquadRepoLabelsCmd(repoID int64, repoName string, labels []string) tea.Cmd {
+	if m.GHClient == nil || m.Config == nil || m.Config.ActiveSquad == "" || m.CurrentOrg == "" {
+		return nil
+	}
+	squadRepo := fmt.Sprintf("%s-tasks", m.Config.ActiveSquad)
+	repoIDStr := strconv.FormatInt(repoID, 10)
+	if repoID <= 0 {
+		repoIDStr = repoName
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = m.GHClient.SaveSquadRepoLabels(ctx, m.CurrentOrg, squadRepo, func(mappings map[string][]string) error {
+			mappings[repoIDStr] = labels
+			return nil
+		})
+		return nil
+	}
+}
+

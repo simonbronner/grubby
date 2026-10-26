@@ -5,22 +5,22 @@ import (
 )
 
 func TestComputeRepoColumns(t *testing.T) {
-	widths := []int{70, 90, 100, 112, 124, 150, 180, 220, 300}
+	widths := []int{70, 90, 100, 114, 124, 150, 180, 220, 300}
 
 	for _, w := range widths {
 		cols := computeRepoColumns(w)
 
-		if cols.NameWidth <= 0 || cols.GroupWidth <= 0 || cols.PathWidth <= 0 || cols.SessionWidth <= 0 {
+		if cols.NameWidth <= 0 || cols.SummaryWidth <= 0 || cols.PathWidth <= 0 || cols.SessionWidth <= 0 {
 			t.Fatalf("Width %d produced invalid column width: %+v", w, cols)
 		}
 
 		target := w - 2
-		if target < 112 {
-			target = 112
+		if target < 114 {
+			target = 114
 		}
 
-		fixedWidth := 3 + 16 + 16 + 12 + 13 // 60
-		total := fixedWidth + cols.NameWidth + cols.GroupWidth + cols.PathWidth
+		fixedWidth := 3 + 28 + 16 + 12 + 13 // 72
+		total := fixedWidth + cols.NameWidth + cols.PathWidth
 
 		if total != target {
 			t.Errorf("Width %d: total columns %d != target %d", w, total, target)

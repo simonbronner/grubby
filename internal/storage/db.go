@@ -181,6 +181,17 @@ func (d *DB) migrate() error {
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL
 	);
+
+	CREATE TABLE IF NOT EXISTS repo_labels (
+		repo_id INTEGER NOT NULL,
+		repo_name TEXT NOT NULL DEFAULT '',
+		label TEXT NOT NULL,
+		squad TEXT NOT NULL DEFAULT '',
+		updated_at DATETIME NOT NULL,
+		PRIMARY KEY (repo_id, label, squad)
+	);
+	CREATE INDEX IF NOT EXISTS idx_repo_labels_squad ON repo_labels (squad);
+	CREATE INDEX IF NOT EXISTS idx_repo_labels_name ON repo_labels (repo_name);
 	`
 	_, err := d.db.Exec(schema)
 	return err
@@ -1198,4 +1209,118 @@ func (d *DB) IncrementRequestsSaved(delta int64) error {
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value
 	`, strconv.FormatInt(current, 10))
 	return err
+}
+
+// --- Repo Labels ---
+
+func (d *DB) SaveRepoLabels(repoID int64, repoName string, labels []string, squad string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Delete existing labels for this repo in this squad
+	if repoID > 0 {
+		_, err = tx.Exec(`DELETE FROM repo_labels WHERE repo_id = ? AND squad = ?`, repoID, squad)
+	} else if repoName != "" {
+		_, err = tx.Exec(`DELETE FROM repo_labels WHERE repo_name = ? AND squad = ?`, repoName, squad)
+	}
+	if err != nil {
+		return err
+	}
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO repo_labels (repo_id, repo_name, label, squad, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(repo_id, label, squad) DO UPDATE SET
+			repo_name = excluded.repo_name,
+			updated_at = excluded.updated_at
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	now := time.Now()
+	for _, l := range labels {
+		clean := strings.ToLower(strings.TrimSpace(l))
+		if clean == "" {
+			continue
+		}
+		_, err = stmt.Exec(repoID, repoName, clean, squad, now)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (d *DB) GetRepoLabelsForSquad(squad string) (map[int64][]string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.db.Query(`SELECT repo_id, label FROM repo_labels WHERE squad = ? ORDER BY label ASC`, squad)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[int64][]string)
+	for rows.Next() {
+		var repoID int64
+		var label string
+		if err := rows.Scan(&repoID, &label); err != nil {
+			return nil, err
+		}
+		result[repoID] = append(result[repoID], label)
+	}
+	return result, rows.Err()
+}
+
+func (d *DB) GetRepoLabelsByNameForSquad(squad string) (map[string][]string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.db.Query(`SELECT repo_name, label FROM repo_labels WHERE squad = ? AND repo_name != '' ORDER BY label ASC`, squad)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string][]string)
+	for rows.Next() {
+		var repoName string
+		var label string
+		if err := rows.Scan(&repoName, &label); err != nil {
+			return nil, err
+		}
+		result[repoName] = append(result[repoName], label)
+	}
+	return result, rows.Err()
+}
+
+func (d *DB) GetAllUniqueLabels(squad string) ([]string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.db.Query(`SELECT DISTINCT label FROM repo_labels WHERE squad = ? ORDER BY label ASC`, squad)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var labels []string
+	for rows.Next() {
+		var l string
+		if err := rows.Scan(&l); err != nil {
+			return nil, err
+		}
+		labels = append(labels, l)
+	}
+	return labels, rows.Err()
 }

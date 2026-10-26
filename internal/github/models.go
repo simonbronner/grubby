@@ -24,6 +24,7 @@ func NormalizeRepoName(raw string) string {
 }
 
 type Repository struct {
+	ID            int64     `json:"id"`
 	Name          string    `json:"name"`
 	FullName      string    `json:"full_name"`
 	Description   string    `json:"description"`

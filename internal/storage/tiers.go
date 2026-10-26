@@ -52,6 +52,22 @@ func TierIcon(tier RepoTier) string {
 	}
 }
 
+// TierName returns the uppercase name of a tier (HOT, WARM, COLD, DEAD).
+func TierName(tier RepoTier) string {
+	switch strings.ToLower(string(tier)) {
+	case "hot":
+		return "HOT"
+	case "warm", "active":
+		return "WARM"
+	case "cold", "dormant":
+		return "COLD"
+	case "dead":
+		return "DEAD"
+	default:
+		return "WARM"
+	}
+}
+
 // TierBadgeText returns the text label for a tier.
 func TierBadgeText(tier RepoTier) string {
 	switch strings.ToLower(string(tier)) {

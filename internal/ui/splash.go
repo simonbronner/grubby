@@ -164,7 +164,7 @@ func (m Model) renderSplashScreen() string {
 
 // emitSplashImageCmd outputs the native iTerm2 inline graphic for Grubby icon on the splash screen
 func (m Model) emitSplashImageCmd() tea.Cmd {
-	if m.InitialDataLoaded || len(assets.GrubbyIconPNG) == 0 {
+	if m.SplashDismissed || len(assets.GrubbyIconPNG) == 0 {
 		return nil
 	}
 
