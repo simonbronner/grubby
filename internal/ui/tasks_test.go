@@ -710,3 +710,53 @@ func TestPRReviewTask_SoloSquadCreationOnEnter(t *testing.T) {
 		t.Errorf("expected modal to close for Mode 0, got %v", m.ActiveModal)
 	}
 }
+
+func TestTask_HotkeyI_OpensIssue(t *testing.T) {
+	m := createTestTasksModel()
+	m.ActiveTab = TabTasks
+	m.ActiveTaskSubtab = TaskSubtabSquad
+	m.Width = 100
+	m.Height = 30
+
+	now := time.Now()
+	prTask := github.Task{
+		ID:          999,
+		Number:      301,
+		Title:       "Review PR #42: Fix database connection leak (backend-service)",
+		Body:        "Review pull request: https://github.com/my-org/backend-service/pull/42",
+		Priority:    github.PriorityHigh,
+		Assignees:   []string{"bob"},
+		Labels:      []string{"priority: high", github.LabelPRReview},
+		RepoName:    "core-team-tasks",
+		URL:         "https://github.com/my-org/core-team-tasks/issues/301",
+		UpdatedAt:   now,
+		IsSquadTask: true,
+	}
+	m.SquadTasks = append([]github.Task{prTask}, m.SquadTasks...)
+	m.TaskCursor = 0 // On PR task
+
+	// 1. Press 'i' on PR task -> MUST open issue URL (NOT the PR URL!)
+	res, cmdI := m.handleTasksKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	_ = res.(Model)
+	if cmdI == nil {
+		t.Fatalf("expected toast command from 'i'")
+	}
+	toastMsg := string(cmdI().(StatusToastMsg))
+	if !strings.Contains(toastMsg, "Opened issue #301 in browser") {
+		t.Errorf("expected 'Opened issue #301 in browser', got: %s", toastMsg)
+	}
+
+	// 2. Completed modal: Press 'i' on completed task
+	m.ActiveModal = ModalCompletedTasks
+	m.SquadDoneTasks = []github.Task{prTask}
+	m.CompletedTasksCursor = 0
+	res, cmdModalI := m.handleCompletedTasksModalKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	_ = res.(Model)
+	if cmdModalI == nil {
+		t.Fatalf("expected toast command from 'i' in completed tasks modal")
+	}
+	toastModalMsg := string(cmdModalI().(StatusToastMsg))
+	if !strings.Contains(toastModalMsg, "Opened issue #301 in browser") {
+		t.Errorf("expected 'Opened issue #301 in browser', got: %s", toastModalMsg)
+	}
+}

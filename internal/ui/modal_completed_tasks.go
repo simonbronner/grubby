@@ -177,9 +177,9 @@ func (m Model) renderCompletedTasksModal() string {
 		}
 	}
 
-	helpLineText := "  [Space] Reopen  •  [n] View Notes  •  [o] Web  •  [j/k] Navigate  •  [Esc] Close"
+	helpLineText := "  [Space] Reopen  •  [n] View Notes  •  [i/o] Issue  •  [j/k] Navigate  •  [Esc] Close"
 	if len(list) > 0 && m.CompletedTasksCursor < len(list) && list[m.CompletedTasksCursor].IsPRReview() {
-		helpLineText = "  [Enter/o] Open PR  •  [Space] Reopen  •  [n] View Notes  •  [j/k] Navigate  •  [Esc] Close"
+		helpLineText = "  [Enter/o] Open PR  •  [i] Issue  •  [Space] Reopen  •  [n] View Notes  •  [j/k] Navigate  •  [Esc] Close"
 	}
 	helpLine := MetaBarStyle.Render(helpLineText)
 	rows = append(rows, "", helpLine)
@@ -252,6 +252,17 @@ func (m Model) handleCompletedTasksModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd
 				_ = OpenBrowser(targetURL)
 				return m, func() tea.Msg {
 					return StatusToastMsg(fmt.Sprintf("Opened PR in browser: %s", targetURL))
+				}
+			}
+		}
+
+	case "i":
+		if len(list) > 0 && m.CompletedTasksCursor < len(list) {
+			target := list[m.CompletedTasksCursor]
+			if target.URL != "" {
+				_ = OpenBrowser(target.URL)
+				return m, func() tea.Msg {
+					return StatusToastMsg(fmt.Sprintf("Opened issue #%d in browser", target.Number))
 				}
 			}
 		}

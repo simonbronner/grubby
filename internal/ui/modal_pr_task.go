@@ -393,5 +393,5 @@ Note: GitHub automatically closes this task when the linked pull request is merg
 	m.StatusMsg = fmt.Sprintf("Creating PR review task for #%d in %s...", pr.Number, repoFullName)
 	m.StatusMsgTimer = time.Now().Add(4 * time.Second)
 
-	return m, m.createPRTaskCmd(owner, repo, title, body, priority, labels, assignees, true)
+	return m, m.createPRTaskCmd(owner, repo, title, body, priority, labels, assignees, true, pr)
 }

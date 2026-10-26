@@ -87,6 +87,7 @@ type DataLoadedMsg struct {
 	Notifications     []github.Notification
 	OrgMembers        []github.OrgMember
 	RateLimit         github.RateLimitInfo
+	AutoClosedCount   int
 	Err               error
 }
 
@@ -95,6 +96,7 @@ type TasksLoadedMsg struct {
 	PersonalDoneTasks []github.Task
 	SquadTasks        []github.Task
 	SquadDoneTasks    []github.Task
+	AutoClosedCount   int
 	Err               error
 }
 
@@ -495,14 +497,7 @@ func (m Model) loadDataCmd() tea.Cmd {
 
 		// Fetch Tasks for Personal and Squad
 		allPersonal, _ := m.GHClient.FetchTasks(ctx, authUser, "tasks", false)
-		var personalTasks, personalDoneTasks []github.Task
-		for _, t := range allPersonal {
-			if t.State == "closed" {
-				personalDoneTasks = append(personalDoneTasks, t)
-			} else {
-				personalTasks = append(personalTasks, t)
-			}
-		}
+		personalTasks, personalDoneTasks, autoClosedPersonal := m.GHClient.CheckAndAutoClosePRTasks(ctx, allPersonal)
 
 		squadName := "default-squad"
 		if m.Config != nil && m.Config.ActiveSquad != "" {
@@ -514,14 +509,7 @@ func (m Model) loadDataCmd() tea.Cmd {
 			orgTarget = authUser
 		}
 		allSquad, _ := m.GHClient.FetchTasks(ctx, orgTarget, squadRepo, true)
-		var squadTasks, squadDoneTasks []github.Task
-		for _, t := range allSquad {
-			if t.State == "closed" {
-				squadDoneTasks = append(squadDoneTasks, t)
-			} else {
-				squadTasks = append(squadTasks, t)
-			}
-		}
+		squadTasks, squadDoneTasks, autoClosedSquad := m.GHClient.CheckAndAutoClosePRTasks(ctx, allSquad)
 
 		return DataLoadedMsg{
 			AuthUser:          authUser,
@@ -532,6 +520,7 @@ func (m Model) loadDataCmd() tea.Cmd {
 			PersonalDoneTasks: personalDoneTasks,
 			SquadTasks:        squadTasks,
 			SquadDoneTasks:    squadDoneTasks,
+			AutoClosedCount:   autoClosedPersonal + autoClosedSquad,
 			Security:          secAlerts,
 			Notifications:     notifs,
 			OrgMembers:        orgMembers,
@@ -575,14 +564,7 @@ func (m Model) loadTasksCmd() tea.Cmd {
 			user = m.CurrentOrg
 		}
 		allPersonal, _ := m.GHClient.FetchTasks(ctx, user, "tasks", false)
-		var personalTasks, personalDoneTasks []github.Task
-		for _, t := range allPersonal {
-			if t.State == "closed" {
-				personalDoneTasks = append(personalDoneTasks, t)
-			} else {
-				personalTasks = append(personalTasks, t)
-			}
-		}
+		personalTasks, personalDoneTasks, autoClosedPersonal := m.GHClient.CheckAndAutoClosePRTasks(ctx, allPersonal)
 
 		squadName := "default-squad"
 		if m.Config != nil && m.Config.ActiveSquad != "" {
@@ -594,20 +576,14 @@ func (m Model) loadTasksCmd() tea.Cmd {
 			org = user
 		}
 		allSquad, _ := m.GHClient.FetchTasks(ctx, org, squadRepo, true)
-		var squadTasks, squadDoneTasks []github.Task
-		for _, t := range allSquad {
-			if t.State == "closed" {
-				squadDoneTasks = append(squadDoneTasks, t)
-			} else {
-				squadTasks = append(squadTasks, t)
-			}
-		}
+		squadTasks, squadDoneTasks, autoClosedSquad := m.GHClient.CheckAndAutoClosePRTasks(ctx, allSquad)
 
 		return TasksLoadedMsg{
 			PersonalTasks:     personalTasks,
 			PersonalDoneTasks: personalDoneTasks,
 			SquadTasks:        squadTasks,
 			SquadDoneTasks:    squadDoneTasks,
+			AutoClosedCount:   autoClosedPersonal + autoClosedSquad,
 		}
 	}
 }
@@ -622,12 +598,17 @@ func (m Model) createTaskCmd(owner, repo, title, body string, priority github.Ta
 	}
 }
 
-func (m Model) createPRTaskCmd(owner, repo, title, body string, priority github.TaskPriority, labels []string, assignees []string, isSquad bool) tea.Cmd {
+func (m Model) createPRTaskCmd(owner, repo, title, body string, priority github.TaskPriority, labels []string, assignees []string, isSquad bool, pr github.PullRequest) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 
 		task, err := m.GHClient.CreateTaskWithLabels(ctx, owner, repo, title, body, priority, labels, assignees, isSquad)
+		if err == nil && task != nil && pr.URL != "" {
+			if prOwner, prRepo, prNum, ok := github.ParsePRURL(pr.URL); ok {
+				_ = m.GHClient.LinkPRToIssue(ctx, prOwner, prRepo, prNum, task.URL)
+			}
+		}
 		return TaskCreatedMsg{Task: task, Err: err}
 	}
 }
@@ -864,7 +845,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.PRs = msg.PRs
 		m.SquadEvents = msg.SquadEvents
 		m.PersonalTasks = msg.PersonalTasks
+		m.PersonalDoneTasks = msg.PersonalDoneTasks
 		m.SquadTasks = msg.SquadTasks
+		m.SquadDoneTasks = msg.SquadDoneTasks
+		if msg.AutoClosedCount > 0 {
+			m.StatusMsg = fmt.Sprintf("✓ Auto-closed %d review task(s) for merged/closed PR(s)", msg.AutoClosedCount)
+			m.StatusMsgTimer = time.Now().Add(5 * time.Second)
+		}
 		m.SecuritySummaries = msg.Security
 		m.OrgMembers = msg.OrgMembers
 		m.RateLimit = msg.RateLimit
@@ -1018,6 +1005,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.PersonalDoneTasks = msg.PersonalDoneTasks
 			m.SquadTasks = msg.SquadTasks
 			m.SquadDoneTasks = msg.SquadDoneTasks
+			if msg.AutoClosedCount > 0 {
+				m.StatusMsg = fmt.Sprintf("✓ Auto-closed %d review task(s) for merged/closed PR(s)", msg.AutoClosedCount)
+				m.StatusMsgTimer = time.Now().Add(5 * time.Second)
+			}
 		}
 		return m, nil
 
@@ -1544,9 +1535,9 @@ func (m Model) renderFooter() string {
 		} else {
 			_, cursorTask := m.getCursorTarget()
 			if cursorTask != nil && cursorTask.IsPRReview() {
-				help = "[a] Add  [Enter/o] Open PR  [Space] Toggle Done  [n] Notes  [p] Priority  [c] Assign  [d] All Done  [?] Help"
+				help = "[Enter/o] Open PR  [i] Issue  [Space] Toggle Done  [n] Notes  [p] Priority  [c] Assign  [d] All Done  [a] Add  [?] Help"
 			} else {
-				help = "[a] Add  [Enter] Edit Title  [Space] Toggle Done  [n] Notes  [p] Priority  [c] Assign  [d] All Done  [o] Web  [?] Help"
+				help = "[a] Add  [Enter] Edit Title  [Space] Toggle Done  [n] Notes  [p] Priority  [c] Assign  [d] All Done  [i/o] Issue  [?] Help"
 			}
 		}
 	case TabSearch:

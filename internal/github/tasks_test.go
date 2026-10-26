@@ -159,3 +159,50 @@ func TestTask_PRURL(t *testing.T) {
 		}
 	}
 }
+
+func TestParsePRURL(t *testing.T) {
+	tests := []struct {
+		url        string
+		wantOwner  string
+		wantRepo   string
+		wantNumber int
+		wantOK     bool
+	}{
+		{
+			url:        "https://github.com/simonbronner/best-resume-ever/pull/1",
+			wantOwner:  "simonbronner",
+			wantRepo:   "best-resume-ever",
+			wantNumber: 1,
+			wantOK:     true,
+		},
+		{
+			url:        "https://github.com/my-org/my-repo/pull/42/",
+			wantOwner:  "my-org",
+			wantRepo:   "my-repo",
+			wantNumber: 42,
+			wantOK:     true,
+		},
+		{
+			url:        "https://github.com/my-org/my-repo/issues/42",
+			wantOwner:  "",
+			wantRepo:   "",
+			wantNumber: 0,
+			wantOK:     false,
+		},
+		{
+			url:        "invalid url",
+			wantOwner:  "",
+			wantRepo:   "",
+			wantNumber: 0,
+			wantOK:     false,
+		},
+	}
+
+	for _, tc := range tests {
+		owner, repo, number, ok := ParsePRURL(tc.url)
+		if ok != tc.wantOK || owner != tc.wantOwner || repo != tc.wantRepo || number != tc.wantNumber {
+			t.Errorf("ParsePRURL(%q) = (%q, %q, %d, %v), want (%q, %q, %d, %v)",
+				tc.url, owner, repo, number, ok, tc.wantOwner, tc.wantRepo, tc.wantNumber, tc.wantOK)
+		}
+	}
+}

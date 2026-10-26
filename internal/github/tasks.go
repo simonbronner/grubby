@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -111,6 +112,26 @@ func (t Task) PRURL() string {
 		}
 	}
 	return ""
+}
+
+// ParsePRURL parses a GitHub pull request URL into owner, repo, and PR number.
+func ParsePRURL(prURL string) (owner, repo string, number int, ok bool) {
+	prURL = strings.TrimSpace(prURL)
+	idx := strings.Index(prURL, "github.com/")
+	if idx == -1 {
+		return "", "", 0, false
+	}
+	path := prURL[idx+len("github.com/"):]
+	parts := strings.Split(path, "/")
+	if len(parts) >= 4 && parts[2] == "pull" {
+		owner = parts[0]
+		repo = parts[1]
+		num, err := strconv.Atoi(parts[3])
+		if err == nil && num > 0 {
+			return owner, repo, num, true
+		}
+	}
+	return "", "", 0, false
 }
 
 type rawGithubIssue struct {
@@ -454,6 +475,159 @@ func (c *Client) CloseTask(ctx context.Context, owner, repo string, number int) 
 		return fmt.Errorf("failed to close task #%d: status %d", number, resp.StatusCode)
 	}
 	return nil
+}
+
+// IsPRClosedOrMerged checks if a pull request is closed or merged.
+func (c *Client) IsPRClosedOrMerged(ctx context.Context, owner, repo string, number int) (bool, error) {
+	cleanOwner := strings.TrimSpace(owner)
+	cleanRepo := strings.TrimSpace(repo)
+	if cleanOwner == "" || cleanRepo == "" || number <= 0 {
+		return false, fmt.Errorf("invalid PR coordinates")
+	}
+
+	getURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%d", url.PathEscape(cleanOwner), url.PathEscape(cleanRepo), number)
+	req, err := http.NewRequestWithContext(ctx, "GET", getURL, nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	c.updateRateLimits(resp)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("failed to fetch PR #%d: status %d", number, resp.StatusCode)
+	}
+
+	var rawPR struct {
+		State  string `json:"state"`
+		Merged bool   `json:"merged"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rawPR); err != nil {
+		return false, err
+	}
+
+	return rawPR.State == "closed" || rawPR.Merged, nil
+}
+
+// LinkPRToIssue updates the PR description to include a closing reference ("Resolves <issueURL>")
+// so that GitHub natively links the issue in the PR sidebar and automatically closes it when merged into the default branch.
+func (c *Client) LinkPRToIssue(ctx context.Context, prOwner, prRepo string, prNumber int, issueURL string) error {
+	cleanOwner := strings.TrimSpace(prOwner)
+	cleanRepo := strings.TrimSpace(prRepo)
+	cleanIssueURL := strings.TrimSpace(issueURL)
+	if cleanOwner == "" || cleanRepo == "" || prNumber <= 0 || cleanIssueURL == "" {
+		return fmt.Errorf("invalid parameters for linking PR to issue")
+	}
+
+	getURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%d", url.PathEscape(cleanOwner), url.PathEscape(cleanRepo), prNumber)
+	req, err := http.NewRequestWithContext(ctx, "GET", getURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	c.updateRateLimits(resp)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to fetch PR #%d: status %d", prNumber, resp.StatusCode)
+	}
+
+	var rawPR struct {
+		Body string `json:"body"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rawPR); err != nil {
+		return err
+	}
+
+	// If already linked, nothing to do
+	if strings.Contains(rawPR.Body, cleanIssueURL) {
+		return nil
+	}
+
+	// Append closing reference
+	updatedBody := rawPR.Body
+	if strings.TrimSpace(updatedBody) == "" {
+		updatedBody = fmt.Sprintf("Resolves %s", cleanIssueURL)
+	} else {
+		updatedBody = fmt.Sprintf("%s\n\nResolves %s", updatedBody, cleanIssueURL)
+	}
+
+	patchPayload, err := json.Marshal(map[string]string{
+		"body": updatedBody,
+	})
+	if err != nil {
+		return err
+	}
+
+	patchReq, err := http.NewRequestWithContext(ctx, "PATCH", getURL, bytes.NewReader(patchPayload))
+	if err != nil {
+		return err
+	}
+	patchReq.Header.Set("Authorization", "Bearer "+c.token)
+	patchReq.Header.Set("Accept", "application/vnd.github+json")
+	patchReq.Header.Set("Content-Type", "application/json")
+
+	patchResp, err := c.httpClient.Do(patchReq)
+	if err != nil {
+		return err
+	}
+	c.updateRateLimits(patchResp)
+	defer patchResp.Body.Close()
+
+	if patchResp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to update PR #%d description: status %d", prNumber, patchResp.StatusCode)
+	}
+	return nil
+}
+
+// CheckAndAutoClosePRTasks inspects all open tasks to check if their linked pull requests have been closed or merged,
+// automatically closing the corresponding GitHub issues and returning the updated open and done task slices.
+func (c *Client) CheckAndAutoClosePRTasks(ctx context.Context, tasks []Task) (openTasks []Task, doneTasks []Task, autoClosedCount int) {
+	for _, t := range tasks {
+		if t.State == "closed" {
+			doneTasks = append(doneTasks, t)
+			continue
+		}
+
+		if !t.IsPRReview() {
+			openTasks = append(openTasks, t)
+			continue
+		}
+
+		prURL := t.PRURL()
+		owner, repo, number, ok := ParsePRURL(prURL)
+		if !ok {
+			openTasks = append(openTasks, t)
+			continue
+		}
+
+		isClosed, err := c.IsPRClosedOrMerged(ctx, owner, repo, number)
+		if err == nil && isClosed {
+			// Auto-close on GitHub
+			_ = c.CloseTask(ctx, t.RepoOwner, t.RepoName, t.Number)
+			now := time.Now()
+			t.State = "closed"
+			t.ClosedAt = &now
+			t.UpdatedAt = now
+			doneTasks = append(doneTasks, t)
+			autoClosedCount++
+		} else {
+			openTasks = append(openTasks, t)
+		}
+	}
+	return openTasks, doneTasks, autoClosedCount
 }
 
 // UpdateTaskPriority replaces priority labels with the new priority label.

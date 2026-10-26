@@ -729,6 +729,16 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.CompletedTasksCursor = 0
 		return m, nil
 
+	case "i":
+		// Always open the underlying GitHub issue in browser
+		_, task := m.getCursorTarget()
+		if task != nil && task.URL != "" {
+			_ = OpenBrowser(task.URL)
+			return m, func() tea.Msg {
+				return StatusToastMsg(fmt.Sprintf("Opened issue #%d in browser", task.Number))
+			}
+		}
+
 	case "o":
 		// Open in browser
 		_, task := m.getCursorTarget()

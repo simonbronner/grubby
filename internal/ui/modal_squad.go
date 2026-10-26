@@ -434,12 +434,13 @@ Tasks Tab:
   [j/k] or [↑/↓]      Select task
   [a]                 Add new task inline
   [Enter]             Edit task title (or Open PR directly if PR review task)
+  [o]                 Open in browser (PR if review task, issue otherwise)
+  [i]                 Always open underlying GitHub issue in browser
   [Space]             Toggle completed / active
   [n]                 View / edit notes
   [p]                 Cycle priority (High / Medium / Low)
   [c]                 Cycle assignee
   [d]                 Show all completed tasks modal
-  [o]                 Open task in browser
 
 Squad Activity Tab (3):
   [m]                 Manage squad (add/delete multiple members, rename, delete squad)
