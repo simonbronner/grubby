@@ -295,26 +295,6 @@ func (m Model) syncCreateTaskInputsFocus() Model {
 func (m Model) getSquadTaskAssigneeCandidates() []string {
 	var list []string
 	list = append(list, "") // "" represents Unassigned
-	if m.AuthUser != "" {
-		list = append(list, m.AuthUser)
-	}
-
-	seen := make(map[string]bool)
-	if m.AuthUser != "" {
-		seen[strings.ToLower(m.AuthUser)] = true
-	}
-
-	if m.Config != nil {
-		squad := m.Config.GetActiveSquad()
-		if squad != nil {
-			for _, mem := range squad.Members {
-				clean := strings.ToLower(strings.TrimSpace(mem))
-				if clean != "" && !seen[clean] {
-					seen[clean] = true
-					list = append(list, mem)
-				}
-			}
-		}
-	}
+	list = append(list, m.getSquadAssigneeOptions()...)
 	return list
 }

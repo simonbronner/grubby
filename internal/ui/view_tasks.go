@@ -633,6 +633,22 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					targetURL = task.URL
 				}
 				_ = OpenBrowser(targetURL)
+
+				// If a review task is assigned to multiples, unassign from everyone but the person launching the review
+				if len(task.Assignees) > 1 && m.AuthUser != "" {
+					newAssignees := []string{m.AuthUser}
+					taskCopy := *task
+					taskCopy.Assignees = newAssignees
+					m = m.updateTaskInSlices(taskCopy)
+					assignCmd := m.updateTaskAssigneesCmd(taskCopy, newAssignees)
+					return m, tea.Batch(
+						func() tea.Msg {
+							return StatusToastMsg(fmt.Sprintf("Opened PR & claimed review task #%d (assigned to @%s)", task.Number, m.AuthUser))
+						},
+						assignCmd,
+					)
+				}
+
 				return m, func() tea.Msg {
 					return StatusToastMsg(fmt.Sprintf("Opened PR in browser: %s", targetURL))
 				}
@@ -696,7 +712,25 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.updateTaskPriorityCmd(*task, nextPriority)
 		}
 
-	case "c", "A":
+	case "A":
+		if m.ActiveTaskSubtab == TaskSubtabSquad {
+			loc, task := m.getCursorTarget()
+			if task != nil && loc == locActiveTask {
+				m.ActiveModal = ModalAssignSquadTask
+				m.AssignTaskTarget = task
+				m.AssignTaskCandidates = m.getSquadAssigneeOptions()
+				m.AssignTaskMemberCursor = 0
+				m.AssignTaskFocusedField = 0
+				m.AssignTaskActiveButton = 0
+				m.AssignTaskSelectedMembers = make(map[string]bool)
+				for _, a := range task.Assignees {
+					m.AssignTaskSelectedMembers[a] = true
+				}
+				return m, nil
+			}
+		}
+
+	case "c":
 		loc, task := m.getCursorTarget()
 		candidates := m.getSquadTaskAssigneeCandidates()
 		if loc == locInlineNew && m.ActiveTaskSubtab == TaskSubtabSquad {
@@ -754,6 +788,25 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if task.IsPRReview() {
 				if prURL := task.PRURL(); prURL != "" {
 					targetURL = prURL
+				}
+				_ = OpenBrowser(targetURL)
+
+				if len(task.Assignees) > 1 && m.AuthUser != "" {
+					newAssignees := []string{m.AuthUser}
+					taskCopy := *task
+					taskCopy.Assignees = newAssignees
+					m = m.updateTaskInSlices(taskCopy)
+					assignCmd := m.updateTaskAssigneesCmd(taskCopy, newAssignees)
+					return m, tea.Batch(
+						func() tea.Msg {
+							return StatusToastMsg(fmt.Sprintf("Opened PR & claimed review task #%d (assigned to @%s)", task.Number, m.AuthUser))
+						},
+						assignCmd,
+					)
+				}
+
+				return m, func() tea.Msg {
+					return StatusToastMsg(fmt.Sprintf("Opened in browser: %s", targetURL))
 				}
 			}
 			if targetURL != "" {

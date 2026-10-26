@@ -23,58 +23,98 @@ func (m Model) renderCreatePRTaskModal() string {
 	authorInfo := lipgloss.NewStyle().Foreground(SecondaryColor).Render(fmt.Sprintf("Author: @%s", pr.Author))
 	summaryLine := fmt.Sprintf("  %s  •  %s", prInfo, authorInfo)
 
-	// 1. Assignee Field (Mode selector)
-	var squadRadio, indRadio, meRadio string
-	switch m.PRTaskAssignMode {
-	case 0:
-		squadRadio = lipgloss.NewStyle().Bold(true).Foreground(PrimaryColor).Render("[● Entire Squad (excl. me)]")
-		indRadio = lipgloss.NewStyle().Foreground(MutedColor).Render("[○ Individual]")
-		meRadio = lipgloss.NewStyle().Foreground(MutedColor).Render("[○ Myself]")
-	case 1:
-		squadRadio = lipgloss.NewStyle().Foreground(MutedColor).Render("[○ Entire Squad (excl. me)]")
-		indRadio = lipgloss.NewStyle().Bold(true).Foreground(PrimaryColor).Render("[● Individual]")
-		meRadio = lipgloss.NewStyle().Foreground(MutedColor).Render("[○ Myself]")
-	case 2:
-		squadRadio = lipgloss.NewStyle().Foreground(MutedColor).Render("[○ Entire Squad (excl. me)]")
-		indRadio = lipgloss.NewStyle().Foreground(MutedColor).Render("[○ Individual]")
-		meRadio = lipgloss.NewStyle().Bold(true).Foreground(PrimaryColor).Render("[● Myself]")
-	}
-
-	modeLine := fmt.Sprintf("Assign to:     %s   %s   %s", squadRadio, indRadio, meRadio)
+	// 1. Assignee Field (List with selections)
+	assignHeader := "Assign to:"
 	if m.PRTaskFocusedField == 0 {
-		modeLine = lipgloss.NewStyle().Bold(true).Render("▶ " + modeLine)
+		assignHeader = lipgloss.NewStyle().Bold(true).Foreground(PrimaryColor).Render("▶ Assign to:") +
+			lipgloss.NewStyle().Foreground(MutedColor).Render("  [Space/Enter] Toggle  [a] All  [m] Me  [c] Clear")
 	} else {
-		modeLine = "  " + modeLine
+		assignHeader = "  " + lipgloss.NewStyle().Bold(true).Render("Assign to:")
 	}
 
-	// Details for the chosen assignment mode
-	var assignDetail string
-	switch m.PRTaskAssignMode {
-	case 0:
-		candidates := m.getSquadReviewCandidates(pr.Author)
-		if len(candidates) == 0 {
-			assignDetail = lipgloss.NewStyle().Foreground(WarningColor).Render("               (No other squad members in active squad • will create unassigned)")
-		} else {
-			assignDetail = lipgloss.NewStyle().Foreground(SecondaryColor).Render(fmt.Sprintf("               Squad Members: @%s", strings.Join(candidates, ", @")))
+	candidates := m.PRTaskCandidates
+	if len(candidates) == 0 {
+		candidates = m.getSquadAssigneeOptions()
+	}
+
+	var memberLines []string
+	if len(candidates) == 0 {
+		memberLines = append(memberLines, "    (No squad members found)")
+	} else {
+		maxVisible := 5
+		cursor := m.PRTaskMemberCursor
+		if cursor >= len(candidates) {
+			cursor = len(candidates) - 1
 		}
-	case 1:
-		candidates := m.getSquadIndividualCandidates()
-		if len(candidates) == 0 {
-			assignDetail = lipgloss.NewStyle().Foreground(WarningColor).Render("               (No squad members configured)")
-		} else {
-			currentMember := m.PRTaskAssignee
-			if currentMember == "" && len(candidates) > 0 {
-				currentMember = candidates[0]
+		if cursor < 0 {
+			cursor = 0
+		}
+
+		start := 0
+		if cursor >= maxVisible {
+			start = cursor - maxVisible + 1
+		}
+		end := start + maxVisible
+		if end > len(candidates) {
+			end = len(candidates)
+		}
+
+		for i := start; i < end; i++ {
+			c := candidates[i]
+			isCurrent := (m.PRTaskFocusedField == 0 && i == cursor)
+			rowPrefix := "    "
+			if isCurrent {
+				rowPrefix = "  ▶ "
 			}
-			assignDetail = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render(fmt.Sprintf("               Selected Member: @%s", currentMember)) +
-				lipgloss.NewStyle().Foreground(MutedColor).Render("  [Space to cycle member]")
+
+			checked := m.PRTaskSelectedMembers != nil && m.PRTaskSelectedMembers[c]
+			box := "[ ]"
+			if checked {
+				box = lipgloss.NewStyle().Foreground(SuccessColor).Bold(true).Render("[x]")
+			} else {
+				box = lipgloss.NewStyle().Foreground(MutedColor).Render("[ ]")
+			}
+
+			label := "@" + c
+			if strings.EqualFold(c, m.AuthUser) {
+				label += " (me)"
+			}
+			if strings.EqualFold(c, pr.Author) {
+				label += " (author)"
+			}
+
+			rowText := fmt.Sprintf("%s%s %s", rowPrefix, box, label)
+			if isCurrent {
+				memberLines = append(memberLines, SelectedRowStyle.Render(rowText))
+			} else {
+				memberLines = append(memberLines, NormalRowStyle.Render(rowText))
+			}
 		}
-	case 2:
-		me := m.AuthUser
-		if me == "" {
-			me = "me"
+
+		if len(candidates) > maxVisible {
+			scrollHint := lipgloss.NewStyle().Foreground(MutedColor).Render(
+				fmt.Sprintf("    (Showing %d-%d of %d members - use ↑/↓ to scroll)", start+1, end, len(candidates)),
+			)
+			memberLines = append(memberLines, scrollHint)
 		}
-		assignDetail = lipgloss.NewStyle().Foreground(SecondaryColor).Render(fmt.Sprintf("               Assignee: @%s", me))
+	}
+
+	// Selection Summary Line
+	var selectedList []string
+	for _, c := range candidates {
+		if m.PRTaskSelectedMembers != nil && m.PRTaskSelectedMembers[c] {
+			selectedList = append(selectedList, "@"+c)
+		}
+	}
+	var summaryText string
+	if len(selectedList) == 0 {
+		summaryText = lipgloss.NewStyle().Foreground(WarningColor).Render("    Selected: (Unassigned squad task)")
+	} else if len(selectedList) <= 3 {
+		summaryText = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render("    Selected: " + strings.Join(selectedList, ", "))
+	} else {
+		summaryText = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render(
+			fmt.Sprintf("    Selected: %s (+%d more)", strings.Join(selectedList[:3], ", "), len(selectedList)-3),
+		)
 	}
 
 	// 2. Priority Field
@@ -95,7 +135,7 @@ func (m Model) renderCreatePRTaskModal() string {
 	}
 	prioLine := fmt.Sprintf("Priority:      %s   %s   %s", prioHigh, prioMed, prioLow)
 	if m.PRTaskFocusedField == 1 {
-		prioLine = lipgloss.NewStyle().Bold(true).Render("▶ " + prioLine)
+		prioLine = lipgloss.NewStyle().Bold(true).Foreground(PrimaryColor).Render("▶ " + prioLine)
 	} else {
 		prioLine = "  " + prioLine
 	}
@@ -106,7 +146,7 @@ func (m Model) renderCreatePRTaskModal() string {
 		fmt.Sprintf("  Backing Repo: %s  •  Label: pr-review", repoInfo),
 	)
 	autoCloseNotice := lipgloss.NewStyle().Foreground(lipgloss.Color("#8888AA")).Render(
-		"  Auto-Close: Links to PR; auto-closes when PR merges, or complete with [Space].",
+		"  Auto-Close: Links to PR; auto-closes when PR merges, or unassigns others on review start.",
 	)
 
 	// 4. Buttons
@@ -126,30 +166,26 @@ func (m Model) renderCreatePRTaskModal() string {
 	buttonLine := fmt.Sprintf("               %s   %s", btnCreate, btnCancel)
 
 	// Help line
-	helpLine := MetaBarStyle.Render("  [Tab/Shift+Tab] Move  •  [Enter] Confirm  •  [p] Priority  •  [a] Mode  •  [Esc] Cancel")
+	helpLine := MetaBarStyle.Render("  [Tab/Shift+Tab] Move to Buttons  •  [Enter on Create Task] Confirm  •  [Esc] Cancel")
 
-	content := strings.Join([]string{
-		title,
-		"",
-		summaryLine,
-		"",
-		modeLine,
-		assignDetail,
-		"",
-		prioLine,
-		"",
-		repoLine,
-		autoCloseNotice,
-		"",
-		buttonLine,
-		"",
-		helpLine,
-	}, "\n")
+	var contentLines []string
+	contentLines = append(contentLines, title, "", summaryLine, "", assignHeader)
+	contentLines = append(contentLines, memberLines...)
+	contentLines = append(contentLines, summaryText, "", prioLine, "", repoLine, autoCloseNotice, "", buttonLine, "", helpLine)
 
-	return ModalBoxStyle.Render(content)
+	return ModalBoxStyle.Render(strings.Join(contentLines, "\n"))
 }
 
 func (m Model) handleCreatePRTaskModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	candidates := m.PRTaskCandidates
+	if len(candidates) == 0 {
+		candidates = m.getSquadAssigneeOptions()
+		m.PRTaskCandidates = candidates
+	}
+	if m.PRTaskSelectedMembers == nil {
+		m.PRTaskSelectedMembers = make(map[string]bool)
+	}
+
 	switch msg.String() {
 	case "esc":
 		m.ActiveModal = ModalNone
@@ -167,15 +203,81 @@ func (m Model) handleCreatePRTaskModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 		return m, nil
 
 	case "up", "k":
+		if m.PRTaskFocusedField == 0 {
+			if m.PRTaskMemberCursor > 0 {
+				m.PRTaskMemberCursor--
+			}
+			return m, nil
+		}
 		if m.PRTaskFocusedField > 0 {
 			m.PRTaskFocusedField--
 		}
 		return m, nil
 
 	case "down", "j":
+		if m.PRTaskFocusedField == 0 {
+			if m.PRTaskMemberCursor < len(candidates)-1 {
+				m.PRTaskMemberCursor++
+			}
+			return m, nil
+		}
 		if m.PRTaskFocusedField < 2 {
 			m.PRTaskFocusedField++
 		}
+		return m, nil
+
+	case " ":
+		if m.PRTaskFocusedField == 0 {
+			if len(candidates) > 0 && m.PRTaskMemberCursor < len(candidates) {
+				mem := candidates[m.PRTaskMemberCursor]
+				m.PRTaskSelectedMembers[mem] = !m.PRTaskSelectedMembers[mem]
+			}
+			return m, nil
+		}
+		if m.PRTaskFocusedField == 1 {
+			switch m.PRTaskPriority {
+			case github.PriorityMedium:
+				m.PRTaskPriority = github.PriorityHigh
+			case github.PriorityHigh:
+				m.PRTaskPriority = github.PriorityLow
+			default:
+				m.PRTaskPriority = github.PriorityMedium
+			}
+			return m, nil
+		}
+		if m.PRTaskFocusedField == 2 {
+			m.PRTaskActiveButton = (m.PRTaskActiveButton + 1) % 2
+			return m, nil
+		}
+
+	case "a", "s":
+		// Select all squad members (excluding PR author & me)
+		pr := m.PRTaskTarget
+		reviewCands := m.getSquadReviewCandidates(pr.Author)
+		if len(reviewCands) > 0 {
+			m.PRTaskSelectedMembers = make(map[string]bool)
+			for _, c := range reviewCands {
+				m.PRTaskSelectedMembers[c] = true
+			}
+		} else {
+			// Select all candidates if no other squad members exist
+			for _, c := range candidates {
+				m.PRTaskSelectedMembers[c] = true
+			}
+		}
+		return m, nil
+
+	case "m":
+		// Select myself only
+		m.PRTaskSelectedMembers = make(map[string]bool)
+		if m.AuthUser != "" {
+			m.PRTaskSelectedMembers[m.AuthUser] = true
+		}
+		return m, nil
+
+	case "c":
+		// Clear all selections
+		m.PRTaskSelectedMembers = make(map[string]bool)
 		return m, nil
 
 	case "p":
@@ -190,38 +292,7 @@ func (m Model) handleCreatePRTaskModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 		}
 		return m, nil
 
-	case "a":
-		// Cycle assign mode
-		m.PRTaskAssignMode = (m.PRTaskAssignMode + 1) % 3
-		if m.PRTaskAssignMode == 1 {
-			m = m.initPRTaskIndividualAssignee()
-		}
-		return m, nil
-
-	case "1":
-		m.PRTaskAssignMode = 0
-		return m, nil
-
-	case "2":
-		m.PRTaskAssignMode = 1
-		m = m.initPRTaskIndividualAssignee()
-		return m, nil
-
-	case "3":
-		m.PRTaskAssignMode = 2
-		return m, nil
-
 	case "left", "h":
-		if m.PRTaskFocusedField == 0 {
-			m.PRTaskAssignMode--
-			if m.PRTaskAssignMode < 0 {
-				m.PRTaskAssignMode = 2
-			}
-			if m.PRTaskAssignMode == 1 {
-				m = m.initPRTaskIndividualAssignee()
-			}
-			return m, nil
-		}
 		if m.PRTaskFocusedField == 1 {
 			switch m.PRTaskPriority {
 			case github.PriorityHigh:
@@ -239,13 +310,6 @@ func (m Model) handleCreatePRTaskModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 		}
 
 	case "right", "l":
-		if m.PRTaskFocusedField == 0 {
-			m.PRTaskAssignMode = (m.PRTaskAssignMode + 1) % 3
-			if m.PRTaskAssignMode == 1 {
-				m = m.initPRTaskIndividualAssignee()
-			}
-			return m, nil
-		}
 		if m.PRTaskFocusedField == 1 {
 			switch m.PRTaskPriority {
 			case github.PriorityMedium:
@@ -262,35 +326,24 @@ func (m Model) handleCreatePRTaskModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 			return m, nil
 		}
 
-	case "m":
-		if m.PRTaskFocusedField == 0 && m.PRTaskAssignMode == 1 {
-			m = m.cyclePRTaskIndividualAssignee(1)
+	case "enter":
+		// Enter on members list: toggle selection (does NOT save!)
+		if m.PRTaskFocusedField == 0 {
+			if len(candidates) > 0 && m.PRTaskMemberCursor < len(candidates) {
+				mem := candidates[m.PRTaskMemberCursor]
+				m.PRTaskSelectedMembers[mem] = !m.PRTaskSelectedMembers[mem]
+			}
 			return m, nil
 		}
 
-	case " ":
-		if m.PRTaskFocusedField == 0 {
-			if m.PRTaskAssignMode == 1 {
-				m = m.cyclePRTaskIndividualAssignee(1)
-			} else {
-				m.PRTaskAssignMode = (m.PRTaskAssignMode + 1) % 3
-				if m.PRTaskAssignMode == 1 {
-					m = m.initPRTaskIndividualAssignee()
-				}
-			}
-			return m, nil
-		}
+		// Enter on priority: move focus to buttons (does NOT quick save!)
 		if m.PRTaskFocusedField == 1 {
-			switch m.PRTaskPriority {
-			case github.PriorityMedium:
-				m.PRTaskPriority = github.PriorityHigh
-			case github.PriorityHigh:
-				m.PRTaskPriority = github.PriorityLow
-			default:
-				m.PRTaskPriority = github.PriorityMedium
-			}
+			m.PRTaskFocusedField = 2
+			m.PRTaskActiveButton = 0
 			return m, nil
 		}
+
+		// Enter on buttons: execute active button
 		if m.PRTaskFocusedField == 2 {
 			if m.PRTaskActiveButton == 1 {
 				m.ActiveModal = ModalNone
@@ -298,69 +351,23 @@ func (m Model) handleCreatePRTaskModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 			}
 			return m.submitCreatePRTaskModal()
 		}
-
-	case "enter":
-		if m.PRTaskFocusedField == 2 && m.PRTaskActiveButton == 1 {
-			m.ActiveModal = ModalNone
-			return m, nil
-		}
-		return m.submitCreatePRTaskModal()
 	}
 
 	return m, nil
-}
-
-func (m Model) initPRTaskIndividualAssignee() Model {
-	candidates := m.getSquadIndividualCandidates()
-	if len(candidates) > 0 && m.PRTaskAssignee == "" {
-		m.PRTaskAssignee = candidates[0]
-		m.PRTaskAssigneeIndex = 0
-	}
-	return m
-}
-
-func (m Model) cyclePRTaskIndividualAssignee(delta int) Model {
-	candidates := m.getSquadIndividualCandidates()
-	if len(candidates) == 0 {
-		return m
-	}
-	curIdx := 0
-	for i, c := range candidates {
-		if c == m.PRTaskAssignee {
-			curIdx = i
-			break
-		}
-	}
-	newIdx := (curIdx + delta) % len(candidates)
-	if newIdx < 0 {
-		newIdx += len(candidates)
-	}
-	m.PRTaskAssignee = candidates[newIdx]
-	m.PRTaskAssigneeIndex = newIdx
-	return m
 }
 
 func (m Model) submitCreatePRTaskModal() (tea.Model, tea.Cmd) {
 	pr := m.PRTaskTarget
 
 	var assignees []string
-	switch m.PRTaskAssignMode {
-	case 0: // Entire Squad (excl. me)
-		assignees = m.getSquadReviewCandidates(pr.Author)
-		// If squad has no other members, assignees is empty slice, creating an unassigned squad task.
-	case 1: // Individual
-		if m.PRTaskAssignee == "" {
-			candidates := m.getSquadIndividualCandidates()
-			if len(candidates) > 0 {
-				m.PRTaskAssignee = candidates[0]
-			}
-		}
-		if m.PRTaskAssignee != "" {
-			assignees = []string{m.PRTaskAssignee}
-		}
-	case 2: // Myself
-		if m.AuthUser != "" {
-			assignees = []string{m.AuthUser}
+	candidates := m.PRTaskCandidates
+	if len(candidates) == 0 {
+		candidates = m.getSquadAssigneeOptions()
+	}
+
+	for _, cand := range candidates {
+		if m.PRTaskSelectedMembers != nil && m.PRTaskSelectedMembers[cand] {
+			assignees = append(assignees, cand)
 		}
 	}
 

@@ -42,6 +42,8 @@ func (m Model) handleModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleCompletedTasksModalKeys(msg)
 	case ModalCreatePRTask:
 		return m.handleCreatePRTaskModalKeys(msg)
+	case ModalAssignSquadTask:
+		return m.handleAssignSquadTaskModalKeys(msg)
 	case ModalHelp:
 		if msg.String() == "esc" || msg.String() == "q" || msg.String() == "?" {
 			m.ActiveModal = ModalNone
@@ -82,6 +84,8 @@ func (m Model) renderModalOverlay(baseView string) string {
 		modalContent = m.renderCompletedTasksModal()
 	case ModalCreatePRTask:
 		modalContent = m.renderCreatePRTaskModal()
+	case ModalAssignSquadTask:
+		modalContent = m.renderAssignSquadTaskModal()
 	case ModalHelp:
 		modalContent = m.renderHelpModal()
 	}
@@ -437,6 +441,7 @@ Tasks Tab:
   [o]                 Open in browser (PR if review task, issue otherwise)
   [i]                 Always open underlying GitHub issue in browser
   [Space]             Toggle completed / active
+  [A]                 Assign task to multiple squad members (squad tasks)
   [n]                 View / edit notes
   [p]                 Cycle priority (High / Medium / Low)
   [c]                 Cycle assignee

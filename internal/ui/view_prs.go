@@ -85,17 +85,19 @@ func (m Model) handlePRsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.PRTaskPriority = github.PriorityMedium
 			m.PRTaskFocusedField = 0
 			m.PRTaskActiveButton = 0
+			m.PRTaskMemberCursor = 0
+			m.PRTaskCandidates = m.getSquadAssigneeOptions()
+			m.PRTaskSelectedMembers = make(map[string]bool)
 
+			// Default selection: squad review candidates (excl. me & author), or myself if none
 			squadCands := m.getSquadReviewCandidates(pr.Author)
 			if len(squadCands) > 0 {
-				m.PRTaskAssignMode = 0 // Squad (all except me)
+				for _, c := range squadCands {
+					m.PRTaskSelectedMembers[c] = true
+				}
 			} else if m.AuthUser != "" {
-				m.PRTaskAssignMode = 2 // Myself
-			} else {
-				m.PRTaskAssignMode = 0 // Squad / Unassigned
+				m.PRTaskSelectedMembers[m.AuthUser] = true
 			}
-			m.PRTaskAssignee = ""
-			m.PRTaskAssigneeIndex = 0
 			return m, nil
 		}
 	case "p":

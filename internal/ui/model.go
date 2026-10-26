@@ -54,6 +54,7 @@ const (
 	ModalTaskNotes
 	ModalCompletedTasks
 	ModalCreatePRTask
+	ModalAssignSquadTask
 )
 
 type RepoActionType int
@@ -262,8 +263,19 @@ type Model struct {
 	PRTaskAssignee         string
 	PRTaskAssigneeIndex    int
 	PRTaskPriority         github.TaskPriority
-	PRTaskFocusedField     int // 0: Assignee mode, 1: Priority, 2: Buttons
+	PRTaskFocusedField     int // 0: Assignee list, 1: Priority, 2: Buttons
 	PRTaskActiveButton     int // 0: Create, 1: Cancel
+	PRTaskCandidates       []string
+	PRTaskMemberCursor     int
+	PRTaskSelectedMembers  map[string]bool
+
+	// Assign Squad Task Modal ([A] in squad mode)
+	AssignTaskTarget          *github.Task
+	AssignTaskCandidates      []string
+	AssignTaskMemberCursor    int
+	AssignTaskSelectedMembers map[string]bool
+	AssignTaskFocusedField    int // 0: Member list, 1: Buttons
+	AssignTaskActiveButton    int // 0: Save, 1: Cancel
 
 	// Task Details & Editing
 	TaskEditTarget         github.Task
@@ -613,47 +625,100 @@ func (m Model) createPRTaskCmd(owner, repo, title, body string, priority github.
 	}
 }
 
+func (m Model) getSquadAssigneeOptions() []string {
+	var list []string
+	seen := make(map[string]bool)
+
+	addCandidate := func(candidate string) {
+		clean := strings.TrimSpace(candidate)
+		lower := strings.ToLower(clean)
+		if lower == "" || seen[lower] {
+			return
+		}
+		seen[lower] = true
+		list = append(list, clean)
+	}
+
+	// 1. Active Squad Members
+	if m.Config != nil {
+		if active := m.Config.GetActiveSquad(); active != nil {
+			for _, mem := range active.Members {
+				addCandidate(mem)
+			}
+		}
+		// 2. Members from all configured squads
+		for _, s := range m.Config.Squads {
+			for _, mem := range s.Members {
+				addCandidate(mem)
+			}
+		}
+	}
+
+	// 3. Organization Members
+	for _, om := range m.OrgMembers {
+		addCandidate(om.Login)
+	}
+
+	// 4. Contributors from PRs & Squad Events
+	for _, pr := range m.PRs {
+		addCandidate(pr.Author)
+	}
+	for _, ev := range m.SquadEvents {
+		addCandidate(ev.Actor)
+	}
+
+	// 5. Current Authenticated User
+	if m.AuthUser != "" {
+		addCandidate(m.AuthUser)
+	}
+
+	return list
+}
+
 func (m Model) getSquadReviewCandidates(prAuthor string) []string {
 	var list []string
 	me := strings.ToLower(strings.TrimSpace(m.AuthUser))
 	author := strings.ToLower(strings.TrimSpace(prAuthor))
 	seen := make(map[string]bool)
 
-	if m.Config != nil {
-		squad := m.Config.GetActiveSquad()
-		if squad != nil {
-			for _, mem := range squad.Members {
-				clean := strings.TrimSpace(mem)
-				lower := strings.ToLower(clean)
-				if lower == "" || lower == me || lower == author || seen[lower] {
-					continue
-				}
-				seen[lower] = true
-				list = append(list, clean)
-			}
+	for _, cand := range m.getSquadAssigneeOptions() {
+		clean := strings.TrimSpace(cand)
+		lower := strings.ToLower(clean)
+		if lower == "" || lower == me || lower == author || seen[lower] {
+			continue
 		}
+		seen[lower] = true
+		list = append(list, clean)
 	}
 	return list
 }
 
 func (m Model) getSquadIndividualCandidates() []string {
-	var list []string
-	seen := make(map[string]bool)
-	if m.Config != nil {
-		squad := m.Config.GetActiveSquad()
-		if squad != nil {
-			for _, mem := range squad.Members {
-				clean := strings.TrimSpace(mem)
-				lower := strings.ToLower(clean)
-				if lower == "" || seen[lower] {
-					continue
-				}
-				seen[lower] = true
-				list = append(list, clean)
-			}
+	return m.getSquadAssigneeOptions()
+}
+
+func (m Model) updateTaskInSlices(updated github.Task) Model {
+	for i := range m.PersonalTasks {
+		if m.PersonalTasks[i].ID == updated.ID {
+			m.PersonalTasks[i] = updated
 		}
 	}
-	return list
+	for i := range m.PersonalDoneTasks {
+		if m.PersonalDoneTasks[i].ID == updated.ID {
+			m.PersonalDoneTasks[i] = updated
+		}
+	}
+	for i := range m.SquadTasks {
+		if m.SquadTasks[i].ID == updated.ID {
+			m.SquadTasks[i] = updated
+		}
+	}
+	for i := range m.SquadDoneTasks {
+		if m.SquadDoneTasks[i].ID == updated.ID {
+			m.SquadDoneTasks[i] = updated
+		}
+	}
+	return m
 }
 
 func (m Model) updateTaskCmd(target github.Task, title, body string, priority github.TaskPriority, assignees []string) tea.Cmd {
@@ -1552,9 +1617,17 @@ func (m Model) renderFooter() string {
 		} else {
 			_, cursorTask := m.getCursorTarget()
 			if cursorTask != nil && cursorTask.IsPRReview() {
-				help = "[Enter/o] Open PR  [i] Issue  [Space] Toggle Done  [n] Notes  [p] Priority  [c] Assign  [d] All Done  [a] Add  [?] Help"
+				if m.ActiveTaskSubtab == TaskSubtabSquad {
+					help = "[Enter/o] Open PR  [i] Issue  [Space] Toggle Done  [A] Assign  [n] Notes  [p] Priority  [c] Cycle  [d] All Done  [a] Add  [?] Help"
+				} else {
+					help = "[Enter/o] Open PR  [i] Issue  [Space] Toggle Done  [n] Notes  [p] Priority  [c] Assign  [d] All Done  [a] Add  [?] Help"
+				}
 			} else {
-				help = "[a] Add  [Enter] Edit Title  [Space] Toggle Done  [n] Notes  [p] Priority  [c] Assign  [d] All Done  [i/o] Issue  [?] Help"
+				if m.ActiveTaskSubtab == TaskSubtabSquad {
+					help = "[a] Add  [Enter] Edit Title  [Space] Toggle Done  [A] Assign  [n] Notes  [p] Priority  [c] Cycle  [d] All Done  [i/o] Issue  [?] Help"
+				} else {
+					help = "[a] Add  [Enter] Edit Title  [Space] Toggle Done  [n] Notes  [p] Priority  [c] Assign  [d] All Done  [i/o] Issue  [?] Help"
+				}
 			}
 		}
 	case TabSearch:

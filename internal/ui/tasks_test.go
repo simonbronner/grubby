@@ -614,9 +614,6 @@ func TestPRReviewTask_OpenModalFromPRView(t *testing.T) {
 	if m.PRTaskTarget.Number != 42 {
 		t.Errorf("expected PRTaskTarget.Number == 42, got %d", m.PRTaskTarget.Number)
 	}
-	if m.PRTaskAssignMode != 0 {
-		t.Errorf("expected default PRTaskAssignMode == 0 (Entire Squad), got %d", m.PRTaskAssignMode)
-	}
 	if m.PRTaskPriority != github.PriorityMedium {
 		t.Errorf("expected default PRTaskPriority == medium, got %s", m.PRTaskPriority)
 	}
@@ -626,8 +623,8 @@ func TestPRReviewTask_OpenModalFromPRView(t *testing.T) {
 	if !strings.Contains(view, "Fix database connection leak") {
 		t.Errorf("expected modal to render PR title")
 	}
-	if !strings.Contains(view, "Entire Squad") {
-		t.Errorf("expected modal to render Entire Squad option")
+	if !strings.Contains(view, "Assign to:") {
+		t.Errorf("expected modal to render Assign to checklist header")
 	}
 	if !strings.Contains(view, "pr-review") {
 		t.Errorf("expected modal to render pr-review label")
@@ -640,18 +637,37 @@ func TestPRReviewTask_OpenModalFromPRView(t *testing.T) {
 		t.Errorf("expected priority High after pressing 'p', got %s", m.PRTaskPriority)
 	}
 
-	// Switch assign mode with 'a'
-	res, _ = m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	// Pressing Enter on member list must NOT submit (toggles selection)
+	res, noSubmitCmd := m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
 	m = res.(Model)
-	if m.PRTaskAssignMode != 1 {
-		t.Errorf("expected assign mode 1 (Individual), got %d", m.PRTaskAssignMode)
+	if noSubmitCmd != nil {
+		t.Fatalf("pressing Enter on member list should NOT submit task creation!")
+	}
+	if m.ActiveModal != ModalCreatePRTask {
+		t.Fatalf("modal should remain open after Enter on member list")
 	}
 
-	// Submit modal with 'Enter'
+	// Tab down to buttons field (field 0 -> field 1 -> field 2)
+	res, _ = m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyTab})
+	m = res.(Model)
+	if m.PRTaskFocusedField != 1 {
+		t.Fatalf("expected focused field 1 (Priority) after Tab, got %d", m.PRTaskFocusedField)
+	}
+
+	res, _ = m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyTab})
+	m = res.(Model)
+	if m.PRTaskFocusedField != 2 {
+		t.Fatalf("expected focused field 2 (Buttons) after second Tab, got %d", m.PRTaskFocusedField)
+	}
+	if m.PRTaskActiveButton != 0 {
+		t.Fatalf("expected active button 0 (Create Task), got %d", m.PRTaskActiveButton)
+	}
+
+	// Submit modal with 'Enter' on [ Create Task ] button
 	res, submitCmd := m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
 	m = res.(Model)
 	if submitCmd == nil {
-		t.Fatalf("expected createPRTaskCmd on Enter")
+		t.Fatalf("expected createPRTaskCmd on Enter when on Create Task button")
 	}
 	if m.ActiveModal != ModalNone {
 		t.Errorf("expected modal to close after submitting")
@@ -800,32 +816,53 @@ func TestPRReviewTask_SoloSquadCreationOnEnter(t *testing.T) {
 		t.Fatalf("expected ModalCreatePRTask, got %v", m.ActiveModal)
 	}
 
-	// Because there are no OTHER squad members, it must default to Mode 2 (Myself)
-	if m.PRTaskAssignMode != 2 {
-		t.Errorf("expected default mode 2 (Myself) when squad has no other members, got %d", m.PRTaskAssignMode)
+	// In solo squad, user should be in candidates and checked by default
+	if len(m.PRTaskCandidates) == 0 {
+		t.Fatalf("expected PRTaskCandidates to include simonbronner")
+	}
+	if !m.PRTaskSelectedMembers["simonbronner"] {
+		t.Errorf("expected simonbronner to be selected by default in solo squad")
 	}
 
-	// 2. Press Enter immediately -> MUST create task and close modal!
+	// 2. Press Enter on member list -> toggles selection, does NOT submit
+	res, noCmd := m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	m = res.(Model)
+	if noCmd != nil {
+		t.Fatalf("expected nil cmd on Enter while on member list (stopping quick-save)")
+	}
+
+	// 3. Tab down to buttons field (field 0 -> field 1 -> field 2)
+	res, _ = m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyTab})
+	m = res.(Model)
+	res, _ = m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyTab})
+	m = res.(Model)
+	if m.PRTaskFocusedField != 2 {
+		t.Fatalf("expected focused field 2 (Buttons), got %d", m.PRTaskFocusedField)
+	}
+
+	// 4. Press Enter on [ Create Task ] button -> MUST create task and close modal!
 	res, submitCmd := m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
 	m = res.(Model)
 	if submitCmd == nil {
-		t.Fatalf("expected submitCmd on Enter, got nil (task creation blocked!)")
+		t.Fatalf("expected submitCmd on Enter on Create Task button, got nil")
 	}
 	if m.ActiveModal != ModalNone {
 		t.Errorf("expected modal to close on Enter, but ActiveModal is %v", m.ActiveModal)
 	}
 
-	// 3. Now test if user switches to Mode 0 (Entire Squad) even with 0 other members and presses Enter:
-	// It must create an unassigned task and close modal, NEVER block with nil command!
+	// 5. Test if user clears all selections (unassigned task) and creates:
+	// It must create an unassigned task and close modal, NEVER block!
 	m.ActiveModal = ModalCreatePRTask
-	m.PRTaskAssignMode = 0
-	res, submitCmd0 := m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	m.PRTaskFocusedField = 2
+	m.PRTaskActiveButton = 0
+	m.PRTaskSelectedMembers = make(map[string]bool)
+	res, submitCmdUnassigned := m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
 	m = res.(Model)
-	if submitCmd0 == nil {
-		t.Fatalf("expected submitCmd0 on Enter for Mode 0, got nil (must not block!)")
+	if submitCmdUnassigned == nil {
+		t.Fatalf("expected submitCmdUnassigned on Enter, got nil (must not block!)")
 	}
 	if m.ActiveModal != ModalNone {
-		t.Errorf("expected modal to close for Mode 0, got %v", m.ActiveModal)
+		t.Errorf("expected modal to close for unassigned task, got %v", m.ActiveModal)
 	}
 }
 
@@ -876,5 +913,174 @@ func TestTask_HotkeyI_OpensIssue(t *testing.T) {
 	toastModalMsg := string(cmdModalI().(StatusToastMsg))
 	if !strings.Contains(toastModalMsg, "Opened issue #301 in browser") {
 		t.Errorf("expected 'Opened issue #301 in browser', got: %s", toastModalMsg)
+	}
+}
+
+func TestSquadTask_CapitalA_AssignMultiple(t *testing.T) {
+	m := createTestTasksModel()
+	m.ActiveTab = TabTasks
+	m.ActiveTaskSubtab = TaskSubtabSquad
+	m.Width = 100
+	m.Height = 30
+	m.TaskCursor = 0 // On #202 (unassigned)
+
+	// 1. Press capital 'A' on active squad task to open Assign Squad Task modal
+	res, _ := m.handleTasksKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
+	m = res.(Model)
+	if m.ActiveModal != ModalAssignSquadTask {
+		t.Fatalf("expected ActiveModal == ModalAssignSquadTask, got %v", m.ActiveModal)
+	}
+	if m.AssignTaskTarget == nil || m.AssignTaskTarget.Number != 202 {
+		t.Fatalf("expected target task #202, got %+v", m.AssignTaskTarget)
+	}
+
+	// Verify modal rendering contains members checklist and buttons
+	view := m.renderAssignSquadTaskModal()
+	if !strings.Contains(view, "Assign Squad Task #202") {
+		t.Errorf("expected modal title in view: %s", view)
+	}
+	if !strings.Contains(view, "[ Save Assignees ]") {
+		t.Errorf("expected Save Assignees button in view: %s", view)
+	}
+
+	// 2. Select first member with Space
+	res, _ = m.handleAssignSquadTaskModalKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	m = res.(Model)
+	firstMem := m.AssignTaskCandidates[0]
+	if !m.AssignTaskSelectedMembers[firstMem] {
+		t.Fatalf("expected first member %q to be checked after Space", firstMem)
+	}
+
+	// Move cursor down and select second member with Enter (Enter toggles, does NOT save!)
+	res, _ = m.handleAssignSquadTaskModalKeys(tea.KeyMsg{Type: tea.KeyDown})
+	m = res.(Model)
+	if m.AssignTaskMemberCursor != 1 {
+		t.Fatalf("expected cursor on index 1, got %d", m.AssignTaskMemberCursor)
+	}
+
+	res, noCmd := m.handleAssignSquadTaskModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	m = res.(Model)
+	if noCmd != nil {
+		t.Fatalf("Enter on member checklist should toggle checkbox, not save")
+	}
+	secondMem := m.AssignTaskCandidates[1]
+	if !m.AssignTaskSelectedMembers[secondMem] {
+		t.Fatalf("expected second member %q to be checked after Enter", secondMem)
+	}
+
+	// 3. Tab down to buttons (Field 0 -> Field 1)
+	res, _ = m.handleAssignSquadTaskModalKeys(tea.KeyMsg{Type: tea.KeyTab})
+	m = res.(Model)
+	if m.AssignTaskFocusedField != 1 {
+		t.Fatalf("expected focused field 1 (Buttons), got %d", m.AssignTaskFocusedField)
+	}
+	if m.AssignTaskActiveButton != 0 {
+		t.Fatalf("expected active button 0 (Save Assignees), got %d", m.AssignTaskActiveButton)
+	}
+
+	// 4. Press Enter on [ Save Assignees ] button
+	res, saveCmd := m.handleAssignSquadTaskModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	m = res.(Model)
+	if saveCmd == nil {
+		t.Fatalf("expected saveCmd on Enter on Save Assignees button")
+	}
+	if m.ActiveModal != ModalNone {
+		t.Fatalf("expected modal to close after saving assignees")
+	}
+
+	// Verify task in squad tasks was updated with multiple assignees
+	foundTask := false
+	for _, st := range m.SquadTasks {
+		if st.Number == 202 {
+			foundTask = true
+			if len(st.Assignees) != 2 {
+				t.Fatalf("expected 2 assignees on task #202, got %v", st.Assignees)
+			}
+			if st.Assignees[0] != firstMem || st.Assignees[1] != secondMem {
+				t.Errorf("expected assignees [%s, %s], got %v", firstMem, secondMem, st.Assignees)
+			}
+		}
+	}
+	if !foundTask {
+		t.Fatalf("task #202 not found in SquadTasks")
+	}
+}
+
+func TestPRReviewTask_LaunchAutoUnassignsMultiples(t *testing.T) {
+	m := createTestTasksModel()
+	m.ActiveTab = TabTasks
+	m.ActiveTaskSubtab = TaskSubtabSquad
+	m.AuthUser = "simonbronner"
+	m.Width = 100
+	m.Height = 30
+
+	now := time.Now()
+	multiAssigneePRTask := github.Task{
+		ID:          888,
+		Number:      302,
+		Title:       "Review PR #42: Feature X",
+		Body:        "Review pull request: https://github.com/my-org/backend-service/pull/42",
+		Priority:    github.PriorityHigh,
+		Assignees:   []string{"alice", "bob", "simonbronner"},
+		Labels:      []string{github.LabelPRReview},
+		RepoName:    "core-team-tasks",
+		URL:         "https://github.com/my-org/core-team-tasks/issues/302",
+		UpdatedAt:   now,
+		IsSquadTask: true,
+	}
+	m.SquadTasks = append([]github.Task{multiAssigneePRTask}, m.SquadTasks...)
+	m.TaskCursor = 0 // On multiAssigneePRTask
+
+	// 1. Press 'Enter' to launch review -> MUST unassign everyone but simonbronner!
+	res, enterCmd := m.handleTasksKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	m = res.(Model)
+	if enterCmd == nil {
+		t.Fatalf("expected cmd batch when launching review with multiple assignees")
+	}
+
+	// Verify task locally has only simonbronner assigned
+	var updatedTask *github.Task
+	for _, t := range m.SquadTasks {
+		if t.Number == 302 {
+			updatedTask = &t
+			break
+		}
+	}
+	if updatedTask == nil {
+		t.Fatalf("task #302 not found")
+	}
+	if len(updatedTask.Assignees) != 1 || updatedTask.Assignees[0] != "simonbronner" {
+		t.Fatalf("expected task to be assigned only to simonbronner, got %v", updatedTask.Assignees)
+	}
+
+	// 2. Also test with 'o' hotkey on another multi-assigned PR task
+	multiAssigneePRTask2 := github.Task{
+		ID:          889,
+		Number:      303,
+		Title:       "Review PR #43: Feature Y",
+		Body:        "Review pull request: https://github.com/my-org/backend-service/pull/43",
+		Priority:    github.PriorityHigh,
+		Assignees:   []string{"alice", "bob"}, // simonbronner was not even in list
+		Labels:      []string{github.LabelPRReview},
+		RepoName:    "core-team-tasks",
+		URL:         "https://github.com/my-org/core-team-tasks/issues/303",
+		UpdatedAt:   now,
+		IsSquadTask: true,
+	}
+	m.SquadTasks = append([]github.Task{multiAssigneePRTask2}, m.SquadTasks...)
+	m.TaskCursor = 0 // On multiAssigneePRTask2
+
+	res, oCmd := m.handleTasksKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	m = res.(Model)
+	if oCmd == nil {
+		t.Fatalf("expected cmd batch when launching review via 'o'")
+	}
+
+	for _, item := range m.SquadTasks {
+		if item.Number == 303 {
+			if len(item.Assignees) != 1 || item.Assignees[0] != "simonbronner" {
+				t.Fatalf("expected task #303 claimed by simonbronner on 'o', got %v", item.Assignees)
+			}
+		}
 	}
 }
