@@ -656,3 +656,57 @@ func TestPRReviewTask_CompletedRenderingAndEnter(t *testing.T) {
 		t.Errorf("expected toast 'Opened PR in browser', got: %s", toastMsg)
 	}
 }
+
+func TestPRReviewTask_SoloSquadCreationOnEnter(t *testing.T) {
+	m := createTestTasksModel()
+	m.ActiveTab = TabPRs
+	m.AuthUser = "simonbronner"
+	m.CurrentOrg = "simonbronner"
+	// Solo squad containing only the user themselves
+	m.Config.Squads[0].Members = []string{"simonbronner"}
+	m.PRs = []github.PullRequest{
+		{
+			Number: 42,
+			Title:  "Fix something",
+			Repo:   "grubby",
+			Author: "simonbronner",
+			URL:    "https://github.com/simonbronner/grubby/pull/42",
+		},
+	}
+	m.PRCursor = 0
+
+	// 1. Press 't' to open modal
+	res, _ := m.handlePRsKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	m = res.(Model)
+	if m.ActiveModal != ModalCreatePRTask {
+		t.Fatalf("expected ModalCreatePRTask, got %v", m.ActiveModal)
+	}
+
+	// Because there are no OTHER squad members, it must default to Mode 2 (Myself)
+	if m.PRTaskAssignMode != 2 {
+		t.Errorf("expected default mode 2 (Myself) when squad has no other members, got %d", m.PRTaskAssignMode)
+	}
+
+	// 2. Press Enter immediately -> MUST create task and close modal!
+	res, submitCmd := m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	m = res.(Model)
+	if submitCmd == nil {
+		t.Fatalf("expected submitCmd on Enter, got nil (task creation blocked!)")
+	}
+	if m.ActiveModal != ModalNone {
+		t.Errorf("expected modal to close on Enter, but ActiveModal is %v", m.ActiveModal)
+	}
+
+	// 3. Now test if user switches to Mode 0 (Entire Squad) even with 0 other members and presses Enter:
+	// It must create an unassigned task and close modal, NEVER block with nil command!
+	m.ActiveModal = ModalCreatePRTask
+	m.PRTaskAssignMode = 0
+	res, submitCmd0 := m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	m = res.(Model)
+	if submitCmd0 == nil {
+		t.Fatalf("expected submitCmd0 on Enter for Mode 0, got nil (must not block!)")
+	}
+	if m.ActiveModal != ModalNone {
+		t.Errorf("expected modal to close for Mode 0, got %v", m.ActiveModal)
+	}
+}

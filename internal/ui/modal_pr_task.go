@@ -53,7 +53,7 @@ func (m Model) renderCreatePRTaskModal() string {
 	case 0:
 		candidates := m.getSquadReviewCandidates(pr.Author)
 		if len(candidates) == 0 {
-			assignDetail = lipgloss.NewStyle().Foreground(WarningColor).Render("               (No other squad members in active squad to assign)")
+			assignDetail = lipgloss.NewStyle().Foreground(WarningColor).Render("               (No other squad members in active squad • will create unassigned)")
 		} else {
 			assignDetail = lipgloss.NewStyle().Foreground(SecondaryColor).Render(fmt.Sprintf("               Squad Members: @%s", strings.Join(candidates, ", @")))
 		}
@@ -67,7 +67,7 @@ func (m Model) renderCreatePRTaskModal() string {
 				currentMember = candidates[0]
 			}
 			assignDetail = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render(fmt.Sprintf("               Selected Member: @%s", currentMember)) +
-				lipgloss.NewStyle().Foreground(MutedColor).Render("  [←/→/Space to cycle]")
+				lipgloss.NewStyle().Foreground(MutedColor).Render("  [Space to cycle member]")
 		}
 	case 2:
 		me := m.AuthUser
@@ -213,16 +213,12 @@ func (m Model) handleCreatePRTaskModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 
 	case "left", "h":
 		if m.PRTaskFocusedField == 0 {
+			m.PRTaskAssignMode--
+			if m.PRTaskAssignMode < 0 {
+				m.PRTaskAssignMode = 2
+			}
 			if m.PRTaskAssignMode == 1 {
-				m = m.cyclePRTaskIndividualAssignee(-1)
-			} else {
-				m.PRTaskAssignMode--
-				if m.PRTaskAssignMode < 0 {
-					m.PRTaskAssignMode = 2
-				}
-				if m.PRTaskAssignMode == 1 {
-					m = m.initPRTaskIndividualAssignee()
-				}
+				m = m.initPRTaskIndividualAssignee()
 			}
 			return m, nil
 		}
@@ -244,13 +240,9 @@ func (m Model) handleCreatePRTaskModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 
 	case "right", "l":
 		if m.PRTaskFocusedField == 0 {
+			m.PRTaskAssignMode = (m.PRTaskAssignMode + 1) % 3
 			if m.PRTaskAssignMode == 1 {
-				m = m.cyclePRTaskIndividualAssignee(1)
-			} else {
-				m.PRTaskAssignMode = (m.PRTaskAssignMode + 1) % 3
-				if m.PRTaskAssignMode == 1 {
-					m = m.initPRTaskIndividualAssignee()
-				}
+				m = m.initPRTaskIndividualAssignee()
 			}
 			return m, nil
 		}
@@ -267,6 +259,12 @@ func (m Model) handleCreatePRTaskModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 		}
 		if m.PRTaskFocusedField == 2 {
 			m.PRTaskActiveButton = 1
+			return m, nil
+		}
+
+	case "m":
+		if m.PRTaskFocusedField == 0 && m.PRTaskAssignMode == 1 {
+			m = m.cyclePRTaskIndividualAssignee(1)
 			return m, nil
 		}
 
@@ -349,11 +347,7 @@ func (m Model) submitCreatePRTaskModal() (tea.Model, tea.Cmd) {
 	switch m.PRTaskAssignMode {
 	case 0: // Entire Squad (excl. me)
 		assignees = m.getSquadReviewCandidates(pr.Author)
-		if len(assignees) == 0 {
-			m.StatusMsg = "No other squad members in active squad to assign. Please select Individual or Myself."
-			m.StatusMsgTimer = time.Now().Add(4 * time.Second)
-			return m, nil
-		}
+		// If squad has no other members, assignees is empty slice, creating an unassigned squad task.
 	case 1: // Individual
 		if m.PRTaskAssignee == "" {
 			candidates := m.getSquadIndividualCandidates()

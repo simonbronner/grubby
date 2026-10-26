@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -357,10 +358,12 @@ func (c *Client) CreateTaskWithLabels(ctx context.Context, owner, repo, title, b
 	}
 
 	payload := map[string]interface{}{
-		"title":     cleanTitle,
-		"body":      body,
-		"labels":    labels,
-		"assignees": assignees,
+		"title":  cleanTitle,
+		"body":   body,
+		"labels": labels,
+	}
+	if len(assignees) > 0 {
+		payload["assignees"] = assignees
 	}
 
 	jsonBytes, err := json.Marshal(payload)
@@ -385,7 +388,8 @@ func (c *Client) CreateTaskWithLabels(ctx context.Context, owner, repo, title, b
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to create task on %s/%s: status %d", cleanOwner, cleanRepo, resp.StatusCode)
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("failed to create task on %s/%s: status %d: %s", cleanOwner, cleanRepo, resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 
 	var raw rawGithubIssue
