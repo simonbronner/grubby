@@ -107,11 +107,11 @@ func (m Model) isTierCollapsed(tier storage.RepoTier) bool {
 		return false
 	}
 	if m.CollapsedTiers == nil {
-		return tier == storage.TierDead
+		return tier == storage.TierDead || tier == storage.TierHidden
 	}
 	collapsed, ok := m.CollapsedTiers[tier]
 	if !ok {
-		return tier == storage.TierDead
+		return tier == storage.TierDead || tier == storage.TierHidden
 	}
 	return collapsed
 }
@@ -127,6 +127,7 @@ func (m Model) getRepoTableItems() []RepoTableItem {
 		storage.TierWarm,
 		storage.TierCold,
 		storage.TierDead,
+		storage.TierHidden,
 	}
 
 	tierRepos := make(map[storage.RepoTier][]github.Repository)
@@ -379,7 +380,33 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	repo := *currentItem.Repo
 
 	switch msg.String() {
-	case "h", "[":
+	case "h":
+		// Hide or unhide repository
+		isCurrentlyHidden := m.isRepoHidden(repo.Name)
+		newHidden := !isCurrentlyHidden
+		if m.HiddenRepos == nil {
+			m.HiddenRepos = make(map[string]bool)
+		}
+		if newHidden {
+			m.HiddenRepos[strings.ToLower(repo.Name)] = true
+		} else {
+			delete(m.HiddenRepos, strings.ToLower(repo.Name))
+		}
+		if m.DB != nil {
+			_ = m.DB.SetRepoHidden(repo.Name, newHidden)
+		}
+		if m.Config != nil {
+			_ = m.Config.SetRepoHidden(repo.Name, newHidden)
+		}
+		m = m.focusRepoCursor(repo.Name)
+		actionDesc := "Hidden"
+		if !newHidden {
+			actionDesc = "Unhid"
+		}
+		return m, func() tea.Msg {
+			return StatusToastMsg(fmt.Sprintf("%s repository '%s'", actionDesc, repo.Name))
+		}
+	case "[":
 		// Collapse parent tier and land cursor on header
 		if m.CollapsedTiers == nil {
 			m.CollapsedTiers = make(map[storage.RepoTier]bool)
@@ -608,8 +635,11 @@ func (m Model) renderReposView() string {
 		filterBadges = append(filterBadges, lipgloss.NewStyle().Foreground(WarningColor).Bold(true).Render("Sort: 🛡️ Most Vulns ↓"))
 	}
 
-	hotCount, warmCount, coldCount, deadCount := m.getRepoTierCounts()
+	hotCount, warmCount, coldCount, deadCount, hiddenCount := m.getRepoTierCounts()
 	tierSummary := fmt.Sprintf("🔥 %d Hot  🌞 %d Warm  🧊 %d Cold  💀 %d Dead", hotCount, warmCount, coldCount, deadCount)
+	if hiddenCount > 0 {
+		tierSummary += fmt.Sprintf("  🙈 %d Hidden", hiddenCount)
+	}
 
 	spinnerSuffix := ""
 	if m.Loading {
@@ -681,6 +711,8 @@ func (m Model) renderReposView() string {
 				tierColor = lipgloss.Color("#79C0FF")
 			case storage.TierDead:
 				tierColor = lipgloss.Color("#6E7681")
+			case storage.TierHidden:
+				tierColor = lipgloss.Color("#555566")
 			default:
 				tierColor = lipgloss.Color("#E5C07B")
 			}
@@ -704,7 +736,7 @@ func (m Model) renderReposView() string {
 		// Repo row
 		r := *item.Repo
 		st := m.GitStatuses[r.Name]
-		isDead := item.Tier == storage.TierDead
+		isDead := item.Tier == storage.TierDead || item.Tier == storage.TierHidden
 
 		// 1. Calculate open PR count for this repository
 		prCount := 0

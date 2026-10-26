@@ -41,6 +41,7 @@ type Config struct {
 	RepoInteractions   map[string]time.Time `yaml:"repo_interactions,omitempty"`
 	Proxy              string               `yaml:"proxy,omitempty"`
 	InsecureSkipVerify bool           `yaml:"insecure_skip_verify,omitempty"`
+	HiddenRepos        []string       `yaml:"hidden_repos,omitempty"`
 
 	filePath string     `yaml:"-"`
 	mu       sync.Mutex `yaml:"-"`
@@ -452,3 +453,53 @@ func (c *Config) GetRepoLastInteracted(repoName string) time.Time {
 	}
 	return c.RepoInteractions[strings.ToLower(strings.TrimSpace(repoName))]
 }
+
+// Hidden Repositories Helpers
+
+// IsRepoHidden returns true if repoName is marked hidden in the config.
+func (c *Config) IsRepoHidden(repoName string) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	clean := strings.ToLower(strings.TrimSpace(repoName))
+	for _, r := range c.HiddenRepos {
+		if strings.ToLower(strings.TrimSpace(r)) == clean {
+			return true
+		}
+	}
+	return false
+}
+
+// SetRepoHidden marks or unmarks a repository as hidden and persists the config.
+func (c *Config) SetRepoHidden(repoName string, hidden bool) error {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	clean := strings.ToLower(strings.TrimSpace(repoName))
+	var updated []string
+	for _, r := range c.HiddenRepos {
+		if strings.ToLower(strings.TrimSpace(r)) != clean {
+			updated = append(updated, r)
+		}
+	}
+	if hidden {
+		updated = append(updated, repoName)
+	}
+	c.HiddenRepos = updated
+	c.mu.Unlock()
+	return c.Save()
+}
+
+// ToggleRepoHidden toggles the hidden state of a repository and persists the config.
+func (c *Config) ToggleRepoHidden(repoName string) (bool, error) {
+	if c == nil {
+		return false, nil
+	}
+	nowHidden := !c.IsRepoHidden(repoName)
+	err := c.SetRepoHidden(repoName, nowHidden)
+	return nowHidden, err
+}
+

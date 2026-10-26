@@ -661,12 +661,12 @@ func TestCollapsibleTierTree_TogglingAndAutoExpansion(t *testing.T) {
 		t.Errorf("expected item 5 to be dead-repo, got: %+v", itemsAfterExpand[5])
 	}
 
-	// 3. Cursor on dead-repo (index 5), press 'h' -> collapses Dead tier and lands cursor back on Dead header
+	// 3. Cursor on dead-repo (index 5), press '[' -> collapses Dead tier and lands cursor back on Dead header
 	m.RepoCursor = 5
-	updated, _ = m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	updated, _ = m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}})
 	m = updated.(Model)
 	if !m.isTierCollapsed(storage.TierDead) {
-		t.Fatalf("expected Dead tier to be collapsed after pressing 'h' on child repo")
+		t.Fatalf("expected Dead tier to be collapsed after pressing '[' on child repo")
 	}
 	if m.RepoCursor != 4 {
 		t.Errorf("expected cursor to jump to Dead header at index 4, got %d", m.RepoCursor)
@@ -832,5 +832,119 @@ func TestHotkeyLOpensLabelsModal(t *testing.T) {
 		t.Errorf("expected ModalManageGroups when pressing 'l', got %v", m.ActiveModal)
 	}
 }
+
+func TestHideAndUnhideRepository(t *testing.T) {
+	now := time.Now()
+	repos := []github.Repository{
+		{ID: 101, Name: "auth-svc", PushedAt: now.Add(-1 * time.Hour)},
+		{ID: 102, Name: "core-tasks", PushedAt: now.Add(-10 * time.Minute)},
+		{ID: 103, Name: "dead-repo", PushedAt: now.Add(-500 * 24 * time.Hour)},
+	}
+	tiers := map[string]storage.RepoTier{
+		"auth-svc":   storage.TierHot,
+		"core-tasks": storage.TierHot,
+		"dead-repo":  storage.TierDead,
+	}
+
+	m := Model{
+		Repos:           repos,
+		RepoTiers:       tiers,
+		GitStatuses:     make(map[string]git.RepoGitStatus),
+		Width:           140,
+		Height:          30,
+		SplashDismissed: true,
+		CollapsedTiers: map[storage.RepoTier]bool{
+			storage.TierDead:   true,
+			storage.TierHidden: true,
+		},
+		HiddenRepos: make(map[string]bool),
+	}
+
+	// 1. Initially core-tasks is in Hot tier
+	if m.getRepoTier("core-tasks") != storage.TierHot {
+		t.Fatalf("expected core-tasks to be TierHot initially, got %v", m.getRepoTier("core-tasks"))
+	}
+
+	// Select core-tasks in items
+	items := m.getRepoTableItems()
+	for idx, it := range items {
+		if it.Kind == ItemRepo && it.Repo != nil && it.Repo.Name == "core-tasks" {
+			m.RepoCursor = idx
+			break
+		}
+	}
+
+	// 2. Press 'h' on core-tasks -> hides it!
+	updated, _ := m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	m = updated.(Model)
+
+	if !m.isRepoHidden("core-tasks") {
+		t.Fatalf("expected core-tasks to be hidden after pressing 'h'")
+	}
+	if tier := m.getRepoTier("core-tasks"); tier != storage.TierHidden {
+		t.Fatalf("expected core-tasks tier to become TierHidden, got %v", tier)
+	}
+
+	// 3. Verify Hidden section is underneath Dead tier and collapsed by default
+	newItems := m.getRepoTableItems()
+	foundDeadHeader := false
+	foundHiddenHeader := false
+	for _, it := range newItems {
+		if it.Kind == ItemTierHeader {
+			if it.Tier == storage.TierDead {
+				foundDeadHeader = true
+			}
+			if it.Tier == storage.TierHidden {
+				if !foundDeadHeader {
+					t.Errorf("expected Hidden tier header to appear AFTER Dead tier header")
+				}
+				foundHiddenHeader = true
+				if it.Expanded {
+					t.Errorf("expected Hidden tier to be collapsed by default")
+				}
+			}
+		}
+		if it.Kind == ItemRepo && it.Repo.Name == "core-tasks" {
+			t.Errorf("expected hidden repo core-tasks to be hidden when Hidden tier is collapsed")
+		}
+	}
+	if !foundHiddenHeader {
+		t.Fatalf("expected Hidden tier header in table items")
+	}
+
+	// 4. Verify View shows Hidden tier header
+	view := m.renderReposView()
+	if !strings.Contains(view, "🙈 HIDDEN") {
+		t.Errorf("expected '🙈 HIDDEN' section header in view, got:\n%s", view)
+	}
+	if !strings.Contains(view, "1 Hidden") {
+		t.Errorf("expected '1 Hidden' in tier summary bar, got:\n%s", view)
+	}
+
+	// 5. Expand Hidden tier -> core-tasks is visible with dimmed style
+	m.CollapsedTiers[storage.TierHidden] = false
+	viewExpanded := m.renderReposView()
+	if !strings.Contains(viewExpanded, "core-tasks") {
+		t.Errorf("expected core-tasks to be visible after expanding Hidden tier, got:\n%s", viewExpanded)
+	}
+
+	// 6. Press 'h' on core-tasks again -> unhides it!
+	for idx, it := range m.getRepoTableItems() {
+		if it.Kind == ItemRepo && it.Repo != nil && it.Repo.Name == "core-tasks" {
+			m.RepoCursor = idx
+			break
+		}
+	}
+	updated, _ = m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	m = updated.(Model)
+
+	if m.isRepoHidden("core-tasks") {
+		t.Fatalf("expected core-tasks to be unhidden after pressing 'h' again")
+	}
+	if tier := m.getRepoTier("core-tasks"); tier != storage.TierHot {
+		t.Fatalf("expected core-tasks tier to restore to TierHot, got %v", tier)
+	}
+}
+
 
 

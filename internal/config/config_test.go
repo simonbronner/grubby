@@ -113,4 +113,27 @@ func TestConfigLoadAndSave(t *testing.T) {
 	if cfg.GetActiveSquad() != nil {
 		t.Errorf("expected nil active squad after deleting only squad, got %+v", cfg.GetActiveSquad())
 	}
+
+	// Test Hidden Repos
+	if cfg.IsRepoHidden("core-tasks") {
+		t.Errorf("expected core-tasks not hidden initially")
+	}
+	nowHidden, err := cfg.ToggleRepoHidden("core-tasks")
+	if err != nil || !nowHidden {
+		t.Fatalf("expected ToggleRepoHidden to return true, got %v, err: %v", nowHidden, err)
+	}
+	if !cfg.IsRepoHidden("core-tasks") {
+		t.Errorf("expected core-tasks to be hidden")
+	}
+	// Case insensitivity
+	if !cfg.IsRepoHidden("CORE-TASKS") {
+		t.Errorf("expected CORE-TASKS to be hidden case-insensitively")
+	}
+	nowHidden2, err := cfg.ToggleRepoHidden("core-tasks")
+	if err != nil || nowHidden2 {
+		t.Fatalf("expected ToggleRepoHidden to unhide, got %v, err: %v", nowHidden2, err)
+	}
+	if cfg.IsRepoHidden("core-tasks") {
+		t.Errorf("expected core-tasks to be unhidden")
+	}
 }

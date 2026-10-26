@@ -516,3 +516,45 @@ func TestLabelColorsAndGarbageCollection(t *testing.T) {
 	}
 }
 
+func TestRepoHidden_SQLite(t *testing.T) {
+	db := setupTestDB(t)
+
+	repos := []github.Repository{
+		{Name: "core-tasks", FullName: "org/core-tasks"},
+		{Name: "auth-svc", FullName: "org/auth-svc"},
+	}
+	if err := db.SaveRepositories(repos, "org"); err != nil {
+		t.Fatalf("SaveRepositories failed: %v", err)
+	}
+
+	// Initially neither is hidden
+	if db.IsRepoHidden("core-tasks") || db.IsRepoHidden("auth-svc") {
+		t.Errorf("expected neither to be hidden initially")
+	}
+
+	// Set core-tasks hidden
+	if err := db.SetRepoHidden("core-tasks", true); err != nil {
+		t.Fatalf("SetRepoHidden failed: %v", err)
+	}
+	if !db.IsRepoHidden("core-tasks") {
+		t.Errorf("expected core-tasks to be hidden")
+	}
+	if db.IsRepoHidden("auth-svc") {
+		t.Errorf("expected auth-svc to remain not hidden")
+	}
+
+	hiddenMap := db.GetAllHiddenRepos()
+	if !hiddenMap["core-tasks"] || hiddenMap["auth-svc"] {
+		t.Errorf("unexpected hiddenMap: %+v", hiddenMap)
+	}
+
+	// Unhide core-tasks
+	if err := db.SetRepoHidden("core-tasks", false); err != nil {
+		t.Fatalf("SetRepoHidden(false) failed: %v", err)
+	}
+	if db.IsRepoHidden("core-tasks") {
+		t.Errorf("expected core-tasks to be unhidden")
+	}
+}
+
+

@@ -10,10 +10,11 @@ import (
 type RepoTier string
 
 const (
-	TierHot  RepoTier = "hot"
-	TierWarm RepoTier = "warm"
-	TierCold RepoTier = "cold"
-	TierDead RepoTier = "dead"
+	TierHot    RepoTier = "hot"
+	TierWarm   RepoTier = "warm"
+	TierCold   RepoTier = "cold"
+	TierDead   RepoTier = "dead"
+	TierHidden RepoTier = "hidden"
 
 	// Backward compatibility aliases
 	TierActive  RepoTier = "warm"
@@ -47,12 +48,14 @@ func TierIcon(tier RepoTier) string {
 		return "🧊"
 	case "dead":
 		return "💀"
+	case "hidden":
+		return "🙈"
 	default:
 		return "🌞"
 	}
 }
 
-// TierName returns the uppercase name of a tier (HOT, WARM, COLD, DEAD).
+// TierName returns the uppercase name of a tier (HOT, WARM, COLD, DEAD, HIDDEN).
 func TierName(tier RepoTier) string {
 	switch strings.ToLower(string(tier)) {
 	case "hot":
@@ -63,6 +66,8 @@ func TierName(tier RepoTier) string {
 		return "COLD"
 	case "dead":
 		return "DEAD"
+	case "hidden":
+		return "HIDDEN"
 	default:
 		return "WARM"
 	}
@@ -79,12 +84,14 @@ func TierBadgeText(tier RepoTier) string {
 		return "🧊 COLD"
 	case "dead":
 		return "💀 DEAD"
+	case "hidden":
+		return "🙈 HIDDEN"
 	default:
 		return "🌞 WARM"
 	}
 }
 
-// TierPriority returns sort priority (Hot = 0, Warm = 1, Cold = 2, Dead = 3).
+// TierPriority returns sort priority (Hot = 0, Warm = 1, Cold = 2, Dead = 3, Hidden = 4).
 func TierPriority(tier RepoTier) int {
 	switch strings.ToLower(string(tier)) {
 	case "hot":
@@ -95,6 +102,8 @@ func TierPriority(tier RepoTier) int {
 		return 2
 	case "dead":
 		return 3
+	case "hidden":
+		return 4
 	default:
 		return 1
 	}

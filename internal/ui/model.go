@@ -236,6 +236,7 @@ type Model struct {
 	RepoLabels       map[int64][]string
 	RepoLabelsByName map[string][]string
 	RepoLabelColors  map[string]string
+	HiddenRepos      map[string]bool
 
 	// Squad Management
 	ManagedSquadName     string
@@ -444,13 +445,25 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 		InlineEditTitleInput:  ieti,
 		TaskNotesInput:        tni,
 		SplashDismissed:       false,
-		CollapsedTiers:        map[storage.RepoTier]bool{storage.TierDead: true},
+		CollapsedTiers:        map[storage.RepoTier]bool{storage.TierDead: true, storage.TierHidden: true},
 		RepoLabels:            make(map[int64][]string),
 		RepoLabelsByName:      make(map[string][]string),
 		RepoLabelColors:       make(map[string]string),
+		HiddenRepos:           make(map[string]bool),
+	}
+
+	if cfg != nil {
+		for _, r := range cfg.HiddenRepos {
+			m.HiddenRepos[strings.ToLower(strings.TrimSpace(r))] = true
+		}
 	}
 
 	if db != nil {
+		for k, v := range db.GetAllHiddenRepos() {
+			if v {
+				m.HiddenRepos[k] = true
+			}
+		}
 		if labels, err := db.GetRepoLabelsForSquad(cfg.ActiveSquad); err == nil && len(labels) > 0 {
 			m.RepoLabels = labels
 		}
@@ -2202,7 +2215,24 @@ func (m Model) recordRepoInteraction(repoName string) Model {
 	return m
 }
 
+func (m Model) isRepoHidden(repoName string) bool {
+	clean := strings.ToLower(strings.TrimSpace(repoName))
+	if m.HiddenRepos != nil && m.HiddenRepos[clean] {
+		return true
+	}
+	if m.DB != nil && m.DB.IsRepoHidden(repoName) {
+		return true
+	}
+	if m.Config != nil && m.Config.IsRepoHidden(repoName) {
+		return true
+	}
+	return false
+}
+
 func (m Model) getRepoTier(repoName string) storage.RepoTier {
+	if m.isRepoHidden(repoName) {
+		return storage.TierHidden
+	}
 	if m.RepoTiers != nil {
 		if t, ok := m.RepoTiers[strings.ToLower(repoName)]; ok && t != "" {
 			return t
@@ -2214,7 +2244,7 @@ func (m Model) getRepoTier(repoName string) storage.RepoTier {
 	return storage.TierWarm
 }
 
-func (m Model) getRepoTierCounts() (hot, warm, cold, dead int) {
+func (m Model) getRepoTierCounts() (hot, warm, cold, dead, hidden int) {
 	for _, r := range m.Repos {
 		switch m.getRepoTier(r.Name) {
 		case storage.TierHot:
@@ -2225,11 +2255,13 @@ func (m Model) getRepoTierCounts() (hot, warm, cold, dead int) {
 			cold++
 		case storage.TierDead:
 			dead++
+		case storage.TierHidden:
+			hidden++
 		default:
 			warm++
 		}
 	}
-	return hot, warm, cold, dead
+	return hot, warm, cold, dead, hidden
 }
 
 func (m Model) closeTaskLocally(target github.Task) Model {

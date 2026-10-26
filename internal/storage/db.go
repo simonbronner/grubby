@@ -103,6 +103,7 @@ func (d *DB) migrate() error {
 		ssh_url TEXT NOT NULL DEFAULT '',
 		last_interacted_at DATETIME,
 		tier TEXT NOT NULL DEFAULT 'warm',
+		is_hidden INTEGER NOT NULL DEFAULT 0,
 		last_synced_at DATETIME
 	);
 
@@ -202,8 +203,12 @@ func (d *DB) migrate() error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_label_meta_squad ON label_meta (squad);
 	`
-	_, err := d.db.Exec(schema)
-	return err
+	if _, err := d.db.Exec(schema); err != nil {
+		return err
+	}
+	// Migrate existing database if is_hidden column is missing
+	_, _ = d.db.Exec(`ALTER TABLE repositories ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0;`)
+	return nil
 }
 
 // --- Repositories ---
@@ -360,6 +365,46 @@ func (d *DB) SetRepoTier(name string, tier RepoTier) error {
 
 	_, err := d.db.Exec(`UPDATE repositories SET tier = ? WHERE name = ? OR LOWER(name) = LOWER(?)`, string(tier), name, name)
 	return err
+}
+
+func (d *DB) SetRepoHidden(name string, hidden bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	val := 0
+	if hidden {
+		val = 1
+	}
+	_, err := d.db.Exec(`UPDATE repositories SET is_hidden = ? WHERE name = ? OR LOWER(name) = LOWER(?)`, val, name, name)
+	return err
+}
+
+func (d *DB) IsRepoHidden(name string) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	var hidden int
+	err := d.db.QueryRow(`SELECT is_hidden FROM repositories WHERE name = ? OR LOWER(name) = LOWER(?)`, name, name).Scan(&hidden)
+	if err != nil {
+		return false
+	}
+	return hidden == 1
+}
+
+func (d *DB) GetAllHiddenRepos() map[string]bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	rows, err := d.db.Query(`SELECT name FROM repositories WHERE is_hidden = 1`)
+	if err != nil {
+		return make(map[string]bool)
+	}
+	defer rows.Close()
+	result := make(map[string]bool)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err == nil {
+			result[strings.ToLower(name)] = true
+		}
+	}
+	return result
 }
 
 func (d *DB) GetRepoTier(name string) RepoTier {
