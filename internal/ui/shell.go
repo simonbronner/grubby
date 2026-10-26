@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 
 	"grubby/internal/config"
 )
@@ -48,25 +49,61 @@ func TmuxHasAttachedClients() bool {
 	return len(strings.TrimSpace(string(out))) > 0
 }
 
-// GetTmuxSessionsMap returns a map of sessionName -> windowCount for all active tmux sessions.
-func GetTmuxSessionsMap() map[string]int {
-	sessions := make(map[string]int)
+type TmuxSessionInfo struct {
+	Windows      int
+	LastActivity time.Time
+}
+
+// GetTmuxSessions returns a map of sessionName -> TmuxSessionInfo with window counts and activity timestamps.
+func GetTmuxSessions() map[string]TmuxSessionInfo {
+	sessions := make(map[string]TmuxSessionInfo)
 	if !HasTmux() {
 		return sessions
 	}
-	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}:#{session_windows}").Output()
+	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}:#{session_windows}:#{session_activity}").Output()
 	if err != nil {
 		return sessions
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) == 2 {
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) >= 2 {
 			var count int
 			_, _ = fmt.Sscanf(parts[1], "%d", &count)
-			sessions[parts[0]] = count
+			var actTime time.Time
+			if len(parts) == 3 {
+				var unixSec int64
+				if _, err := fmt.Sscanf(parts[2], "%d", &unixSec); err == nil && unixSec > 0 {
+					actTime = time.Unix(unixSec, 0)
+				}
+			}
+			sessions[parts[0]] = TmuxSessionInfo{
+				Windows:      count,
+				LastActivity: actTime,
+			}
 		}
 	}
 	return sessions
+}
+
+// FindTmuxSession finds a session by repo name or sanitized tmux session name.
+func FindTmuxSession(repoName string, tmuxSessions map[string]TmuxSessionInfo) (TmuxSessionInfo, bool) {
+	sanitized := SanitizeTmuxSessionName(repoName)
+	for name, info := range tmuxSessions {
+		if strings.EqualFold(name, sanitized) || strings.EqualFold(name, repoName) {
+			return info, true
+		}
+	}
+	return TmuxSessionInfo{}, false
+}
+
+// GetTmuxSessionsMap returns a map of sessionName -> windowCount for all active tmux sessions.
+func GetTmuxSessionsMap() map[string]int {
+	sess := GetTmuxSessions()
+	res := make(map[string]int, len(sess))
+	for name, info := range sess {
+		res[name] = info.Windows
+	}
+	return res
 }
 
 // activateOrOpenGrubbyITermWindow ensures a single dedicated iTerm2 window (tagged as "Grubby")

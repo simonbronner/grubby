@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -274,5 +275,110 @@ func TestRenderReposView_TmuxSessionColumn(t *testing.T) {
 	}
 	if strings.Contains(rendered, "BRANCH") {
 		t.Errorf("expected rendered repos view to drop 'BRANCH' column")
+	}
+}
+
+func TestGetDisplayRepos_SortByInteractedThenUpdated(t *testing.T) {
+	now := time.Now()
+
+	cfg := &config.Config{
+		Version: 1,
+		RepoInteractions: map[string]time.Time{
+			"repo-interacted-old": now.Add(-2 * time.Hour),
+			"repo-interacted-new": now.Add(-10 * time.Minute),
+		},
+	}
+
+	repos := []github.Repository{
+		{Name: "repo-never-touched-old", PushedAt: now.Add(-5 * 24 * time.Hour)},
+		{Name: "repo-never-touched-new", PushedAt: now.Add(-1 * time.Hour)},
+		{Name: "repo-interacted-old", PushedAt: now.Add(-10 * 24 * time.Hour)},
+		{Name: "repo-interacted-new", PushedAt: now.Add(-12 * 24 * time.Hour)},
+		{Name: "repo-tmux-session", PushedAt: now.Add(-20 * 24 * time.Hour)},
+	}
+
+	// repo-tmux-session has an active tmux session with latest activity 5 mins ago
+	tmuxSessions := map[string]TmuxSessionInfo{
+		"repo-tmux-session": {
+			Windows:      1,
+			LastActivity: now.Add(-5 * time.Minute),
+		},
+	}
+
+	m := Model{
+		Config:       cfg,
+		Repos:        repos,
+		TmuxSessions: tmuxSessions,
+		GitStatuses:  make(map[string]git.RepoGitStatus),
+	}
+
+	display := m.getDisplayRepos()
+	if len(display) != 5 {
+		t.Fatalf("expected 5 repos, got %d", len(display))
+	}
+
+	// Expected order:
+	// 1. repo-tmux-session (interacted via tmux 5m ago)
+	// 2. repo-interacted-new (interacted 10m ago)
+	// 3. repo-interacted-old (interacted 2h ago)
+	// 4. repo-never-touched-new (updated 1h ago)
+	// 5. repo-never-touched-old (updated 5d ago)
+	expected := []string{
+		"repo-tmux-session",
+		"repo-interacted-new",
+		"repo-interacted-old",
+		"repo-never-touched-new",
+		"repo-never-touched-old",
+	}
+
+	for i, exp := range expected {
+		if display[i].Name != exp {
+			t.Errorf("pos %d: expected %s, got %s", i, exp, display[i].Name)
+		}
+	}
+}
+
+func TestReposKeyHandling_RecordInteractionMovesToTop(t *testing.T) {
+	now := time.Now()
+
+	cfg := &config.Config{
+		Version: 1,
+		RepoInteractions: map[string]time.Time{
+			"repo-a": now.Add(-10 * time.Minute),
+		},
+	}
+
+	repos := []github.Repository{
+		{Name: "repo-a", PushedAt: now.Add(-2 * time.Hour)},
+		{Name: "repo-b", PushedAt: now.Add(-1 * time.Hour)},
+	}
+
+	m := Model{
+		Config:       cfg,
+		Repos:        repos,
+		TmuxSessions: make(map[string]TmuxSessionInfo),
+		GitStatuses: map[string]git.RepoGitStatus{
+			"repo-b": {RepoName: "repo-b", IsCloned: true, LocalPath: "/tmp/repo-b"},
+		},
+	}
+
+	// Initially repo-a is at index 0 because it was interacted with 10m ago
+	display := m.getDisplayRepos()
+	if display[0].Name != "repo-a" {
+		t.Fatalf("expected repo-a at pos 0 initially, got %s", display[0].Name)
+	}
+
+	// Cursor is at 1 (repo-b), user presses Enter to open web
+	m.RepoCursor = 1
+	updated, _ := m.handleReposKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	// repo-b was interacted with just now, so it should move to pos 0
+	newDisplay := m.getDisplayRepos()
+	if newDisplay[0].Name != "repo-b" {
+		t.Errorf("expected repo-b to move to pos 0 after interaction, got %s", newDisplay[0].Name)
+	}
+	if m.RepoCursor != 0 {
+		t.Errorf("expected cursor to be at 0 on repo-b, got %d", m.RepoCursor)
 	}
 }

@@ -155,6 +155,7 @@ type Model struct {
 	RepoGroupFilter         string
 	RepoSortVulnerabilities bool
 	RepoFilterInput         textinput.Model
+	TmuxSessions            map[string]TmuxSessionInfo
 
 	PRCursor      int
 	PRFilter      string
@@ -245,6 +246,7 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 		SearchPreview:         vp,
 		SelectedRepoGroups:    make(map[string]bool),
 		Spinner:               sp,
+		TmuxSessions:          GetTmuxSessions(),
 	}
 
 	return m
@@ -414,6 +416,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case AutoRefreshTickMsg:
+		m.TmuxSessions = GetTmuxSessions()
 		var cmds []tea.Cmd
 		cmds = append(cmds, autoRefreshTickCmd())
 
@@ -1182,4 +1185,35 @@ func (m Model) fetchSquadAvatarsCmd(logins []string) tea.Cmd {
 		return nil
 	}
 	return tea.Batch(cmds...)
+}
+
+func (m Model) recordRepoInteraction(repoName string) Model {
+	if m.Config != nil && repoName != "" {
+		_ = m.Config.RecordRepoInteraction(repoName)
+	}
+	return m
+}
+
+func (m Model) getRepoLastInteractedTime(repoName string, tmuxSessions map[string]TmuxSessionInfo) time.Time {
+	var t time.Time
+	if m.Config != nil {
+		t = m.Config.GetRepoLastInteracted(repoName)
+	}
+
+	if sess, ok := FindTmuxSession(repoName, tmuxSessions); ok && !sess.LastActivity.IsZero() {
+		if sess.LastActivity.After(t) {
+			t = sess.LastActivity
+		}
+	}
+
+	if st, ok := m.GitStatuses[repoName]; ok && st.IsCloned && st.IsDirty {
+		indexPath := filepath.Join(st.LocalPath, ".git", "index")
+		if info, err := os.Stat(indexPath); err == nil {
+			if info.ModTime().After(t) {
+				t = info.ModTime()
+			}
+		}
+	}
+
+	return t
 }

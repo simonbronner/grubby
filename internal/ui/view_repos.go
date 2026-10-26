@@ -67,6 +67,38 @@ func (m Model) getDisplayRepos() []github.Repository {
 			}
 			return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
 		})
+	} else {
+		tmuxSessions := m.TmuxSessions
+		if tmuxSessions == nil {
+			tmuxSessions = GetTmuxSessions()
+		}
+
+		sort.SliceStable(result, func(i, j int) bool {
+			actA := m.getRepoLastInteractedTime(result[i].Name, tmuxSessions)
+			actB := m.getRepoLastInteractedTime(result[j].Name, tmuxSessions)
+
+			hasActA := !actA.IsZero()
+			hasActB := !actB.IsZero()
+
+			// 1. Repositories opened / interacted with come first, sorted by last interaction descending
+			if hasActA && hasActB {
+				if !actA.Equal(actB) {
+					return actA.After(actB)
+				}
+			} else if hasActA != hasActB {
+				return hasActA
+			}
+
+			// 2. Then by last updated / pushed descending
+			updA := result[i].LastUpdated()
+			updB := result[j].LastUpdated()
+			if !updA.Equal(updB) {
+				return updA.After(updB)
+			}
+
+			// 3. Alphabetical tiebreaker
+			return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
+		})
 	}
 
 	return result
@@ -126,6 +158,8 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// 's' session capability: switch to repository tmux session in Grubby window
 		if len(repos) > 0 && m.RepoCursor < len(repos) {
 			repo := repos[m.RepoCursor]
+			m = m.recordRepoInteraction(repo.Name)
+			m.RepoCursor = 0
 			st := m.GitStatuses[repo.Name]
 			if st.IsCloned {
 				msg, err := GoToRepoSession(repo.Name, st.LocalPath)
@@ -140,6 +174,8 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// 'e' editor: open editor in a new window in the tmux session for that repo
 		if len(repos) > 0 && m.RepoCursor < len(repos) {
 			repo := repos[m.RepoCursor]
+			m = m.recordRepoInteraction(repo.Name)
+			m.RepoCursor = 0
 			st := m.GitStatuses[repo.Name]
 			if st.IsCloned {
 				msg, err := OpenRepoEditor(repo.Name, st.LocalPath)
@@ -154,6 +190,8 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// 't' open repo shell (creates new window if session exists, or creates session)
 		if len(repos) > 0 && m.RepoCursor < len(repos) {
 			repo := repos[m.RepoCursor]
+			m = m.recordRepoInteraction(repo.Name)
+			m.RepoCursor = 0
 			st := m.GitStatuses[repo.Name]
 			if st.IsCloned {
 				msg, err := OpenRepoShell(repo.Name, st.LocalPath)
@@ -168,6 +206,8 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// 'c' clone repo
 		if len(repos) > 0 && m.RepoCursor < len(repos) {
 			repo := repos[m.RepoCursor]
+			m = m.recordRepoInteraction(repo.Name)
+			m.RepoCursor = 0
 			st := m.GitStatuses[repo.Name]
 			if st.IsCloned {
 				return m, func() tea.Msg { return StatusToastMsg(repo.Name + " is already cloned!") }
@@ -187,6 +227,8 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Enter key opens repository root in dedicated browser
 		if len(repos) > 0 && m.RepoCursor < len(repos) {
 			repo := repos[m.RepoCursor]
+			m = m.recordRepoInteraction(repo.Name)
+			m.RepoCursor = 0
 			_ = OpenBrowser(repo.URL)
 			return m, func() tea.Msg { return StatusToastMsg("Opened " + repo.Name + " in dedicated browser") }
 		}
@@ -201,6 +243,8 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// 'S' opens repository Security (Dependabot) directly in dedicated browser
 		if len(repos) > 0 && m.RepoCursor < len(repos) {
 			repo := repos[m.RepoCursor]
+			m = m.recordRepoInteraction(repo.Name)
+			m.RepoCursor = 0
 			url := fmt.Sprintf("https://github.com/%s/security/dependabot", repo.FullName)
 			_ = OpenBrowser(url)
 			return m, func() tea.Msg { return StatusToastMsg("Opened Security tab for " + repo.Name) }
@@ -220,6 +264,8 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Fast-forward repo
 		if len(repos) > 0 && m.RepoCursor < len(repos) {
 			repo := repos[m.RepoCursor]
+			m = m.recordRepoInteraction(repo.Name)
+			m.RepoCursor = 0
 			st := m.GitStatuses[repo.Name]
 			if !st.IsCloned {
 				return m, func() tea.Msg { return StatusToastMsg("Repo is not cloned yet.") }
@@ -245,6 +291,8 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) startCloneWithAction(repo github.Repository, postAction RepoActionType) (tea.Model, tea.Cmd) {
+	m = m.recordRepoInteraction(repo.Name)
+	m.RepoCursor = 0
 	var targetDir string
 	if m.GitMgr != nil {
 		targetDir = m.GitMgr.GetRepoPath(repo.Name)
@@ -295,7 +343,10 @@ func (m Model) renderReposView() string {
 	}
 
 	cols := computeRepoColumns(m.Width)
-	tmuxSessions := GetTmuxSessionsMap()
+	tmuxSessions := m.TmuxSessions
+	if tmuxSessions == nil {
+		tmuxSessions = GetTmuxSessions()
+	}
 
 	headerRow := lipgloss.JoinHorizontal(lipgloss.Top,
 		cols.Cursor.Render(""),
@@ -435,19 +486,18 @@ func (m Model) renderReposView() string {
 			styledBadge = gitBadge
 		}
 
-		sessionName := SanitizeTmuxSessionName(r.Name)
 		var sessionColText string
-		if winCount, ok := tmuxSessions[sessionName]; ok && winCount > 0 {
+		if sess, ok := FindTmuxSession(r.Name, tmuxSessions); ok && sess.Windows > 0 {
 			plural := "win"
-			if winCount > 1 {
+			if sess.Windows > 1 {
 				plural = "wins"
 			}
-			sessionColText = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render(fmt.Sprintf("● %d %s", winCount, plural))
+			sessionColText = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render(fmt.Sprintf("● %d %s", sess.Windows, plural))
 		} else {
 			sessionColText = lipgloss.NewStyle().Foreground(lipgloss.Color("#505565")).Render("○ none")
 		}
 
-		lastPushed := formatTimeAgo(r.PushedAt)
+		lastPushed := formatTimeAgo(r.LastUpdated())
 
 		localPath := "-"
 		if st.IsCloned {

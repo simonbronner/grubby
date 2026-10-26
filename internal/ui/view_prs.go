@@ -95,6 +95,7 @@ func (m Model) handlePRsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Checkout PR branch locally
 		if len(prs) > 0 && m.PRCursor < len(prs) {
 			pr := prs[m.PRCursor]
+			m = m.recordRepoInteraction(pr.Repo)
 			st := m.GitStatuses[pr.Repo]
 			if !st.IsCloned {
 				return m, func() tea.Msg { return StatusToastMsg("Repo " + pr.Repo + " is not cloned yet!") }

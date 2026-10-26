@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -36,8 +37,9 @@ type Config struct {
 	ActiveSquad        string         `yaml:"active_squad"`
 	Squads             []SquadConfig  `yaml:"squads"`
 	Groups             []GroupConfig  `yaml:"groups"`
-	Search             SearchConfig   `yaml:"search"`
-	Proxy              string         `yaml:"proxy,omitempty"`
+	Search             SearchConfig         `yaml:"search"`
+	RepoInteractions   map[string]time.Time `yaml:"repo_interactions,omitempty"`
+	Proxy              string               `yaml:"proxy,omitempty"`
 	InsecureSkipVerify bool           `yaml:"insecure_skip_verify,omitempty"`
 
 	filePath string     `yaml:"-"`
@@ -426,4 +428,27 @@ func (c *Config) SetSquadMembers(squadName string, members []string) error {
 	}
 	c.mu.Unlock()
 	return fmt.Errorf("squad '%s' not found", squadName)
+}
+
+// Repo Interaction Helpers
+
+// RecordRepoInteraction stores the current timestamp for a repository action and persists the config.
+func (c *Config) RecordRepoInteraction(repoName string) error {
+	c.mu.Lock()
+	if c.RepoInteractions == nil {
+		c.RepoInteractions = make(map[string]time.Time)
+	}
+	c.RepoInteractions[strings.ToLower(strings.TrimSpace(repoName))] = time.Now()
+	c.mu.Unlock()
+	return c.Save()
+}
+
+// GetRepoLastInteracted returns the recorded last interaction time for a repository.
+func (c *Config) GetRepoLastInteracted(repoName string) time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.RepoInteractions == nil {
+		return time.Time{}
+	}
+	return c.RepoInteractions[strings.ToLower(strings.TrimSpace(repoName))]
 }

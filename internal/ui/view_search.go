@@ -79,6 +79,9 @@ func (m Model) handleSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Open in nvim via iTerm2
 		if len(m.SearchFlatNodes) > 0 && m.SearchCursor < len(m.SearchFlatNodes) {
 			node := m.SearchFlatNodes[m.SearchCursor]
+			if node.RepoName != "" {
+				m = m.recordRepoInteraction(node.RepoName)
+			}
 			lineNum := 1
 			if node.Match != nil {
 				lineNum = node.Match.LineNumber

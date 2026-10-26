@@ -28,10 +28,22 @@ type Repository struct {
 	FullName      string    `json:"full_name"`
 	Description   string    `json:"description"`
 	PushedAt      time.Time `json:"pushed_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 	DefaultBranch string    `json:"default_branch"`
 	IsPrivate     bool      `json:"is_private"`
 	URL           string    `json:"url"`
 	SSHURL        string    `json:"ssh_url"`
+}
+
+// LastUpdated returns the latest timestamp between PushedAt and UpdatedAt.
+func (r Repository) LastUpdated() time.Time {
+	if r.PushedAt.After(r.UpdatedAt) {
+		return r.PushedAt
+	}
+	if !r.UpdatedAt.IsZero() {
+		return r.UpdatedAt
+	}
+	return r.PushedAt
 }
 
 type PullRequest struct {

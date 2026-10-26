@@ -347,6 +347,7 @@ query($login: String!) {
         name
         description
         pushedAt
+        updatedAt
         isPrivate
         url
         sshUrl
@@ -390,6 +391,7 @@ query($login: String!) {
 		Name             string    `json:"name"`
 		Description      *string   `json:"description"`
 		PushedAt         time.Time `json:"pushedAt"`
+		UpdatedAt        time.Time `json:"updatedAt"`
 		IsPrivate        bool      `json:"isPrivate"`
 		URL              string    `json:"url"`
 		SSHURL           string    `json:"sshUrl"`
@@ -443,6 +445,7 @@ query($login: String!) {
         name
         description
         pushedAt
+        updatedAt
         isPrivate
         url
         sshUrl
@@ -504,6 +507,7 @@ query($login: String!) {
 			FullName:      owner + "/" + node.Name,
 			Description:   desc,
 			PushedAt:      node.PushedAt,
+			UpdatedAt:     node.UpdatedAt,
 			DefaultBranch: defBranch,
 			IsPrivate:     node.IsPrivate,
 			URL:           node.URL,
