@@ -102,7 +102,7 @@ func (d *DB) migrate() error {
 		url TEXT NOT NULL DEFAULT '',
 		ssh_url TEXT NOT NULL DEFAULT '',
 		last_interacted_at DATETIME,
-		tier TEXT NOT NULL DEFAULT 'active',
+		tier TEXT NOT NULL DEFAULT 'warm',
 		last_synced_at DATETIME
 	);
 
@@ -291,7 +291,7 @@ func (d *DB) TouchRepo(name string) error {
 	now := time.Now().Format(time.RFC3339)
 	_, err := d.db.Exec(`
 		UPDATE repositories
-		SET last_interacted_at = ?, tier = 'hot'
+		SET last_interacted_at = ?
 		WHERE name = ? OR LOWER(name) = LOWER(?)
 	`, now, name, name)
 	return err
@@ -349,9 +349,20 @@ func (d *DB) GetRepoTier(name string) RepoTier {
 	var tierStr string
 	err := d.db.QueryRow(`SELECT tier FROM repositories WHERE name = ? OR LOWER(name) = LOWER(?)`, name, name).Scan(&tierStr)
 	if err != nil || tierStr == "" {
-		return TierActive
+		return TierWarm
 	}
-	return RepoTier(tierStr)
+	switch strings.ToLower(tierStr) {
+	case "hot":
+		return TierHot
+	case "warm", "active":
+		return TierWarm
+	case "cold", "dormant":
+		return TierCold
+	case "dead":
+		return TierDead
+	default:
+		return RepoTier(tierStr)
+	}
 }
 
 func (d *DB) GetAllRepoTiers() map[string]RepoTier {
@@ -368,20 +379,31 @@ func (d *DB) GetAllRepoTiers() map[string]RepoTier {
 	for rows.Next() {
 		var name, tier string
 		if err := rows.Scan(&name, &tier); err == nil && tier != "" {
-			res[strings.ToLower(name)] = RepoTier(tier)
+			switch strings.ToLower(tier) {
+			case "hot":
+				res[strings.ToLower(name)] = TierHot
+			case "warm", "active":
+				res[strings.ToLower(name)] = TierWarm
+			case "cold", "dormant":
+				res[strings.ToLower(name)] = TierCold
+			case "dead":
+				res[strings.ToLower(name)] = TierDead
+			default:
+				res[strings.ToLower(name)] = RepoTier(tier)
+			}
 		}
 	}
 	return res
 }
 
-func (d *DB) GetHotAndActiveRepos() ([]github.Repository, error) {
+func (d *DB) GetHotAndWarmRepos() ([]github.Repository, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
 	rows, err := d.db.Query(`
 		SELECT name, full_name, description, pushed_at, updated_at, default_branch, is_private, url, ssh_url
 		FROM repositories
-		WHERE tier IN ('hot', 'active')
+		WHERE tier IN ('hot', 'warm', 'active')
 		ORDER BY pushed_at DESC
 	`)
 	if err != nil {
@@ -410,6 +432,10 @@ func (d *DB) GetHotAndActiveRepos() ([]github.Repository, error) {
 	}
 
 	return repos, nil
+}
+
+func (d *DB) GetHotAndActiveRepos() ([]github.Repository, error) {
+	return d.GetHotAndWarmRepos()
 }
 
 func (d *DB) GetDormantRepos() ([]github.Repository, error) {
@@ -450,13 +476,13 @@ func (d *DB) GetDormantRepos() ([]github.Repository, error) {
 	return repos, nil
 }
 
-func (d *DB) GetTierCounts() (hot, active, dormant int, err error) {
+func (d *DB) GetTierCounts() (hot, warm, cold, dead int, err error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
 	rows, err := d.db.Query(`SELECT tier, COUNT(*) FROM repositories GROUP BY tier`)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, 0, err
 	}
 	defer rows.Close()
 
@@ -467,14 +493,16 @@ func (d *DB) GetTierCounts() (hot, active, dormant int, err error) {
 			switch strings.ToLower(tier) {
 			case "hot":
 				hot = count
-			case "active":
-				active = count
-			case "dormant":
-				dormant = count
+			case "warm", "active":
+				warm += count
+			case "cold", "dormant":
+				cold += count
+			case "dead":
+				dead = count
 			}
 		}
 	}
-	return hot, active, dormant, nil
+	return hot, warm, cold, dead, nil
 }
 
 // UpdateRepoTiers computes and updates the tier for each repository based on activity
@@ -560,7 +588,7 @@ func (d *DB) UpdateRepoTiers(prs []github.PullRequest, events ...[]github.SquadE
 
 	for _, item := range list {
 		norm := strings.ToLower(github.NormalizeRepoName(item.repo.Name))
-		tier := CalculateRepoTier(item.repo, item.lastInteracted, repoPRs[norm], repoEvents[norm])
+		tier := CalculateRepoTier(item.repo, repoPRs[norm], repoEvents[norm])
 		if _, err := stmt.Exec(string(tier), item.repo.Name); err != nil {
 			return err
 		}

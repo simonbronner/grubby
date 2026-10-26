@@ -102,12 +102,18 @@ var (
 			Foreground(lipgloss.Color("#FF5F56")).
 			Bold(true)
 
-	ActiveTierBadge = lipgloss.NewStyle().
+	WarmTierBadge = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#00D7D7")).
 			Bold(true)
 
-	DormantTierBadge = lipgloss.NewStyle().
+	ColdTierBadge = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#6A6E82"))
+
+	DeadTierBadge = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#44475A"))
+
+	ActiveTierBadge  = WarmTierBadge
+	DormantTierBadge = ColdTierBadge
 
 	// Status Dots for Tabs
 	StatusHealthyDot = lipgloss.NewStyle().

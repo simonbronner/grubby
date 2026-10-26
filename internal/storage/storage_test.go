@@ -45,14 +45,24 @@ func TestRepositoriesCRUDAndTiers(t *testing.T) {
 			URL:           "https://github.com/my-org/active-repo",
 		},
 		{
-			Name:          "dormant-repo",
-			FullName:      "my-org/dormant-repo",
+			Name:          "cold-repo",
+			FullName:      "my-org/cold-repo",
 			Description:   "Untouched for 6 months",
 			PushedAt:      now.Add(-180 * 24 * time.Hour),
 			UpdatedAt:     now.Add(-180 * 24 * time.Hour),
 			DefaultBranch: "main",
 			IsPrivate:     false,
-			URL:           "https://github.com/my-org/dormant-repo",
+			URL:           "https://github.com/my-org/cold-repo",
+		},
+		{
+			Name:          "dead-repo",
+			FullName:      "my-org/dead-repo",
+			Description:   "Untouched for 2 years",
+			PushedAt:      now.Add(-700 * 24 * time.Hour),
+			UpdatedAt:     now.Add(-700 * 24 * time.Hour),
+			DefaultBranch: "main",
+			IsPrivate:     false,
+			URL:           "https://github.com/my-org/dead-repo",
 		},
 	}
 
@@ -64,8 +74,8 @@ func TestRepositoriesCRUDAndTiers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRepositories failed: %v", err)
 	}
-	if len(loaded) != 3 {
-		t.Fatalf("expected 3 repositories, got %d", len(loaded))
+	if len(loaded) != 4 {
+		t.Fatalf("expected 4 repositories, got %d", len(loaded))
 	}
 
 	// Update tiers with PR on active-repo
@@ -90,26 +100,35 @@ func TestRepositoriesCRUDAndTiers(t *testing.T) {
 		t.Errorf("expected hot-repo to be TierHot, got %v", tier)
 	}
 
-	// dormant-repo pushed 180d ago, no PRs, should be TierDormant
-	if tier := db.GetRepoTier("dormant-repo"); tier != TierDormant {
-		t.Errorf("expected dormant-repo to be TierDormant, got %v", tier)
+	// cold-repo pushed 180d ago, no PRs, should be TierCold
+	if tier := db.GetRepoTier("cold-repo"); tier != TierCold {
+		t.Errorf("expected cold-repo to be TierCold, got %v", tier)
 	}
 
-	// Touch dormant repo -> should become TierHot immediately!
-	if err := db.TouchRepo("dormant-repo"); err != nil {
+	// dead-repo pushed 700d ago, no PRs, should be TierDead
+	if tier := db.GetRepoTier("dead-repo"); tier != TierDead {
+		t.Errorf("expected dead-repo to be TierDead, got %v", tier)
+	}
+
+	// Touch cold repo -> should NOT change its tier (still TierCold), but records last_interacted_at!
+	if err := db.TouchRepo("cold-repo"); err != nil {
 		t.Fatalf("TouchRepo failed: %v", err)
 	}
-	if tier := db.GetRepoTier("dormant-repo"); tier != TierHot {
-		t.Errorf("expected touched dormant-repo to become TierHot, got %v", tier)
+	if tier := db.GetRepoTier("cold-repo"); tier != TierCold {
+		t.Errorf("expected touched cold-repo to remain TierCold, got %v", tier)
+	}
+	interacted := db.GetRepoLastInteractedAt("cold-repo")
+	if interacted.IsZero() || time.Since(interacted) > 5*time.Second {
+		t.Errorf("expected valid recent last_interacted_at timestamp, got %v", interacted)
 	}
 
-	// Verify Tier Counts
-	hot, active, dormant, err := db.GetTierCounts()
+	// Verify Tier Counts: 2 Hot (hot-repo & active-repo with PR), 0 Warm, 1 Cold, 1 Dead
+	hot, warm, cold, dead, err := db.GetTierCounts()
 	if err != nil {
 		t.Fatalf("GetTierCounts failed: %v", err)
 	}
-	if hot != 3 { // all 3 are hot now
-		t.Errorf("expected 3 hot repos, got hot=%d active=%d dormant=%d", hot, active, dormant)
+	if hot != 2 || warm != 0 || cold != 1 || dead != 1 {
+		t.Errorf("expected hot=2 warm=0 cold=1 dead=1, got hot=%d warm=%d cold=%d dead=%d", hot, warm, cold, dead)
 	}
 }
 
@@ -264,29 +283,44 @@ func TestActivityBasedTiers(t *testing.T) {
 		Name:     "recent-push",
 		PushedAt: now.Add(-2 * 24 * time.Hour),
 	}
-	if tier := CalculateRepoTier(rHot, time.Time{}, nil, nil); tier != TierHot {
+	if tier := CalculateRepoTier(rHot, nil, nil); tier != TierHot {
 		t.Errorf("expected recent-push to be TierHot, got %v", tier)
 	}
 
-	// 2. Repo pushed 10 days ago (> 4d and <= 42d) -> Active
-	rActive := github.Repository{
+	// 2. Repo pushed 10 days ago (> 4d and <= 42d) -> Warm
+	rWarm := github.Repository{
 		Name:     "moderate-push",
 		PushedAt: now.Add(-10 * 24 * time.Hour),
 	}
-	if tier := CalculateRepoTier(rActive, time.Time{}, nil, nil); tier != TierActive {
-		t.Errorf("expected moderate-push to be TierActive, got %v", tier)
+	if tier := CalculateRepoTier(rWarm, nil, nil); tier != TierWarm {
+		t.Errorf("expected moderate-push to be TierWarm, got %v", tier)
 	}
 
-	// 3. Repo pushed 50 days ago (> 42d / 6w) -> Dormant
-	rDormant := github.Repository{
+	// 3. Repo pushed 50 days ago (> 42d / 6w and <= 12m) -> Cold
+	rCold := github.Repository{
 		Name:     "old-repo",
 		PushedAt: now.Add(-50 * 24 * time.Hour),
 	}
-	if tier := CalculateRepoTier(rDormant, time.Time{}, nil, nil); tier != TierDormant {
-		t.Errorf("expected old-repo to be TierDormant, got %v", tier)
+	if tier := CalculateRepoTier(rCold, nil, nil); tier != TierCold {
+		t.Errorf("expected old-repo to be TierCold, got %v", tier)
 	}
 
-	// 4. Dormant repo with Dependabot PR 1 day ago -> Must stay Dormant!
+	// 4. Repo pushed 400 days ago (> 12m) -> Dead
+	rDead := github.Repository{
+		Name:     "dead-repo",
+		PushedAt: now.Add(-400 * 24 * time.Hour),
+	}
+	if tier := CalculateRepoTier(rDead, nil, nil); tier != TierDead {
+		t.Errorf("expected dead-repo to be TierDead, got %v", tier)
+	}
+
+	// 5. Zero activity repo -> Dead
+	rZero := github.Repository{Name: "zero-repo"}
+	if tier := CalculateRepoTier(rZero, nil, nil); tier != TierDead {
+		t.Errorf("expected zero-repo to be TierDead, got %v", tier)
+	}
+
+	// 6. Cold repo with Dependabot PR 1 day ago -> Must stay Cold!
 	dependabotPR := []github.PullRequest{
 		{
 			Repo:      "old-repo",
@@ -294,28 +328,28 @@ func TestActivityBasedTiers(t *testing.T) {
 			UpdatedAt: now.Add(-1 * 24 * time.Hour),
 		},
 	}
-	if tier := CalculateRepoTier(rDormant, time.Time{}, dependabotPR, nil); tier != TierDormant {
-		t.Errorf("expected old-repo with dependabot PR to stay TierDormant, got %v", tier)
+	if tier := CalculateRepoTier(rCold, dependabotPR, nil); tier != TierCold {
+		t.Errorf("expected old-repo with dependabot PR to stay TierCold, got %v", tier)
 	}
 
-	// 5. Dormant repo with Dependabot commit and push 1 day ago -> Must stay Dormant!
-	rDormantWithBotPush := github.Repository{
-		Name:     "old-repo",
+	// 7. Dead repo with Dependabot commit and push 1 day ago -> Must stay Dead!
+	rDeadWithBotPush := github.Repository{
+		Name:     "dead-repo",
 		PushedAt: now.Add(-1 * 24 * time.Hour),
 	}
 	dependabotEvent := []github.SquadEvent{
 		{
 			Actor:     "dependabot[bot]",
 			Action:    "Committed",
-			Repo:      "old-repo",
+			Repo:      "dead-repo",
 			Timestamp: now.Add(-1 * 24 * time.Hour),
 		},
 	}
-	if tier := CalculateRepoTier(rDormantWithBotPush, time.Time{}, nil, dependabotEvent); tier != TierDormant {
-		t.Errorf("expected old-repo with dependabot push/commit to stay TierDormant, got %v", tier)
+	if tier := CalculateRepoTier(rDeadWithBotPush, nil, dependabotEvent); tier != TierDead {
+		t.Errorf("expected dead-repo with dependabot push/commit to stay TierDead, got %v", tier)
 	}
 
-	// 6. Dormant repo with human PR 3 days ago -> Hot!
+	// 8. Cold repo with human PR 3 days ago -> Hot!
 	humanPR := []github.PullRequest{
 		{
 			Repo:      "old-repo",
@@ -323,11 +357,11 @@ func TestActivityBasedTiers(t *testing.T) {
 			UpdatedAt: now.Add(-3 * 24 * time.Hour),
 		},
 	}
-	if tier := CalculateRepoTier(rDormant, time.Time{}, humanPR, nil); tier != TierHot {
+	if tier := CalculateRepoTier(rCold, humanPR, nil); tier != TierHot {
 		t.Errorf("expected old-repo with human PR within 3d to be TierHot, got %v", tier)
 	}
 
-	// 7. Dormant repo with human commit 2 weeks ago -> Active!
+	// 9. Cold repo with human commit 2 weeks ago -> Warm!
 	humanCommit := []github.SquadEvent{
 		{
 			Actor:     "bob",
@@ -336,8 +370,8 @@ func TestActivityBasedTiers(t *testing.T) {
 			Timestamp: now.Add(-14 * 24 * time.Hour),
 		},
 	}
-	if tier := CalculateRepoTier(rDormant, time.Time{}, nil, humanCommit); tier != TierActive {
-		t.Errorf("expected old-repo with human commit 2w ago to be TierActive, got %v", tier)
+	if tier := CalculateRepoTier(rCold, nil, humanCommit); tier != TierWarm {
+		t.Errorf("expected old-repo with human commit 2w ago to be TierWarm, got %v", tier)
 	}
 }
 

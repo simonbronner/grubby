@@ -207,11 +207,12 @@ type Model struct {
 	LastRefreshTime     time.Time
 
 	// SQLite & Performance Caching
-	DB            *storage.DB
-	Debouncer     *storage.TaskDebouncer
-	RepoTiers     map[string]storage.RepoTier
-	RequestsMade  int64
-	RequestsSaved int64
+	DB               *storage.DB
+	Debouncer        *storage.TaskDebouncer
+	RepoTiers        map[string]storage.RepoTier
+	RepoInteractions map[string]time.Time
+	RequestsMade     int64
+	RequestsSaved    int64
 
 	// GitHub Status
 	GitHubStatus          *github.StatusSummary
@@ -404,6 +405,7 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 		RawAvatarCache:        make(map[string][]byte),
 		ProfileCache:          make(map[string]github.OrgMember),
 		RepoTiers:             make(map[string]storage.RepoTier),
+		RepoInteractions:      make(map[string]time.Time),
 		DB:                    db,
 		Loading:               true,
 		InitialDataLoaded:     false,
@@ -438,6 +440,7 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 		if cachedRepos, err := db.GetRepositories(); err == nil && len(cachedRepos) > 0 {
 			m.Repos = cachedRepos
 			m.RepoTiers = db.GetAllRepoTiers()
+			m.RepoInteractions = db.GetAllRepoInteractions()
 			if cachedPRs, err := db.GetPullRequests(); err == nil {
 				m.PRs = cachedPRs
 			}
@@ -946,19 +949,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if time.Since(m.LastRefreshTime) >= 5*time.Minute && !m.Loading {
 			m.Loading = true
 			m.LastRefreshTime = time.Now()
-			dormantSkipped := 0
+			inactiveSkipped := 0
 			if m.DB != nil {
-				_, _, dormant, err := m.DB.GetTierCounts()
-				if err == nil && dormant > 0 {
-					dormantSkipped = dormant
+				_, _, cold, dead, err := m.DB.GetTierCounts()
+				if err == nil && (cold+dead) > 0 {
+					inactiveSkipped = cold + dead
 					if m.GHClient != nil {
-						m.GHClient.RecordRequestSaved(int64(dormant))
+						m.GHClient.RecordRequestSaved(int64(inactiveSkipped))
 					}
-					_ = m.DB.IncrementRequestsSaved(int64(dormant))
+					_ = m.DB.IncrementRequestsSaved(int64(inactiveSkipped))
 				}
 			}
-			if dormantSkipped > 0 {
-				m.StatusMsg = fmt.Sprintf("Auto-refreshing Hot & Active repos (%d dormant skipped)...", dormantSkipped)
+			if inactiveSkipped > 0 {
+				m.StatusMsg = fmt.Sprintf("Auto-refreshing Hot & Warm repos (%d cold/dead skipped)...", inactiveSkipped)
 			} else {
 				m.StatusMsg = "Auto-refreshing data from GitHub..."
 			}
@@ -1037,10 +1040,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.Repos = append(m.Repos, *msg.Repo)
 			}
 
+			tier := storage.CalculateRepoTier(*msg.Repo, nil, msg.Events)
 			if m.RepoTiers == nil {
 				m.RepoTiers = make(map[string]storage.RepoTier)
 			}
-			m.RepoTiers[strings.ToLower(msg.Repo.Name)] = storage.TierHot
+			m.RepoTiers[strings.ToLower(msg.Repo.Name)] = tier
 
 			if m.SecuritySummaries != nil && msg.Security != nil {
 				m.SecuritySummaries[msg.Repo.Name] = *msg.Security
@@ -1050,12 +1054,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if m.DB != nil {
 				_ = m.DB.SaveRepositories([]github.Repository{*msg.Repo}, m.CurrentOrg)
+				_ = m.DB.SetRepoTier(msg.Repo.Name, tier)
 				_ = m.DB.TouchRepo(msg.Repo.Name)
 				if msg.Security != nil {
 					_ = m.DB.SaveSecuritySummaries(map[string]github.SecurityAlertSummary{msg.Repo.Name: *msg.Security})
 				}
 			}
-			m.StatusMsg = fmt.Sprintf("✓ Refreshed %s (Hot)", msg.Repo.Name)
+			m.StatusMsg = fmt.Sprintf("✓ Refreshed %s (%s)", msg.Repo.Name, storage.TierBadgeText(tier))
 			m.StatusMsgTimer = time.Now().Add(3 * time.Second)
 		}
 		return m, nil
@@ -1156,6 +1161,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.DB != nil {
 			m.RepoTiers = m.DB.GetAllRepoTiers()
+			m.RepoInteractions = m.DB.GetAllRepoInteractions()
 		}
 		if m.GHClient != nil {
 			m.RequestsMade = m.GHClient.RequestsMade()
@@ -2125,16 +2131,17 @@ func (m Model) recordRepoInteraction(repoName string) Model {
 	if repoName == "" {
 		return m
 	}
+	now := time.Now()
+	if m.RepoInteractions == nil {
+		m.RepoInteractions = make(map[string]time.Time)
+	}
+	m.RepoInteractions[strings.ToLower(repoName)] = now
 	if m.Config != nil {
 		_ = m.Config.RecordRepoInteraction(repoName)
 	}
 	if m.DB != nil {
 		_ = m.DB.TouchRepo(repoName)
 	}
-	if m.RepoTiers == nil {
-		m.RepoTiers = make(map[string]storage.RepoTier)
-	}
-	m.RepoTiers[strings.ToLower(repoName)] = storage.TierHot
 	return m
 }
 
@@ -2147,21 +2154,25 @@ func (m Model) getRepoTier(repoName string) storage.RepoTier {
 	if m.DB != nil {
 		return m.DB.GetRepoTier(repoName)
 	}
-	return storage.TierActive
+	return storage.TierWarm
 }
 
-func (m Model) getRepoTierCounts() (hot, active, dormant int) {
+func (m Model) getRepoTierCounts() (hot, warm, cold, dead int) {
 	for _, r := range m.Repos {
 		switch m.getRepoTier(r.Name) {
 		case storage.TierHot:
 			hot++
-		case storage.TierDormant:
-			dormant++
+		case storage.TierWarm:
+			warm++
+		case storage.TierCold:
+			cold++
+		case storage.TierDead:
+			dead++
 		default:
-			active++
+			warm++
 		}
 	}
-	return hot, active, dormant
+	return hot, warm, cold, dead
 }
 
 func (m Model) closeTaskLocally(target github.Task) Model {
@@ -2224,16 +2235,30 @@ func (m Model) reopenTaskLocally(target github.Task) Model {
 
 func (m Model) getRepoLastInteractedTime(repoName string, tmuxSessions map[string]TmuxSessionInfo) time.Time {
 	var t time.Time
-	if m.Config != nil {
-		t = m.Config.GetRepoLastInteracted(repoName)
+
+	// 1. Check in-memory interaction cache
+	if m.RepoInteractions != nil {
+		if it, ok := m.RepoInteractions[strings.ToLower(repoName)]; ok && !it.IsZero() {
+			t = it
+		}
 	}
 
+	// 2. Check config
+	if m.Config != nil {
+		ct := m.Config.GetRepoLastInteracted(repoName)
+		if ct.After(t) {
+			t = ct
+		}
+	}
+
+	// 3. Tmux session
 	if sess, ok := FindTmuxSession(repoName, tmuxSessions); ok && !sess.LastActivity.IsZero() {
 		if sess.LastActivity.After(t) {
 			t = sess.LastActivity
 		}
 	}
 
+	// 4. Local git index modified time
 	if st, ok := m.GitStatuses[repoName]; ok && st.IsCloned && st.IsDirty {
 		indexPath := filepath.Join(st.LocalPath, ".git", "index")
 		if info, err := os.Stat(indexPath); err == nil {

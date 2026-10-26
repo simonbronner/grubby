@@ -387,15 +387,17 @@ func TestReposKeyHandling_RecordInteractionMovesToTop(t *testing.T) {
 func TestRepoTiersRenderingAndSorting(t *testing.T) {
 	now := time.Now()
 	repos := []github.Repository{
-		{Name: "dormant-repo", PushedAt: now.Add(-60 * 24 * time.Hour)},
-		{Name: "active-repo", PushedAt: now.Add(-10 * 24 * time.Hour)},
+		{Name: "dead-repo", PushedAt: now.Add(-400 * 24 * time.Hour)},
+		{Name: "cold-repo", PushedAt: now.Add(-60 * 24 * time.Hour)},
+		{Name: "warm-repo", PushedAt: now.Add(-10 * 24 * time.Hour)},
 		{Name: "hot-repo", PushedAt: now.Add(-1 * time.Hour)},
 	}
 
 	tiers := map[string]storage.RepoTier{
-		"dormant-repo": storage.TierDormant,
-		"active-repo":  storage.TierActive,
-		"hot-repo":     storage.TierHot,
+		"dead-repo": storage.TierDead,
+		"cold-repo": storage.TierCold,
+		"warm-repo": storage.TierWarm,
+		"hot-repo":  storage.TierHot,
 	}
 
 	m := Model{
@@ -407,19 +409,22 @@ func TestRepoTiersRenderingAndSorting(t *testing.T) {
 		TmuxSessions: make(map[string]TmuxSessionInfo),
 	}
 
-	// 1. Verify sorting: Hot comes first, then Active, then Dormant
+	// 1. Verify sorting: Hot comes first, then Warm, then Cold, then Dead
 	sorted := m.getDisplayRepos()
-	if len(sorted) != 3 {
-		t.Fatalf("expected 3 repos, got %d", len(sorted))
+	if len(sorted) != 4 {
+		t.Fatalf("expected 4 repos, got %d", len(sorted))
 	}
 	if sorted[0].Name != "hot-repo" {
 		t.Errorf("expected hot-repo first, got %s", sorted[0].Name)
 	}
-	if sorted[1].Name != "active-repo" {
-		t.Errorf("expected active-repo second, got %s", sorted[1].Name)
+	if sorted[1].Name != "warm-repo" {
+		t.Errorf("expected warm-repo second, got %s", sorted[1].Name)
 	}
-	if sorted[2].Name != "dormant-repo" {
-		t.Errorf("expected dormant-repo third, got %s", sorted[2].Name)
+	if sorted[2].Name != "cold-repo" {
+		t.Errorf("expected cold-repo third, got %s", sorted[2].Name)
+	}
+	if sorted[3].Name != "dead-repo" {
+		t.Errorf("expected dead-repo fourth, got %s", sorted[3].Name)
 	}
 
 	// 2. Verify rendering: tier icon is to the left of repo name, and TIER column is removed
@@ -427,12 +432,12 @@ func TestRepoTiersRenderingAndSorting(t *testing.T) {
 	if strings.Contains(view, "TIER") {
 		t.Errorf("expected 'TIER' header column to be removed, got:\n%s", view)
 	}
-	if !strings.Contains(view, "🔥 (0) hot-repo") || !strings.Contains(view, "⚡ (0) active-repo") || !strings.Contains(view, "💤 (0) dormant-repo") {
+	if !strings.Contains(view, "🔥 (0) hot-repo") || !strings.Contains(view, "⚡ (0) warm-repo") || !strings.Contains(view, "❄️ (0) cold-repo") || !strings.Contains(view, "💀 (0) dead-repo") {
 		t.Errorf("expected tier icons next to repo names, got:\n%s", view)
 	}
 
 	// 3. Verify tier count summary banner
-	if !strings.Contains(view, "🔥 1 Hot") || !strings.Contains(view, "⚡ 1 Active") || !strings.Contains(view, "💤 1 Dormant") {
+	if !strings.Contains(view, "🔥 1 Hot") || !strings.Contains(view, "⚡ 1 Warm") || !strings.Contains(view, "❄️ 1 Cold") || !strings.Contains(view, "💀 1 Dead") {
 		t.Errorf("expected tier count summary in header banner, got:\n%s", view)
 	}
 }
@@ -476,25 +481,25 @@ func TestRepoInteractionTouchesSQLite(t *testing.T) {
 
 	now := time.Now()
 	repos := []github.Repository{
-		{Name: "my-dormant-repo", FullName: "org/my-dormant-repo", PushedAt: now.Add(-60 * 24 * time.Hour)},
+		{Name: "my-cold-repo", FullName: "org/my-cold-repo", PushedAt: now.Add(-60 * 24 * time.Hour)},
 	}
 	if err := db.SaveRepositories(repos, "org"); err != nil {
 		t.Fatalf("SaveRepositories failed: %v", err)
 	}
-	_ = db.SetRepoTier("my-dormant-repo", storage.TierDormant)
+	_ = db.SetRepoTier("my-cold-repo", storage.TierCold)
 
 	m := Model{
 		DB:           db,
 		Repos:        repos,
-		RepoTiers:    map[string]storage.RepoTier{"my-dormant-repo": storage.TierDormant},
+		RepoTiers:    map[string]storage.RepoTier{"my-cold-repo": storage.TierCold},
 		GitStatuses:  make(map[string]git.RepoGitStatus),
 		Width:        120,
 		Height:       30,
 		TmuxSessions: make(map[string]TmuxSessionInfo),
 	}
 
-	if tier := m.getRepoTier("my-dormant-repo"); tier != storage.TierDormant {
-		t.Fatalf("expected initial tier dormant, got %v", tier)
+	if tier := m.getRepoTier("my-cold-repo"); tier != storage.TierCold {
+		t.Fatalf("expected initial tier cold, got %v", tier)
 	}
 
 	// User interacts with repo (Enter key)
@@ -502,13 +507,73 @@ func TestRepoInteractionTouchesSQLite(t *testing.T) {
 	updated, _ := m.handleReposKeys(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(Model)
 
-	// In-memory tier promoted to Hot
-	if tier := m.getRepoTier("my-dormant-repo"); tier != storage.TierHot {
-		t.Errorf("expected in-memory tier to become Hot, got %v", tier)
+	// Interaction must NOT change tier (it stays TierCold!)
+	if tier := m.getRepoTier("my-cold-repo"); tier != storage.TierCold {
+		t.Errorf("expected in-memory tier to remain TierCold, got %v", tier)
+	}
+	if dbTier := db.GetRepoTier("my-cold-repo"); dbTier != storage.TierCold {
+		t.Errorf("expected SQLite db tier to remain TierCold, got %v", dbTier)
 	}
 
-	// SQLite database tier promoted to Hot
-	if dbTier := db.GetRepoTier("my-dormant-repo"); dbTier != storage.TierHot {
-		t.Errorf("expected SQLite db tier to become Hot, got %v", dbTier)
+	// SQLite database records last_interacted_at
+	interacted := db.GetRepoLastInteractedAt("my-cold-repo")
+	if interacted.IsZero() || time.Since(interacted) > 5*time.Second {
+		t.Errorf("expected valid recent last_interacted_at, got %v", interacted)
+	}
+}
+
+func TestRepoInteractionPushesToTopOfTier(t *testing.T) {
+	now := time.Now()
+	repos := []github.Repository{
+		{Name: "hot-1", PushedAt: now.Add(-1 * time.Hour)},
+		{Name: "cold-a", PushedAt: now.Add(-50 * 24 * time.Hour)},
+		{Name: "cold-b", PushedAt: now.Add(-45 * 24 * time.Hour)}, // pushed more recently than cold-a
+		{Name: "dead-1", PushedAt: now.Add(-500 * 24 * time.Hour)},
+	}
+
+	tiers := map[string]storage.RepoTier{
+		"hot-1":  storage.TierHot,
+		"cold-a": storage.TierCold,
+		"cold-b": storage.TierCold,
+		"dead-1": storage.TierDead,
+	}
+
+	m := Model{
+		Repos:        repos,
+		RepoTiers:    tiers,
+		GitStatuses:  make(map[string]git.RepoGitStatus),
+		Width:        140,
+		Height:       30,
+		TmuxSessions: make(map[string]TmuxSessionInfo),
+	}
+
+	// Initially, cold-b comes before cold-a because it was pushed more recently (45d vs 50d)
+	sorted := m.getDisplayRepos()
+	if sorted[1].Name != "cold-b" || sorted[2].Name != "cold-a" {
+		t.Fatalf("expected [hot-1, cold-b, cold-a, dead-1], got %s, %s, %s, %s",
+			sorted[0].Name, sorted[1].Name, sorted[2].Name, sorted[3].Name)
+	}
+
+	// User interacts with cold-a (inspecting it)
+	m = m.recordRepoInteraction("cold-a")
+
+	// cold-a must still be TierCold!
+	if tier := m.getRepoTier("cold-a"); tier != storage.TierCold {
+		t.Errorf("expected cold-a to stay TierCold, got %v", tier)
+	}
+
+	// Now cold-a must be pushed to the top of the Cold tier (ahead of cold-b, but behind hot-1)!
+	sortedAfter := m.getDisplayRepos()
+	if sortedAfter[0].Name != "hot-1" {
+		t.Errorf("expected hot-1 to remain first, got %s", sortedAfter[0].Name)
+	}
+	if sortedAfter[1].Name != "cold-a" {
+		t.Errorf("expected interacted cold-a to be pushed to top of Cold tier (position 1), got %s", sortedAfter[1].Name)
+	}
+	if sortedAfter[2].Name != "cold-b" {
+		t.Errorf("expected cold-b at position 2, got %s", sortedAfter[2].Name)
+	}
+	if sortedAfter[3].Name != "dead-1" {
+		t.Errorf("expected dead-1 to remain at position 3, got %s", sortedAfter[3].Name)
 	}
 }

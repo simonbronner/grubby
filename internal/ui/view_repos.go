@@ -411,15 +411,15 @@ func (m Model) renderReposView() string {
 		filterBadges = append(filterBadges, lipgloss.NewStyle().Foreground(WarningColor).Bold(true).Render("Sort: 🛡️ Most Vulns ↓"))
 	}
 
-	hotCount, activeCount, dormantCount := m.getRepoTierCounts()
-	tierSummary := fmt.Sprintf("🔥 %d Hot  ⚡ %d Active  💤 %d Dormant", hotCount, activeCount, dormantCount)
+	hotCount, warmCount, coldCount, deadCount := m.getRepoTierCounts()
+	tierSummary := fmt.Sprintf("🔥 %d Hot  ⚡ %d Warm  ❄️ %d Cold  💀 %d Dead", hotCount, warmCount, coldCount, deadCount)
 
 	if len(filterBadges) > 0 {
 		filterSummary := MetaBarStyle.Render("  🔍 ") + strings.Join(filterBadges, "  ") +
 			MetaBarStyle.Render(fmt.Sprintf("  (%d of %d repos) • %s • [Esc] Clear", len(repos), len(m.Repos), tierSummary))
 		rows = append(rows, filterSummary)
 	} else if len(m.Repos) > 0 {
-		tierBar := MetaBarStyle.Render(fmt.Sprintf("  %s  (periodic polling focuses on Hot & Active repos)", tierSummary))
+		tierBar := MetaBarStyle.Render(fmt.Sprintf("  %s  (periodic polling focuses on Hot & Warm repos)", tierSummary))
 		rows = append(rows, tierBar)
 	}
 
