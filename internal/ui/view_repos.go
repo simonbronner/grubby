@@ -162,6 +162,18 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg { return StatusToastMsg("Sorted repositories by vulnerabilities (most to least)") }
 		}
 		return m, func() tea.Msg { return StatusToastMsg("Reset repository sort order to default") }
+	case "p":
+		// 'p' pull requests: open Pull Requests tab filtered by the selected repository
+		if len(repos) > 0 && m.RepoCursor < len(repos) {
+			repo := repos[m.RepoCursor]
+			m = m.recordRepoInteraction(repo.Name)
+			m.ActiveTab = TabPRs
+			m.PRFilter = repo.Name
+			m.PRCursor = 0
+			return m, func() tea.Msg {
+				return StatusToastMsg(fmt.Sprintf("Filtered pull requests for %s", repo.Name))
+			}
+		}
 	case "s":
 		// 's' session capability: switch to repository tmux session in Grubby window
 		if len(repos) > 0 && m.RepoCursor < len(repos) {
@@ -376,7 +388,6 @@ func (m Model) renderReposView() string {
 	headerRow := lipgloss.JoinHorizontal(lipgloss.Top,
 		cols.Cursor.Render(""),
 		cols.Name.Render("REPOSITORY"),
-		cols.Tier.Render("TIER"),
 		cols.Sec.Render("SECURITY"),
 		cols.Group.Render("GROUPS"),
 		cols.Git.Render("GIT STATUS"),
@@ -440,7 +451,10 @@ func (m Model) renderReposView() string {
 			}
 		}
 
-		maxRepoLen := cols.NameWidth - 7
+		tier := m.getRepoTier(r.Name)
+		tierIcon := storage.TierIcon(tier)
+
+		maxRepoLen := cols.NameWidth - 10
 		if maxRepoLen < 6 {
 			maxRepoLen = 6
 		}
@@ -451,7 +465,7 @@ func (m Model) renderReposView() string {
 
 		var nameColText string
 		if m.Loading {
-			nameColText = fmt.Sprintf("(%s) %s", m.Spinner.View(), repoDisplayName)
+			nameColText = fmt.Sprintf("%s (%s) %s", tierIcon, m.Spinner.View(), repoDisplayName)
 		} else {
 			var prBadge string
 			if prCount > 0 {
@@ -459,7 +473,7 @@ func (m Model) renderReposView() string {
 			} else {
 				prBadge = lipgloss.NewStyle().Foreground(MutedColor).Render("(0)")
 			}
-			nameColText = fmt.Sprintf("%s %s", prBadge, repoDisplayName)
+			nameColText = fmt.Sprintf("%s %s %s", tierIcon, prBadge, repoDisplayName)
 		}
 
 		// 2. Format Security Issues column: visual summary (crit) (high) (medium + the rest)
@@ -539,19 +553,6 @@ func (m Model) renderReposView() string {
 			}
 		}
 
-		tier := m.getRepoTier(r.Name)
-		var tierBadge string
-		switch tier {
-		case storage.TierHot:
-			tierBadge = HotTierBadge.Render("[🔥 HOT]")
-		case storage.TierActive:
-			tierBadge = ActiveTierBadge.Render("[⚡ ACTIVE]")
-		case storage.TierDormant:
-			tierBadge = DormantTierBadge.Render("[💤 DORM]")
-		default:
-			tierBadge = ActiveTierBadge.Render("[⚡ ACTIVE]")
-		}
-
 		prefix := "  "
 		if i == m.RepoCursor {
 			prefix = "▶ "
@@ -560,7 +561,6 @@ func (m Model) renderReposView() string {
 		rowCells := lipgloss.JoinHorizontal(lipgloss.Top,
 			cols.Cursor.Render(prefix),
 			cols.Name.Render(nameColText),
-			cols.Tier.Render(tierBadge),
 			cols.Sec.Render(secColText),
 			cols.Group.Render(groupText),
 			cols.Git.Render(styledBadge),

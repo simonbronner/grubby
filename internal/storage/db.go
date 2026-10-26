@@ -477,14 +477,38 @@ func (d *DB) GetTierCounts() (hot, active, dormant int, err error) {
 	return hot, active, dormant, nil
 }
 
-// UpdateRepoTiers computes and updates the tier for each repository
-func (d *DB) UpdateRepoTiers(prs []github.PullRequest) error {
+// UpdateRepoTiers computes and updates the tier for each repository based on activity
+func (d *DB) UpdateRepoTiers(prs []github.PullRequest, events ...[]github.SquadEvent) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	prCounts := make(map[string]int)
+	repoPRs := make(map[string][]github.PullRequest)
 	for _, pr := range prs {
-		prCounts[strings.ToLower(pr.Repo)]++
+		norm := strings.ToLower(github.NormalizeRepoName(pr.Repo))
+		repoPRs[norm] = append(repoPRs[norm], pr)
+	}
+
+	repoEvents := make(map[string][]github.SquadEvent)
+	if len(events) > 0 && len(events[0]) > 0 {
+		for _, ev := range events[0] {
+			norm := strings.ToLower(github.NormalizeRepoName(ev.Repo))
+			repoEvents[norm] = append(repoEvents[norm], ev)
+		}
+	} else {
+		// Load recent squad events from database if available
+		squadRows, err := d.db.Query(`SELECT actor, action, repo, target, details, timestamp, url FROM squad_activity ORDER BY timestamp DESC LIMIT 500`)
+		if err == nil {
+			defer squadRows.Close()
+			for squadRows.Next() {
+				var e github.SquadEvent
+				var tStr string
+				if err := squadRows.Scan(&e.Actor, &e.Action, &e.Repo, &e.Target, &e.Details, &tStr, &e.URL); err == nil {
+					e.Timestamp, _ = time.Parse(time.RFC3339, tStr)
+					norm := strings.ToLower(github.NormalizeRepoName(e.Repo))
+					repoEvents[norm] = append(repoEvents[norm], e)
+				}
+			}
+		}
 	}
 
 	rows, err := d.db.Query(`SELECT name, full_name, description, pushed_at, updated_at, default_branch, is_private, url, ssh_url, last_interacted_at FROM repositories`)
@@ -535,7 +559,8 @@ func (d *DB) UpdateRepoTiers(prs []github.PullRequest) error {
 	defer stmt.Close()
 
 	for _, item := range list {
-		tier := CalculateRepoTier(item.repo, item.lastInteracted, prCounts[strings.ToLower(item.repo.Name)])
+		norm := strings.ToLower(github.NormalizeRepoName(item.repo.Name))
+		tier := CalculateRepoTier(item.repo, item.lastInteracted, repoPRs[norm], repoEvents[norm])
 		if _, err := stmt.Exec(string(tier), item.repo.Name); err != nil {
 			return err
 		}
@@ -638,6 +663,19 @@ func (d *DB) GetPullRequests() ([]github.PullRequest, error) {
 	}
 
 	return prs, nil
+}
+
+func (d *DB) DeletePullRequest(repo string, number int) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	norm := github.NormalizeRepoName(repo)
+	_, err := d.db.Exec(`
+		DELETE FROM pull_requests
+		WHERE (repo = ? OR LOWER(repo) = LOWER(?) OR repo = ? OR LOWER(repo) = LOWER(?))
+		  AND number = ?
+	`, repo, repo, norm, norm, number)
+	return err
 }
 
 // --- Tasks ---

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -173,5 +174,96 @@ func TestPRRowRendering_AgeAndAlignment(t *testing.T) {
 	zeroPR := github.PullRequest{}
 	if got := zeroPR.DaysStale(); got != 0 {
 		t.Errorf("expected 0 for zero PR DaysStale, got %d", got)
+	}
+}
+
+func TestPRKeyHandling_MergeApprovedPR(t *testing.T) {
+	m := createTestPRModel()
+	m.PRs = []github.PullRequest{
+		{
+			Number:         42,
+			Repo:           "grubby",
+			Title:          "Approved PR to merge",
+			Author:         "alice",
+			ReviewDecision: "APPROVED",
+		},
+		{
+			Number:         43,
+			Repo:           "grubby",
+			Title:          "Second PR",
+			Author:         "bob",
+			ReviewDecision: "REVIEW_REQUIRED",
+		},
+	}
+	m.PRCursor = 0
+
+	// 1. Press 'm' on approved PR
+	res, cmd := m.handlePRsKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	_ = res.(Model)
+	if cmd == nil {
+		t.Fatalf("expected merge cmd for approved PR, got nil")
+	}
+
+	// 2. Simulate PRMergedMsg arrival
+	msg := PRMergedMsg{
+		Repo:   "grubby",
+		Number: 42,
+		Err:    nil,
+	}
+
+	// Add a linked PR review task to check auto-closing
+	m.PersonalTasks = []github.Task{
+		{
+			ID:        1,
+			Number:    10,
+			RepoOwner: "my-org",
+			RepoName:  "tasks",
+			Title:     "Review PR #42",
+			Body:      "Review https://github.com/my-org/grubby/pull/42",
+			Labels:    []string{"pr-review"},
+			State:     "open",
+		},
+	}
+
+	updated, _ := m.Update(msg)
+	finalModel := updated.(Model)
+
+	if len(finalModel.PRs) != 1 || finalModel.PRs[0].Number != 43 {
+		t.Errorf("expected PR #42 removed, remaining: %+v", finalModel.PRs)
+	}
+	if len(finalModel.PersonalTasks) != 0 {
+		t.Errorf("expected linked review task to be auto-closed from open tasks, got %+v", finalModel.PersonalTasks)
+	}
+	if len(finalModel.PersonalDoneTasks) != 1 || finalModel.PersonalDoneTasks[0].Number != 10 {
+		t.Errorf("expected linked review task moved to DoneTasks, got %+v", finalModel.PersonalDoneTasks)
+	}
+}
+
+func TestPRKeyHandling_MergeNonApprovedPR(t *testing.T) {
+	m := createTestPRModel()
+	m.PRs = []github.PullRequest{
+		{
+			Number:         99,
+			Repo:           "grubby",
+			Title:          "Pending PR",
+			Author:         "alice",
+			ReviewDecision: "REVIEW_REQUIRED",
+		},
+	}
+	m.PRCursor = 0
+
+	// Press 'm' on non-approved PR
+	_, cmd := m.handlePRsKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	if cmd == nil {
+		t.Fatalf("expected toast cmd for rejected merge, got nil")
+	}
+
+	toastMsg := cmd()
+	statusToast, ok := toastMsg.(StatusToastMsg)
+	if !ok {
+		t.Fatalf("expected StatusToastMsg, got %T", toastMsg)
+	}
+	if !strings.Contains(string(statusToast), "requires APPROVED") {
+		t.Errorf("expected toast to mention 'requires APPROVED', got %q", string(statusToast))
 	}
 }

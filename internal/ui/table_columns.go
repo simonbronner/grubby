@@ -5,7 +5,6 @@ import "github.com/charmbracelet/lipgloss"
 type RepoColumns struct {
 	Cursor       lipgloss.Style
 	Name         lipgloss.Style
-	Tier         lipgloss.Style
 	Sec          lipgloss.Style
 	Group        lipgloss.Style
 	Git          lipgloss.Style
@@ -14,7 +13,6 @@ type RepoColumns struct {
 	Path         lipgloss.Style
 
 	NameWidth    int
-	TierWidth    int
 	GroupWidth   int
 	SessionWidth int
 	PathWidth    int
@@ -23,12 +21,12 @@ type RepoColumns struct {
 func computeRepoColumns(termWidth int) RepoColumns {
 	w := termWidth - 2
 	// Minimum width:
-	// Cursor (3) + Tier (12) + Sec (16) + Git (16) + Session (12) + Last (13) + MinName (22) + MinGroup (12) + MinPath (18) = 124
-	if w < 124 {
-		w = 124
+	// Cursor (3) + Sec (16) + Git (16) + Session (12) + Last (13) + MinName (22) + MinGroup (12) + MinPath (18) = 112
+	if w < 112 {
+		w = 112
 	}
 
-	fixedWidth := 3 + 12 + 16 + 16 + 12 + 13 // 72
+	fixedWidth := 3 + 16 + 16 + 12 + 13 // 60
 	elastic := w - fixedWidth
 
 	nameW := elastic * 35 / 100
@@ -48,7 +46,6 @@ func computeRepoColumns(termWidth int) RepoColumns {
 	return RepoColumns{
 		Cursor:       colStyle(3),
 		Name:         colStyle(nameW),
-		Tier:         colStyle(12),
 		Sec:          colStyle(16),
 		Group:        colStyle(groupW),
 		Git:          colStyle(16),
@@ -56,7 +53,6 @@ func computeRepoColumns(termWidth int) RepoColumns {
 		Last:         colStyle(13),
 		Path:         colStyle(pathW),
 		NameWidth:    nameW,
-		TierWidth:    12,
 		GroupWidth:   groupW,
 		SessionWidth: 12,
 		PathWidth:    pathW,

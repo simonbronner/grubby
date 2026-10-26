@@ -422,18 +422,48 @@ func TestRepoTiersRenderingAndSorting(t *testing.T) {
 		t.Errorf("expected dormant-repo third, got %s", sorted[2].Name)
 	}
 
-	// 2. Verify rendering: TIER column and badges are present
+	// 2. Verify rendering: tier icon is to the left of repo name, and TIER column is removed
 	view := m.renderReposView()
-	if !strings.Contains(view, "TIER") {
-		t.Errorf("expected 'TIER' header column, got:\n%s", view)
+	if strings.Contains(view, "TIER") {
+		t.Errorf("expected 'TIER' header column to be removed, got:\n%s", view)
 	}
-	if !strings.Contains(view, "HOT") || !strings.Contains(view, "ACTIVE") || !strings.Contains(view, "DORM") {
-		t.Errorf("expected tier badges [HOT], [ACTIVE], [DORM], got:\n%s", view)
+	if !strings.Contains(view, "🔥 (0) hot-repo") || !strings.Contains(view, "⚡ (0) active-repo") || !strings.Contains(view, "💤 (0) dormant-repo") {
+		t.Errorf("expected tier icons next to repo names, got:\n%s", view)
 	}
 
 	// 3. Verify tier count summary banner
 	if !strings.Contains(view, "🔥 1 Hot") || !strings.Contains(view, "⚡ 1 Active") || !strings.Contains(view, "💤 1 Dormant") {
 		t.Errorf("expected tier count summary in header banner, got:\n%s", view)
+	}
+}
+
+func TestRepoOpenPRsFilteredWithPKey(t *testing.T) {
+	repos := []github.Repository{
+		{Name: "my-service", FullName: "my-org/my-service"},
+		{Name: "other-repo", FullName: "my-org/other-repo"},
+	}
+	m := Model{
+		ActiveTab: TabRepos,
+		Repos:     repos,
+		RepoCursor: 0,
+		Width:     140,
+		Height:    30,
+	}
+
+	updated, cmd := m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	upModel := updated.(Model)
+
+	if upModel.ActiveTab != TabPRs {
+		t.Errorf("expected ActiveTab to be TabPRs (%d), got %d", TabPRs, upModel.ActiveTab)
+	}
+	if upModel.PRFilter != "my-service" {
+		t.Errorf("expected PRFilter to be 'my-service', got %q", upModel.PRFilter)
+	}
+	if upModel.PRCursor != 0 {
+		t.Errorf("expected PRCursor to be 0, got %d", upModel.PRCursor)
+	}
+	if cmd == nil {
+		t.Errorf("expected status toast cmd, got nil")
 	}
 }
 

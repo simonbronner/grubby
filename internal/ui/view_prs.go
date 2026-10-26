@@ -133,8 +133,50 @@ func (m Model) handlePRsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return StatusToastMsg(fmt.Sprintf("Checked out PR #%d in %s", pr.Number, st.LocalPath))
 			}
 		}
+	case "m":
+		// Merge approved pull request directly
+		if len(prs) > 0 && m.PRCursor < len(prs) {
+			pr := prs[m.PRCursor]
+			revStatus := strings.ToUpper(strings.TrimSpace(pr.ReviewDecision))
+			if revStatus != "APPROVED" {
+				if revStatus == "" {
+					revStatus = "PENDING"
+				}
+				return m, func() tea.Msg {
+					return StatusToastMsg(fmt.Sprintf("Cannot merge PR #%d: review status is %s (requires APPROVED)", pr.Number, revStatus))
+				}
+			}
+
+			repo := pr.Repo
+			number := pr.Number
+			m = m.recordRepoInteraction(repo)
+			return m, m.mergePRCmd(repo, number)
+		}
 	}
 	return m, nil
+}
+
+type PRMergedMsg struct {
+	Repo   string
+	Number int
+	Err    error
+}
+
+func (m Model) mergePRCmd(repo string, number int) tea.Cmd {
+	return func() tea.Msg {
+		if m.GHClient == nil {
+			return PRMergedMsg{Repo: repo, Number: number, Err: fmt.Errorf("GitHub client not available")}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		owner := m.CurrentOrg
+		if owner == "" {
+			owner = m.AuthUser
+		}
+		err := m.GHClient.MergePullRequest(ctx, owner, repo, number)
+		return PRMergedMsg{Repo: repo, Number: number, Err: err}
+	}
 }
 
 func (m Model) renderPRsView() string {

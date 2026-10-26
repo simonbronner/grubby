@@ -44,6 +44,14 @@ type Client struct {
 	cache            *ETagCache
 	requestsMade     int64
 	requestsSaved    int64
+	apiBaseURL       string
+}
+
+func (c *Client) apiBaseURLOrDefault() string {
+	if c.apiBaseURL != "" {
+		return c.apiBaseURL
+	}
+	return "https://api.github.com"
 }
 
 func (c *Client) ProxyUsed() string {
@@ -1496,6 +1504,50 @@ func (c *Client) TriggerCopilotReview(ctx context.Context, owner, repo string, p
 		return fmt.Errorf("failed to trigger copilot review: HTTP %d", cresp.StatusCode)
 	}
 	return nil
+}
+
+// MergePullRequest merges an approved pull request using GitHub REST API.
+func (c *Client) MergePullRequest(ctx context.Context, owner, repo string, prNumber int) error {
+	repo = NormalizeRepoName(repo)
+	if strings.Contains(repo, "/") {
+		parts := strings.Split(repo, "/")
+		owner = parts[0]
+		repo = parts[1]
+	}
+	if owner == "" {
+		return fmt.Errorf("repository owner is required to merge pull request")
+	}
+
+	apiURL := fmt.Sprintf("%s/repos/%s/%s/pulls/%d/merge", c.apiBaseURLOrDefault(), owner, repo, prNumber)
+	bodyBytes, _ := json.Marshal(map[string]interface{}{})
+	req, err := http.NewRequestWithContext(ctx, "PUT", apiURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	c.updateRateLimits(resp)
+
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+
+	respBody, _ := io.ReadAll(resp.Body)
+	var errResp struct {
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal(respBody, &errResp)
+	if errResp.Message != "" {
+		return fmt.Errorf("%s (status %d)", errResp.Message, resp.StatusCode)
+	}
+	return fmt.Errorf("merge failed with status %d", resp.StatusCode)
 }
 
 // FetchNotifications retrieves unread and recent GitHub notifications for the authenticated user

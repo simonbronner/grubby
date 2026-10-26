@@ -608,7 +608,7 @@ func (m Model) loadDataCmd() tea.Cmd {
 		if m.DB != nil {
 			_ = m.DB.SaveRepositories(repos, m.CurrentOrg)
 			_ = m.DB.SavePullRequests(prs)
-			_ = m.DB.UpdateRepoTiers(prs)
+			_ = m.DB.UpdateRepoTiers(prs, events)
 			_ = m.DB.SaveTasks(append(append([]github.Task{}, personalTasks...), personalDoneTasks...), false, "synced")
 			_ = m.DB.SaveTasks(append(append([]github.Task{}, squadTasks...), squadDoneTasks...), true, "synced")
 			_ = m.DB.SaveSquadEvents(events)
@@ -1058,6 +1058,74 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.StatusMsg = fmt.Sprintf("✓ Refreshed %s (Hot)", msg.Repo.Name)
 			m.StatusMsgTimer = time.Now().Add(3 * time.Second)
 		}
+		return m, nil
+
+	case PRMergedMsg:
+		if msg.Err != nil {
+			m.StatusMsg = fmt.Sprintf("Failed to merge PR #%d: %v", msg.Number, msg.Err)
+			m.StatusMsgTimer = time.Now().Add(5 * time.Second)
+			return m, nil
+		}
+		m.StatusMsg = fmt.Sprintf("✓ Successfully merged PR #%d in %s", msg.Number, msg.Repo)
+		m.StatusMsgTimer = time.Now().Add(5 * time.Second)
+		if m.DB != nil {
+			_ = m.DB.DeletePullRequest(msg.Repo, msg.Number)
+			_ = m.DB.TouchRepo(msg.Repo)
+		}
+		// Remove merged PR from in-memory PRs
+		var remainingPRs []github.PullRequest
+		for _, p := range m.PRs {
+			if strings.EqualFold(p.Repo, msg.Repo) && p.Number == msg.Number {
+				continue
+			}
+			remainingPRs = append(remainingPRs, p)
+		}
+		m.PRs = remainingPRs
+		displayPRs := m.getDisplayPRs()
+		if m.PRCursor >= len(displayPRs) && m.PRCursor > 0 {
+			m.PRCursor = len(displayPRs) - 1
+		}
+
+		// Auto-close any matching PR review tasks in personal or squad tasks
+		for i := len(m.PersonalTasks) - 1; i >= 0; i-- {
+			task := m.PersonalTasks[i]
+			if task.IsPRReview() {
+				_, pRepo, pNum, ok := github.ParsePRURL(task.PRURL())
+				if ok && strings.EqualFold(pRepo, msg.Repo) && pNum == msg.Number {
+					task.State = "closed"
+					now := time.Now()
+					task.ClosedAt = &now
+					m.PersonalDoneTasks = append([]github.Task{task}, m.PersonalDoneTasks...)
+					m.PersonalTasks = append(m.PersonalTasks[:i], m.PersonalTasks[i+1:]...)
+					if m.DB != nil {
+						_ = m.DB.SaveTask(&task, "synced")
+					}
+					if m.GHClient != nil {
+						_ = m.GHClient.CloseTask(context.Background(), task.RepoOwner, task.RepoName, task.Number)
+					}
+				}
+			}
+		}
+		for i := len(m.SquadTasks) - 1; i >= 0; i-- {
+			task := m.SquadTasks[i]
+			if task.IsPRReview() {
+				_, pRepo, pNum, ok := github.ParsePRURL(task.PRURL())
+				if ok && strings.EqualFold(pRepo, msg.Repo) && pNum == msg.Number {
+					task.State = "closed"
+					now := time.Now()
+					task.ClosedAt = &now
+					m.SquadDoneTasks = append([]github.Task{task}, m.SquadDoneTasks...)
+					m.SquadTasks = append(m.SquadTasks[:i], m.SquadTasks[i+1:]...)
+					if m.DB != nil {
+						_ = m.DB.SaveTask(&task, "synced")
+					}
+					if m.GHClient != nil {
+						_ = m.GHClient.CloseTask(context.Background(), task.RepoOwner, task.RepoName, task.Number)
+					}
+				}
+			}
+		}
+
 		return m, nil
 
 	case DataLoadedMsg:
@@ -1791,15 +1859,15 @@ func (m Model) renderFooter() string {
 	switch m.ActiveTab {
 	case TabRepos:
 		if m.RepoFilter != "" || m.RepoGroupFilter != "" || m.RepoSortVulnerabilities {
-			help = "[/] Filter  [v] Sort Vulns  [s] Session  [e] Editor  [t] Shell  [Esc] Clear  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [?] Help"
+			help = "[p] PRs  [/] Filter  [v] Sort Vulns  [s] Session  [e] Editor  [t] Shell  [Esc] Clear  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [?] Help"
 		} else {
-			help = "[/] Filter  [v] Sort Vulns  [s] Session  [e] Editor  [t] Shell  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [u] Sync  [?] Help"
+			help = "[p] PRs  [/] Filter  [v] Sort Vulns  [s] Session  [e] Editor  [t] Shell  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [u] Sync  [?] Help"
 		}
 	case TabPRs:
 		if m.PRFilter != "" {
-			help = "[f] Filter  [Esc] Clear Filter  [t] Create Task  [o] Browser  [p] Copilot Review  [c] Checkout Branch  [?] Help"
+			help = "[m] Merge  [f] Filter  [Esc] Clear Filter  [t] Create Task  [o] Browser  [p] Copilot Review  [c] Checkout Branch  [?] Help"
 		} else {
-			help = "[f] Filter  [t] Create Task  [o] Browser  [p] Copilot Review  [c] Checkout Branch  [r] Refresh  [?] Help"
+			help = "[m] Merge  [f] Filter  [t] Create Task  [o] Browser  [p] Copilot Review  [c] Checkout Branch  [r] Refresh  [?] Help"
 		}
 	case TabSquad:
 		help = "[m] Manage Squad  [s] Switch Squad  [n] New Squad  [r] Refresh  [?] Help"

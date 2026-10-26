@@ -231,3 +231,160 @@ func TestRequestStatsPersistence(t *testing.T) {
 		t.Errorf("expected 45 requests saved, got %d", saved)
 	}
 }
+
+func TestIsDependabot(t *testing.T) {
+	tests := []struct {
+		actor    string
+		expected bool
+	}{
+		{"@dependabot[bot]", true},
+		{"dependabot[bot]", true},
+		{"dependabot", true},
+		{"app/dependabot", true},
+		{"@dependabot", true},
+		{"Dependabot[Bot]", true},
+		{"alice", false},
+		{"bob", false},
+		{"github-actions[bot]", false},
+		{"", false},
+	}
+
+	for _, tc := range tests {
+		if got := IsDependabot(tc.actor); got != tc.expected {
+			t.Errorf("IsDependabot(%q) = %v; want %v", tc.actor, got, tc.expected)
+		}
+	}
+}
+
+func TestActivityBasedTiers(t *testing.T) {
+	now := time.Now()
+
+	// 1. Repo pushed 2 days ago (<= 4d) -> Hot
+	rHot := github.Repository{
+		Name:     "recent-push",
+		PushedAt: now.Add(-2 * 24 * time.Hour),
+	}
+	if tier := CalculateRepoTier(rHot, time.Time{}, nil, nil); tier != TierHot {
+		t.Errorf("expected recent-push to be TierHot, got %v", tier)
+	}
+
+	// 2. Repo pushed 10 days ago (> 4d and <= 42d) -> Active
+	rActive := github.Repository{
+		Name:     "moderate-push",
+		PushedAt: now.Add(-10 * 24 * time.Hour),
+	}
+	if tier := CalculateRepoTier(rActive, time.Time{}, nil, nil); tier != TierActive {
+		t.Errorf("expected moderate-push to be TierActive, got %v", tier)
+	}
+
+	// 3. Repo pushed 50 days ago (> 42d / 6w) -> Dormant
+	rDormant := github.Repository{
+		Name:     "old-repo",
+		PushedAt: now.Add(-50 * 24 * time.Hour),
+	}
+	if tier := CalculateRepoTier(rDormant, time.Time{}, nil, nil); tier != TierDormant {
+		t.Errorf("expected old-repo to be TierDormant, got %v", tier)
+	}
+
+	// 4. Dormant repo with Dependabot PR 1 day ago -> Must stay Dormant!
+	dependabotPR := []github.PullRequest{
+		{
+			Repo:      "old-repo",
+			Author:    "@dependabot[bot]",
+			UpdatedAt: now.Add(-1 * 24 * time.Hour),
+		},
+	}
+	if tier := CalculateRepoTier(rDormant, time.Time{}, dependabotPR, nil); tier != TierDormant {
+		t.Errorf("expected old-repo with dependabot PR to stay TierDormant, got %v", tier)
+	}
+
+	// 5. Dormant repo with Dependabot commit and push 1 day ago -> Must stay Dormant!
+	rDormantWithBotPush := github.Repository{
+		Name:     "old-repo",
+		PushedAt: now.Add(-1 * 24 * time.Hour),
+	}
+	dependabotEvent := []github.SquadEvent{
+		{
+			Actor:     "dependabot[bot]",
+			Action:    "Committed",
+			Repo:      "old-repo",
+			Timestamp: now.Add(-1 * 24 * time.Hour),
+		},
+	}
+	if tier := CalculateRepoTier(rDormantWithBotPush, time.Time{}, nil, dependabotEvent); tier != TierDormant {
+		t.Errorf("expected old-repo with dependabot push/commit to stay TierDormant, got %v", tier)
+	}
+
+	// 6. Dormant repo with human PR 3 days ago -> Hot!
+	humanPR := []github.PullRequest{
+		{
+			Repo:      "old-repo",
+			Author:    "alice",
+			UpdatedAt: now.Add(-3 * 24 * time.Hour),
+		},
+	}
+	if tier := CalculateRepoTier(rDormant, time.Time{}, humanPR, nil); tier != TierHot {
+		t.Errorf("expected old-repo with human PR within 3d to be TierHot, got %v", tier)
+	}
+
+	// 7. Dormant repo with human commit 2 weeks ago -> Active!
+	humanCommit := []github.SquadEvent{
+		{
+			Actor:     "bob",
+			Action:    "Committed",
+			Repo:      "old-repo",
+			Timestamp: now.Add(-14 * 24 * time.Hour),
+		},
+	}
+	if tier := CalculateRepoTier(rDormant, time.Time{}, nil, humanCommit); tier != TierActive {
+		t.Errorf("expected old-repo with human commit 2w ago to be TierActive, got %v", tier)
+	}
+}
+
+func TestDeletePullRequest(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	now := time.Now()
+	prs := []github.PullRequest{
+		{
+			Repo:           "grubby",
+			Number:         42,
+			Title:          "Feature PR",
+			Author:         "alice",
+			ReviewDecision: "APPROVED",
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		},
+		{
+			Repo:           "grubby",
+			Number:         43,
+			Title:          "Another PR",
+			Author:         "bob",
+			ReviewDecision: "REVIEW_REQUIRED",
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		},
+	}
+	if err := db.SavePullRequests(prs); err != nil {
+		t.Fatalf("SavePullRequests failed: %v", err)
+	}
+
+	saved, err := db.GetPullRequests()
+	if err != nil || len(saved) != 2 {
+		t.Fatalf("expected 2 PRs, got %d (err: %v)", len(saved), err)
+	}
+
+	// Delete PR 42
+	if err := db.DeletePullRequest("grubby", 42); err != nil {
+		t.Fatalf("DeletePullRequest failed: %v", err)
+	}
+
+	remaining, err := db.GetPullRequests()
+	if err != nil {
+		t.Fatalf("GetPullRequests failed: %v", err)
+	}
+	if len(remaining) != 1 || remaining[0].Number != 43 {
+		t.Fatalf("expected 1 PR with number 43, got %+v", remaining)
+	}
+}

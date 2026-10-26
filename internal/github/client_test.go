@@ -3,6 +3,8 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -296,5 +298,54 @@ func TestRequestTracking(t *testing.T) {
 	client.RecordRequestSaved(5)
 	if client.RequestsSaved() != 30 {
 		t.Errorf("expected 30 requests saved, got %d", client.RequestsSaved())
+	}
+}
+
+func TestMergePullRequest(t *testing.T) {
+	var requestedPath string
+	var requestedMethod string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.Path
+		requestedMethod = r.Method
+
+		if strings.Contains(r.URL.Path, "fail") {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_, _ = w.Write([]byte(`{"message": "Pull Request is not mergeable"}`))
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"sha": "abcdef123456", "merged": true, "message": "Pull Request successfully merged"}`))
+	}))
+	defer server.Close()
+
+	client := &Client{
+		token:      "dummy-token",
+		httpClient: server.Client(),
+		apiBaseURL: server.URL,
+	}
+
+	ctx := context.Background()
+
+	// 1. Successful merge
+	err := client.MergePullRequest(ctx, "my-org", "my-repo", 123)
+	if err != nil {
+		t.Fatalf("expected merge to succeed, got: %v", err)
+	}
+	if requestedMethod != "PUT" {
+		t.Errorf("expected PUT method, got %s", requestedMethod)
+	}
+	if requestedPath != "/repos/my-org/my-repo/pulls/123/merge" {
+		t.Errorf("expected path /repos/my-org/my-repo/pulls/123/merge, got %s", requestedPath)
+	}
+
+	// 2. Failed merge
+	err = client.MergePullRequest(ctx, "my-org", "fail-repo", 456)
+	if err == nil {
+		t.Fatalf("expected merge error, got nil")
+	}
+	if !strings.Contains(err.Error(), "Pull Request is not mergeable") {
+		t.Errorf("expected error message to contain 'Pull Request is not mergeable', got %v", err)
 	}
 }

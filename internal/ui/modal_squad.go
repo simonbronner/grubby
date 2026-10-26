@@ -413,6 +413,7 @@ Global Navigation:
 
 Repositories Tab (1):
   [j/k] or [↑/↓]      Select repository
+  [p]                 View PRs for repository (switches to Tab 2 filtered by repo)
   [/]                 Filter repositories by name or group
   [v]                 Sort by vulnerabilities (toggle most to least)
   [s]                 Switch to / open tmux session in Grubby window (auto-clones if needed)
@@ -428,6 +429,7 @@ Repositories Tab (1):
 
 Pull Requests Tab (2):
   [j/k] or [↑/↓]      Select pull request
+  [m]                 Merge approved pull request directly
   [t]                 Create PR review task in squad tasks
   [f]                 Filter PRs by title, repo, or author
   [o]                 Open PR in browser
