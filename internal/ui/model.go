@@ -1922,9 +1922,9 @@ func (m Model) renderFooter() string {
 	switch m.ActiveTab {
 	case TabRepos:
 		if m.RepoFilter != "" || m.RepoGroupFilter != "" || m.RepoSortVulnerabilities {
-			help = "[p] PRs  [/] Filter  [v] Sort Vulns  [s] Session  [e] Editor  [t] Shell  [Esc] Clear  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [?] Help"
+			help = "[p] PRs  [/] Filter  [#] Labels  [v] Sort Vulns  [s] Session  [e] Editor  [t] Shell  [Esc] Clear  [Enter] Web  [o] Submenu  [l] Labels  [c] Clone  [?] Help"
 		} else {
-			help = "[p] PRs  [/] Filter  [v] Sort Vulns  [s] Session  [e] Editor  [t] Shell  [Enter] Web  [o] Submenu  [g] Groups  [c] Clone  [u] Sync  [?] Help"
+			help = "[p] PRs  [/] Filter  [#] Labels  [v] Sort Vulns  [s] Session  [e] Editor  [t] Shell  [Enter] Web  [o] Submenu  [l] Labels  [c] Clone  [u] Sync  [?] Help"
 		}
 	case TabPRs:
 		if m.PRFilter != "" {

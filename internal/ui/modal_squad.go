@@ -414,7 +414,8 @@ Global Navigation:
 Repositories Tab (1):
   [j/k] or [↑/↓]      Select repository
   [p]                 View PRs for repository (switches to Tab 2 filtered by repo)
-  [/]                 Filter repositories by name or group
+  [/]                 Filter repositories by name or label
+  [#]                 Filter repositories by label
   [v]                 Sort by vulnerabilities (toggle most to least)
   [s]                 Switch to / open tmux session in Grubby window (auto-clones if needed)
   [e]                 Open editor in new window in tmux session (auto-clones if needed)
@@ -423,7 +424,7 @@ Repositories Tab (1):
   [Enter]             Open repo in dedicated browser
   [o]                 Open GitHub Web Tabs Submenu (Issues, PRs, Actions, Security...)
   [S]                 Open Security (Dependabot) tab directly in browser
-  [g]                 Manage Groups (assign / create groups)
+  [l]                 Manage Labels (assign / create labels)
   [c]                 Clone repo to ~/workspaces/
   [u]                 Fast-forward clean behind repo
 

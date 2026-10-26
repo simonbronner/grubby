@@ -745,9 +745,9 @@ func TestSummaryColumnAndInlineLabelsRendering(t *testing.T) {
 
 	view := m.renderReposView()
 
-	// 1. Verify column header is (Vuln - PR - Issues)
-	if !strings.Contains(view, "(Vuln - PR - Issues)") {
-		t.Errorf("expected '(Vuln - PR - Issues)' column header, got:\n%s", view)
+	// 1. Verify column header is (Vulns - PRs - Issues)
+	if !strings.Contains(view, "(Vulns - PRs - Issues)") {
+		t.Errorf("expected '(Vulns - PRs - Issues)' column header, got:\n%s", view)
 	}
 
 	// 2. Verify inline labels #backend and #core are rendered
@@ -760,9 +760,9 @@ func TestSummaryColumnAndInlineLabelsRendering(t *testing.T) {
 		t.Errorf("expected repository About text in repo view, got:\n%s", view)
 	}
 
-	// 4. Verify (Vuln - PR - Issues) format: ( 1, 2, 2 ) - ( 2 ) - ( 3 )
-	if !strings.Contains(view, "1, 2, 2") {
-		t.Errorf("expected ( 1, 2, 2 ) vulnerabilities in column, got:\n%s", view)
+	// 4. Verify (Vulns - PRs - Issues) format: ( 1 2 2 ) - ( 2 ) - ( 3 ) without commas
+	if !strings.Contains(view, "( 1 2 2 )") {
+		t.Errorf("expected '( 1 2 2 )' vulnerabilities without commas, got:\n%s", view)
 	}
 	if !strings.Contains(view, "( 2 )") {
 		t.Errorf("expected ( 2 ) PR count in column, got:\n%s", view)
@@ -771,11 +771,11 @@ func TestSummaryColumnAndInlineLabelsRendering(t *testing.T) {
 		t.Errorf("expected ( 3 ) task count in column, got:\n%s", view)
 	}
 
-	// 5. Test clean repo with 0 vulnerabilities renders green ( 0, 0, 0 )
+	// 5. Test clean repo with 0 vulnerabilities renders green ( 0 0 0 ) without commas
 	m.SecuritySummaries["auth-svc"] = github.SecurityAlertSummary{Total: 0}
 	viewClean := m.renderReposView()
-	if !strings.Contains(viewClean, "( 0, 0, 0 )") {
-		t.Errorf("expected '( 0, 0, 0 )' for 0 vulnerabilities, got:\n%s", viewClean)
+	if !strings.Contains(viewClean, "( 0 0 0 )") {
+		t.Errorf("expected '( 0 0 0 )' without commas for 0 vulnerabilities, got:\n%s", viewClean)
 	}
 
 	// 6. Verify single spinner indicator in top tier bar when Loading is true
@@ -804,4 +804,33 @@ func TestHotkeyHashOpensLabelFilterModal(t *testing.T) {
 		t.Errorf("expected ModalFilterGroup when pressing '#', got %v", m.ActiveModal)
 	}
 }
+
+func TestHotkeyLOpensLabelsModal(t *testing.T) {
+	repos := []github.Repository{
+		{ID: 101, Name: "auth-svc"},
+	}
+	m := Model{
+		Repos:           repos,
+		Width:           120,
+		Height:          30,
+		SplashDismissed: true,
+	}
+
+	// Move cursor to the repo (index 1 under Warm header)
+	items := m.getRepoTableItems()
+	for idx, it := range items {
+		if it.Kind == ItemRepo && it.Repo != nil && it.Repo.Name == "auth-svc" {
+			m.RepoCursor = idx
+			break
+		}
+	}
+
+	// Press 'l' -> opens ModalManageGroups (Manage Labels)
+	updated, _ := m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	m = updated.(Model)
+	if m.ActiveModal != ModalManageGroups {
+		t.Errorf("expected ModalManageGroups when pressing 'l', got %v", m.ActiveModal)
+	}
+}
+
 

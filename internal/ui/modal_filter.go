@@ -67,7 +67,7 @@ func (m Model) renderFilterGroupModal() string {
 	}
 
 	if len(labels) == 0 {
-		lines = append(lines, "\n  No labels created yet. Press [g] on any repository to create one!")
+		lines = append(lines, "\n  No labels created yet. Press [l] on any repository to create one!")
 	}
 
 	return ModalBoxStyle.Render(strings.Join(lines, "\n"))

@@ -485,8 +485,8 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			func() tea.Msg { return StatusToastMsg("Opened Security tab for " + repo.Name) },
 			m.fetchSingleRepoCmd(m.CurrentOrg, repo.Name),
 		)
-	case "g":
-		// Open Groups/Labels modal for current repo
+	case "l", "g":
+		// Open Labels modal for current repo
 		m.ActiveModal = ModalManageGroups
 		m.ModalCursor = 0
 		m.SelectedRepoGroups = make(map[string]bool)
@@ -586,7 +586,7 @@ func (m Model) renderReposView() string {
 	headerRow := lipgloss.JoinHorizontal(lipgloss.Top,
 		cols.Cursor.Render(""),
 		cols.Name.Render("REPOSITORY & LABELS"),
-		cols.Summary.Render("(Vuln - PR - Issues)"),
+		cols.Summary.Render("(Vulns - PRs - Issues)"),
 		cols.Git.Render("GIT STATUS"),
 		cols.Session.Render("TMUX"),
 		cols.Last.Render("LAST PUSHED"),
@@ -780,20 +780,20 @@ func (m Model) renderReposView() string {
 			}
 		}
 
-		// 3. (Vuln - PR - Issues) column: ( 0, 0, 0 ) / ( 1, 2, 3 ) - ( prCount ) - ( taskCount )
+		// 3. (Vulns - PRs - Issues) column: ( 0 0 0 ) / ( 1 2 3 ) - ( prCount ) - ( taskCount )
 		var vulnText string
 		sum := m.SecuritySummaries[r.Name]
 		if isDead {
 			deadStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#6E7681"))
 			if sum.Total == 0 {
-				vulnText = deadStyle.Render("( 0, 0, 0 )")
+				vulnText = deadStyle.Render("( 0 0 0 )")
 			} else {
 				medRest := sum.Medium + sum.Low
-				vulnText = deadStyle.Render(fmt.Sprintf("( %d, %d, %d )", sum.Critical, sum.High, medRest))
+				vulnText = deadStyle.Render(fmt.Sprintf("( %d %d %d )", sum.Critical, sum.High, medRest))
 			}
 		} else {
 			if sum.Total == 0 {
-				vulnText = lipgloss.NewStyle().Foreground(SuccessColor).Render("( 0, 0, 0 )")
+				vulnText = lipgloss.NewStyle().Foreground(SuccessColor).Render("( 0 0 0 )")
 			} else {
 				medRest := sum.Medium + sum.Low
 				var cStr, hStr, mStr string
@@ -812,7 +812,7 @@ func (m Model) renderReposView() string {
 				} else {
 					mStr = lipgloss.NewStyle().Foreground(MutedColor).Render("0")
 				}
-				vulnText = fmt.Sprintf("( %s, %s, %s )", cStr, hStr, mStr)
+				vulnText = fmt.Sprintf("( %s %s %s )", cStr, hStr, mStr)
 			}
 		}
 
