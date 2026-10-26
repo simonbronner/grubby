@@ -533,6 +533,10 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 		)
 	}
 
+	if m.RepoCursor == 0 && len(m.Repos) > 0 {
+		m.RepoCursor = m.firstSelectableRepoIndex()
+	}
+
 	return m
 }
 
@@ -1217,6 +1221,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.GHClient != nil {
 			m.RequestsMade = m.GHClient.RequestsMade()
 			m.RequestsSaved = m.GHClient.RequestsSaved()
+		}
+		if m.RepoCursor == 0 && len(m.Repos) > 0 {
+			m.RepoCursor = m.firstSelectableRepoIndex()
 		}
 
 		// Process notifications and alert for new unread items

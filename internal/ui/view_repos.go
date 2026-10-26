@@ -74,6 +74,16 @@ func (m Model) getRepoLabels(r *github.Repository) []string {
 	return result
 }
 
+func (m Model) firstSelectableRepoIndex() int {
+	items := m.getRepoTableItems()
+	for idx, it := range items {
+		if it.Kind == ItemRepo && it.Repo != nil {
+			return idx
+		}
+	}
+	return 0
+}
+
 func (m Model) focusRepoCursor(repoName string) Model {
 	items := m.getRepoTableItems()
 	for idx, it := range items {
@@ -92,11 +102,6 @@ func (m Model) getSelectedRepo() *github.Repository {
 		if item.Kind == ItemRepo && item.Repo != nil {
 			return item.Repo
 		}
-	}
-	// Fallback to getDisplayRepos
-	repos := m.getDisplayRepos()
-	if len(repos) > 0 && m.RepoCursor >= 0 && m.RepoCursor < len(repos) {
-		return &repos[m.RepoCursor]
 	}
 	return nil
 }
@@ -332,7 +337,7 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "v":
 		// 'v' sort by vulnerabilities: toggle sorting from most to least vulnerabilities
 		m.RepoSortVulnerabilities = !m.RepoSortVulnerabilities
-		m.RepoCursor = 0
+		m.RepoCursor = m.firstSelectableRepoIndex()
 		if m.RepoSortVulnerabilities {
 			return m, func() tea.Msg { return StatusToastMsg("Sorted repositories by vulnerabilities (most to least)") }
 		}
@@ -343,7 +348,7 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.RepoFilter = ""
 			m.RepoGroupFilter = ""
 			m.RepoSortVulnerabilities = false
-			m.RepoCursor = 0
+			m.RepoCursor = m.firstSelectableRepoIndex()
 			return m, func() tea.Msg { return StatusToastMsg("Cleared all repository filters and sorting") }
 		}
 		return m, nil

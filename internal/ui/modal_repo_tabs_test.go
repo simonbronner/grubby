@@ -16,7 +16,7 @@ func TestRepoTabsModal_MnemonicLetterHotkeys(t *testing.T) {
 	m := Model{
 		ActiveTab:   TabRepos,
 		Repos:       repos,
-		RepoCursor:  0,
+		RepoCursor:  1, // 0 is TierHeader, 1 is my-service
 		ActiveModal: ModalRepoTabs,
 		Width:       120,
 		Height:      30,
@@ -66,5 +66,79 @@ func TestRepoTabsModal_MnemonicLetterHotkeys(t *testing.T) {
 	msg1 := string(cmd1().(StatusToastMsg))
 	if !strings.Contains(msg1, "Code (Overview)") {
 		t.Errorf("expected toast to mention Code (Overview), got: %s", msg1)
+	}
+}
+
+func TestRepoTabsModal_ActsOnSelectedRepoNotFirst(t *testing.T) {
+	repos := []github.Repository{
+		{Name: "first-repo", FullName: "my-org/first-repo"},
+		{Name: "second-repo", FullName: "my-org/second-repo"},
+		{Name: "third-repo", FullName: "my-org/third-repo"},
+	}
+
+	m := Model{
+		ActiveTab: TabRepos,
+		Repos:     repos,
+		Width:     120,
+		Height:    30,
+	}
+
+	// In table items:
+	// Item 0: Tier Header (Warm)
+	// Item 1: first-repo (or sorted order)
+	// Item 2: second-repo
+	// Item 3: third-repo
+	items := m.getRepoTableItems()
+	var thirdIdx int
+	for idx, it := range items {
+		if it.Kind == ItemRepo && it.Repo != nil && it.Repo.Name == "third-repo" {
+			thirdIdx = idx
+			break
+		}
+	}
+	if thirdIdx == 0 {
+		t.Fatalf("could not find third-repo in table items")
+	}
+
+	// Select third-repo
+	m.RepoCursor = thirdIdx
+
+	// Press 'o' -> opens ModalRepoTabs
+	updated, _ := m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	m = updated.(Model)
+	if m.ActiveModal != ModalRepoTabs {
+		t.Fatalf("expected ActiveModal to be ModalRepoTabs")
+	}
+
+	// Render modal -> must mention third-repo, NOT first-repo!
+	view := m.renderRepoTabsModal()
+	if !strings.Contains(view, "third-repo") {
+		t.Errorf("expected modal title to mention third-repo, got:\n%s", view)
+	}
+	if strings.Contains(view, "first-repo") {
+		t.Errorf("modal should NOT mention first-repo, got:\n%s", view)
+	}
+
+	// Press 'p' for Pull Requests -> must act on third-repo
+	updatedP, cmdP := m.handleRepoTabsModalKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = updatedP.(Model)
+	if m.ActiveModal != ModalNone {
+		t.Errorf("expected modal to close")
+	}
+	if cmdP == nil {
+		t.Fatalf("expected toast cmd")
+	}
+	toast := string(cmdP().(StatusToastMsg))
+	if !strings.Contains(toast, "third-repo") {
+		t.Errorf("expected toast to mention third-repo, got: %s", toast)
+	}
+	if strings.Contains(toast, "first-repo") {
+		t.Errorf("toast should NOT mention first-repo, got: %s", toast)
+	}
+
+	// Cursor must stay focused on third-repo, NOT reset to 0!
+	selectedAfter := m.getSelectedRepo()
+	if selectedAfter == nil || selectedAfter.Name != "third-repo" {
+		t.Errorf("expected cursor to remain focused on third-repo, got %+v (cursor %d)", selectedAfter, m.RepoCursor)
 	}
 }

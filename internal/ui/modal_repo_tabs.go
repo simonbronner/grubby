@@ -25,11 +25,10 @@ var repoTabOptions = []RepoTabOption{
 }
 
 func (m Model) renderRepoTabsModal() string {
-	repos := m.getDisplayRepos()
-	if len(repos) == 0 || m.RepoCursor >= len(repos) {
+	repo := m.getSelectedRepo()
+	if repo == nil {
 		return ""
 	}
-	repo := repos[m.RepoCursor]
 
 	title := ModalTitleStyle.Render(fmt.Sprintf("Open GitHub Tab: %s", repo.FullName))
 
@@ -56,12 +55,11 @@ func (m Model) renderRepoTabsModal() string {
 }
 
 func (m Model) handleRepoTabsModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	repos := m.getDisplayRepos()
-	if len(repos) == 0 || m.RepoCursor >= len(repos) {
+	repo := m.getSelectedRepo()
+	if repo == nil {
 		m.ActiveModal = ModalNone
 		return m, nil
 	}
-	repo := repos[m.RepoCursor]
 
 	key := strings.ToLower(msg.String())
 
@@ -70,7 +68,7 @@ func (m Model) handleRepoTabsModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if key == opt.Key {
 			m.ActiveModal = ModalNone
 			m = m.recordRepoInteraction(repo.Name)
-			m.RepoCursor = 0
+			m = m.focusRepoCursor(repo.Name)
 			url := fmt.Sprintf("https://github.com/%s%s", repo.FullName, opt.Path)
 			_ = OpenBrowser(url)
 			return m, func() tea.Msg {
@@ -97,7 +95,7 @@ func (m Model) handleRepoTabsModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			opt := repoTabOptions[idx]
 			m.ActiveModal = ModalNone
 			m = m.recordRepoInteraction(repo.Name)
-			m.RepoCursor = 0
+			m = m.focusRepoCursor(repo.Name)
 			url := fmt.Sprintf("https://github.com/%s%s", repo.FullName, opt.Path)
 			_ = OpenBrowser(url)
 			return m, func() tea.Msg {
@@ -109,7 +107,7 @@ func (m Model) handleRepoTabsModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			opt := repoTabOptions[m.ModalCursor]
 			m.ActiveModal = ModalNone
 			m = m.recordRepoInteraction(repo.Name)
-			m.RepoCursor = 0
+			m = m.focusRepoCursor(repo.Name)
 			url := fmt.Sprintf("https://github.com/%s%s", repo.FullName, opt.Path)
 			_ = OpenBrowser(url)
 			return m, func() tea.Msg {

@@ -93,13 +93,14 @@ func (m Model) handleFilterGroupModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		m.ActiveModal = ModalNone
-		m.RepoCursor = 0
 		if m.ModalCursor == 0 {
 			m.RepoGroupFilter = ""
+			m.RepoCursor = m.firstSelectableRepoIndex()
 			return m, func() tea.Msg { return StatusToastMsg("Showing all repositories") }
 		}
 		selected := labels[m.ModalCursor-1]
 		m.RepoGroupFilter = selected
+		m.RepoCursor = m.firstSelectableRepoIndex()
 		cnt := 0
 		for _, r := range m.Repos {
 			for _, repoLbl := range m.getRepoLabels(&r) {
@@ -162,7 +163,7 @@ func (m Model) handleFilterNameModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		m.RepoFilter = strings.TrimSpace(m.RepoFilterInput.Value())
-		m.RepoCursor = 0
+		m.RepoCursor = m.firstSelectableRepoIndex()
 		m.ActiveModal = ModalNone
 		if m.RepoFilter != "" {
 			return m, func() tea.Msg {
