@@ -475,3 +475,44 @@ func TestRepoLabelsStorage(t *testing.T) {
 		t.Errorf("expected updated labels [backend, security], got: %v", updated[101])
 	}
 }
+
+func TestLabelColorsAndGarbageCollection(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Save labels for repo 201
+	_ = db.SaveRepoLabels(201, "api-service", []string{"backend", "api"}, "platform")
+	// Save colors
+	colors := map[string]string{
+		"backend": "1d76db",
+		"api":     "5319e7",
+		"orphaned": "e11d48", // not associated with any repo!
+	}
+	if err := db.SaveLabelColors("platform", colors); err != nil {
+		t.Fatalf("SaveLabelColors failed: %v", err)
+	}
+
+	// 1. Check colors: "orphaned" must be garbage collected!
+	loadedColors, err := db.GetLabelColors("platform")
+	if err != nil {
+		t.Fatalf("GetLabelColors failed: %v", err)
+	}
+	if loadedColors["backend"] != "1d76db" || loadedColors["api"] != "5319e7" {
+		t.Errorf("unexpected loaded colors: %+v", loadedColors)
+	}
+	if _, exists := loadedColors["orphaned"]; exists {
+		t.Errorf("expected orphaned label to be garbage collected, but it exists: %+v", loadedColors)
+	}
+
+	// 2. Remove "api" from repo 201
+	_ = db.SaveRepoLabels(201, "api-service", []string{"backend"}, "platform")
+
+	// 3. Now "api" has 0 repos, so it should be garbage collected!
+	afterColors, _ := db.GetLabelColors("platform")
+	if _, exists := afterColors["api"]; exists {
+		t.Errorf("expected 'api' label to be garbage collected after untagging, but it exists: %+v", afterColors)
+	}
+	if afterColors["backend"] != "1d76db" {
+		t.Errorf("expected 'backend' to remain, got: %+v", afterColors)
+	}
+}
+

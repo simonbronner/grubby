@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
@@ -35,11 +37,55 @@ type GitHubFileCommitPayload struct {
 	Branch  string `json:"branch,omitempty"`
 }
 
+// LabelInfo represents the metadata of a label, including its color.
+type LabelInfo struct {
+	Color       string `json:"color"`                 // 6-digit hex color without '#' (e.g. "1d76db")
+	Description string `json:"description,omitempty"` // Optional description
+}
+
 // SquadRepoLabelsFile represents the JSON structure of .grubby/repo-labels.json
 type SquadRepoLabelsFile struct {
-	Version   int                 `json:"version"`
-	UpdatedAt time.Time           `json:"updated_at"`
-	Mappings  map[string][]string `json:"mappings"` // repoID -> []label
+	Version   int                  `json:"version"`
+	UpdatedAt time.Time            `json:"updated_at"`
+	Labels    map[string]LabelInfo `json:"labels"`   // labelName -> LabelInfo
+	Mappings  map[string][]string  `json:"mappings"` // repoID -> []label
+}
+
+// GenerateLabelColor generates a distinct, aesthetically pleasing 6-character hex color
+// using golden-angle (137.508°) hue distribution in HSL color space.
+func GenerateLabelColor(index int) string {
+	goldenAngle := 137.50776405003785
+	hue := math.Mod(float64(index)*goldenAngle, 360.0)
+	saturation := 0.70
+	lightness := 0.60
+	return hslToHex(hue, saturation, lightness)
+}
+
+func hslToHex(h, s, l float64) string {
+	c := (1.0 - math.Abs(2.0*l-1.0)) * s
+	x := c * (1.0 - math.Abs(math.Mod(h/60.0, 2.0)-1.0))
+	m := l - c/2.0
+
+	var r, g, b float64
+	switch {
+	case h < 60:
+		r, g, b = c, x, 0
+	case h < 120:
+		r, g, b = x, c, 0
+	case h < 180:
+		r, g, b = 0, c, x
+	case h < 240:
+		r, g, b = 0, x, c
+	case h < 300:
+		r, g, b = x, 0, c
+	default:
+		r, g, b = c, 0, x
+	}
+
+	ri := int(math.Round((r + m) * 255))
+	gi := int(math.Round((g + m) * 255))
+	bi := int(math.Round((b + m) * 255))
+	return fmt.Sprintf("%02x%02x%02x", ri, gi, bi)
 }
 
 // GetFileContent fetches a file from a repository using GitHub's Contents API
@@ -177,6 +223,69 @@ func (c *Client) SaveSquadRepoLabels(ctx context.Context, owner, squadTasksRepo 
 			return err
 		}
 
+		if fileData.Labels == nil {
+			fileData.Labels = make(map[string]LabelInfo)
+		}
+
+		// 1. Gather all active labels across mappings and clean empty mappings
+		usedLabels := make(map[string]bool)
+		for repoKey, labels := range fileData.Mappings {
+			var cleanList []string
+			seenForRepo := make(map[string]bool)
+			for _, lbl := range labels {
+				clean := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(lbl), "#"))
+				clean = strings.ReplaceAll(clean, " ", "-")
+				if clean != "" && !seenForRepo[clean] {
+					seenForRepo[clean] = true
+					cleanList = append(cleanList, clean)
+					usedLabels[clean] = true
+				}
+			}
+			if len(cleanList) > 0 {
+				fileData.Mappings[repoKey] = cleanList
+			} else {
+				delete(fileData.Mappings, repoKey)
+			}
+		}
+
+		// 2. Garbage collect: remove any label that is no longer used by any repository
+		for lbl := range fileData.Labels {
+			if !usedLabels[lbl] {
+				delete(fileData.Labels, lbl)
+			}
+		}
+
+		// 3. Assign distinct colors to any new labels without colors
+		usedColors := make(map[string]bool)
+		for _, info := range fileData.Labels {
+			if info.Color != "" {
+				usedColors[strings.ToLower(strings.TrimPrefix(info.Color, "#"))] = true
+			}
+		}
+
+		var sortedLabels []string
+		for lbl := range usedLabels {
+			sortedLabels = append(sortedLabels, lbl)
+		}
+		sort.Strings(sortedLabels)
+
+		colorIdx := 0
+		for _, lbl := range sortedLabels {
+			info, exists := fileData.Labels[lbl]
+			if !exists || info.Color == "" {
+				for {
+					candidate := GenerateLabelColor(colorIdx)
+					colorIdx++
+					if !usedColors[candidate] {
+						info.Color = candidate
+						usedColors[candidate] = true
+						break
+					}
+				}
+				fileData.Labels[lbl] = info
+			}
+		}
+
 		fileData.Version = 1
 		fileData.UpdatedAt = time.Now()
 
@@ -205,6 +314,36 @@ func (c *Client) SaveSquadRepoLabels(ctx context.Context, owner, squadTasksRepo 
 
 	return fmt.Errorf("failed to save repository labels after %d retries due to concurrent updates", maxRetries)
 }
+
+// FetchSquadRepoLabels loads .grubby/repo-labels.json from the squad tasks repo.
+func (c *Client) FetchSquadRepoLabels(ctx context.Context, owner, squadTasksRepo string) (*SquadRepoLabelsFile, error) {
+	if owner == "" || squadTasksRepo == "" {
+		return nil, nil
+	}
+	contentBytes, _, err := c.GetFileContent(ctx, owner, squadTasksRepo, ".grubby/repo-labels.json")
+	if err != nil {
+		if errors.Is(err, ErrFileNotFound) {
+			return &SquadRepoLabelsFile{
+				Version:  1,
+				Labels:   make(map[string]LabelInfo),
+				Mappings: make(map[string][]string),
+			}, nil
+		}
+		return nil, err
+	}
+	var fileData SquadRepoLabelsFile
+	if err := json.Unmarshal(contentBytes, &fileData); err != nil {
+		return nil, err
+	}
+	if fileData.Labels == nil {
+		fileData.Labels = make(map[string]LabelInfo)
+	}
+	if fileData.Mappings == nil {
+		fileData.Mappings = make(map[string][]string)
+	}
+	return &fileData, nil
+}
+
 
 func ioReadAll(r ioReader) ([]byte, error) {
 	buf := bytes.NewBuffer(make([]byte, 0, 512))

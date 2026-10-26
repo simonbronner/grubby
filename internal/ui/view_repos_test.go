@@ -698,7 +698,12 @@ func TestCollapsibleTierTree_TogglingAndAutoExpansion(t *testing.T) {
 func TestSummaryColumnAndInlineLabelsRendering(t *testing.T) {
 	now := time.Now()
 	repos := []github.Repository{
-		{ID: 101, Name: "auth-svc", PushedAt: now.Add(-1 * time.Hour)},
+		{
+			ID:          101,
+			Name:        "auth-svc",
+			Description: "Authentication and authorization service for core APIs",
+			PushedAt:    now.Add(-1 * time.Hour),
+		},
 	}
 	tiers := map[string]storage.RepoTier{
 		"auth-svc": storage.TierHot,
@@ -728,31 +733,52 @@ func TestSummaryColumnAndInlineLabelsRendering(t *testing.T) {
 		RepoLabels: map[int64][]string{
 			101: {"backend", "core"},
 		},
+		RepoLabelColors: map[string]string{
+			"backend": "1d76db",
+			"core":    "5319e7",
+		},
 		GitStatuses:     make(map[string]git.RepoGitStatus),
-		Width:           140,
+		Width:           160,
 		Height:          30,
 		SplashDismissed: true,
 	}
 
 	view := m.renderReposView()
 
-	// 1. Verify inline labels #backend and #core are rendered
+	// 1. Verify column header is (Vuln - PR - Issues)
+	if !strings.Contains(view, "(Vuln - PR - Issues)") {
+		t.Errorf("expected '(Vuln - PR - Issues)' column header, got:\n%s", view)
+	}
+
+	// 2. Verify inline labels #backend and #core are rendered
 	if !strings.Contains(view, "#backend") || !strings.Contains(view, "#core") {
 		t.Errorf("expected inline labels #backend and #core in repo view, got:\n%s", view)
 	}
 
-	// 2. Verify SUMMARY column content: Security [1c 2h 2m+] • ⑂ (2) • ⊙ (3)
-	if !strings.Contains(view, "1c") || !strings.Contains(view, "2h") || !strings.Contains(view, "2m+") {
-		t.Errorf("expected security badges in summary column, got:\n%s", view)
-	}
-	if !strings.Contains(view, "⑂ (2)") {
-		t.Errorf("expected ⑂ (2) in summary column, got:\n%s", view)
-	}
-	if !strings.Contains(view, "⊙ (3)") {
-		t.Errorf("expected ⊙ (3) for 1 personal + 2 squad tasks in summary column, got:\n%s", view)
+	// 3. Verify repository About / description text is rendered (chopped with … if needed)
+	if !strings.Contains(view, "Authentication and au") {
+		t.Errorf("expected repository About text in repo view, got:\n%s", view)
 	}
 
-	// 3. Verify single spinner indicator in top tier bar when Loading is true
+	// 4. Verify (Vuln - PR - Issues) format: ( 1, 2, 2 ) - ( 2 ) - ( 3 )
+	if !strings.Contains(view, "1, 2, 2") {
+		t.Errorf("expected ( 1, 2, 2 ) vulnerabilities in column, got:\n%s", view)
+	}
+	if !strings.Contains(view, "( 2 )") {
+		t.Errorf("expected ( 2 ) PR count in column, got:\n%s", view)
+	}
+	if !strings.Contains(view, "( 3 )") {
+		t.Errorf("expected ( 3 ) task count in column, got:\n%s", view)
+	}
+
+	// 5. Test clean repo with 0 vulnerabilities renders green ( 0, 0, 0 )
+	m.SecuritySummaries["auth-svc"] = github.SecurityAlertSummary{Total: 0}
+	viewClean := m.renderReposView()
+	if !strings.Contains(viewClean, "( 0, 0, 0 )") {
+		t.Errorf("expected '( 0, 0, 0 )' for 0 vulnerabilities, got:\n%s", viewClean)
+	}
+
+	// 6. Verify single spinner indicator in top tier bar when Loading is true
 	m.Loading = true
 	loadingView := m.renderReposView()
 	if !strings.Contains(loadingView, "Syncing...") {

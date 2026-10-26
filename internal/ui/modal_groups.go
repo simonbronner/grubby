@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func (m Model) getAllAvailableLabels() []string {
@@ -44,8 +45,10 @@ func (m Model) getAllAvailableLabels() []string {
 			add(g)
 		}
 	}
-	for l := range m.SelectedRepoGroups {
-		add(l)
+	for l, selected := range m.SelectedRepoGroups {
+		if selected {
+			add(l)
+		}
 	}
 
 	sort.Strings(result)
@@ -80,7 +83,9 @@ func (m Model) renderManageGroupsModal() string {
 			cursor = "▶ "
 		}
 
-		line := fmt.Sprintf("%s%s #%s", cursor, checked, l)
+		colorHex := m.getLabelColor(l)
+		styledLbl := lipgloss.NewStyle().Foreground(lipgloss.Color("#" + strings.TrimPrefix(colorHex, "#"))).Render("#" + l)
+		line := fmt.Sprintf("%s%s %s", cursor, checked, styledLbl)
 		if i == m.ModalCursor {
 			lines = append(lines, SelectedRowStyle.Render(line))
 		} else {
@@ -181,8 +186,13 @@ func (m Model) handleGroupsModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.SelectedRepoGroups == nil {
 				m.SelectedRepoGroups = make(map[string]bool)
 			}
-			m.SelectedRepoGroups[targetLabel] = !m.SelectedRepoGroups[targetLabel]
-			isAdded := m.SelectedRepoGroups[targetLabel]
+			isCurrentlySelected := m.SelectedRepoGroups[targetLabel]
+			if isCurrentlySelected {
+				delete(m.SelectedRepoGroups, targetLabel)
+			} else {
+				m.SelectedRepoGroups[targetLabel] = true
+			}
+			isAdded := !isCurrentlySelected
 
 			var active []string
 			for k, v := range m.SelectedRepoGroups {

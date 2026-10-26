@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // View by Group/Label Modal
@@ -55,7 +56,9 @@ func (m Model) renderFilterGroupModal() string {
 			}
 		}
 
-		line := fmt.Sprintf("%s%s #%-20s (%d repos)", cursor, checked, l, cnt)
+		colorHex := m.getLabelColor(l)
+		styledLbl := lipgloss.NewStyle().Foreground(lipgloss.Color("#" + strings.TrimPrefix(colorHex, "#"))).Render(fmt.Sprintf("#%-20s", l))
+		line := fmt.Sprintf("%s%s %s (%d repos)", cursor, checked, styledLbl, cnt)
 		if m.ModalCursor == i+1 {
 			lines = append(lines, SelectedRowStyle.Render(line))
 		} else {

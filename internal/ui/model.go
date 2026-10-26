@@ -235,6 +235,7 @@ type Model struct {
 	CollapsedTiers   map[storage.RepoTier]bool
 	RepoLabels       map[int64][]string
 	RepoLabelsByName map[string][]string
+	RepoLabelColors  map[string]string
 
 	// Squad Management
 	ManagedSquadName     string
@@ -446,6 +447,7 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 		CollapsedTiers:        map[storage.RepoTier]bool{storage.TierDead: true},
 		RepoLabels:            make(map[int64][]string),
 		RepoLabelsByName:      make(map[string][]string),
+		RepoLabelColors:       make(map[string]string),
 	}
 
 	if db != nil {
@@ -454,6 +456,9 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 		}
 		if nameLabels, err := db.GetRepoLabelsByNameForSquad(cfg.ActiveSquad); err == nil && len(nameLabels) > 0 {
 			m.RepoLabelsByName = nameLabels
+		}
+		if colors, err := db.GetLabelColors(cfg.ActiveSquad); err == nil && len(colors) > 0 {
+			m.RepoLabelColors = colors
 		}
 		made, saved, _ := db.GetRequestStats()
 		if gh != nil {
@@ -2323,6 +2328,23 @@ func (m Model) getRepoLastInteractedTime(repoName string, tmuxSessions map[strin
 	return t
 }
 
+func (m Model) getLabelColor(label string) string {
+	clean := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(label), "#"))
+	if m.RepoLabelColors != nil {
+		if c, ok := m.RepoLabelColors[clean]; ok && c != "" {
+			return c
+		}
+	}
+	hash := 0
+	for _, r := range clean {
+		hash = hash*31 + int(r)
+	}
+	if hash < 0 {
+		hash = -hash
+	}
+	return github.GenerateLabelColor(hash)
+}
+
 func (m Model) syncSquadRepoLabelsCmd(repoID int64, repoName string, labels []string) tea.Cmd {
 	if m.GHClient == nil || m.Config == nil || m.Config.ActiveSquad == "" || m.CurrentOrg == "" {
 		return nil
@@ -2336,7 +2358,11 @@ func (m Model) syncSquadRepoLabelsCmd(repoID int64, repoName string, labels []st
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		_ = m.GHClient.SaveSquadRepoLabels(ctx, m.CurrentOrg, squadRepo, func(mappings map[string][]string) error {
-			mappings[repoIDStr] = labels
+			if len(labels) > 0 {
+				mappings[repoIDStr] = labels
+			} else {
+				delete(mappings, repoIDStr)
+			}
 			return nil
 		})
 		return nil

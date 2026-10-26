@@ -586,7 +586,7 @@ func (m Model) renderReposView() string {
 	headerRow := lipgloss.JoinHorizontal(lipgloss.Top,
 		cols.Cursor.Render(""),
 		cols.Name.Render("REPOSITORY & LABELS"),
-		cols.Summary.Render("SUMMARY"),
+		cols.Summary.Render("(Vuln - PR - Issues)"),
 		cols.Git.Render("GIT STATUS"),
 		cols.Session.Render("TMUX"),
 		cols.Last.Render("LAST PUSHED"),
@@ -731,80 +731,110 @@ func (m Model) renderReposView() string {
 		repoDisplayName := r.Name
 		labels := m.getRepoLabels(&r)
 
-		var labelParts []string
+		var styledLabels []string
 		for _, lbl := range labels {
-			labelParts = append(labelParts, "#"+lbl)
+			colorHex := m.getLabelColor(lbl)
+			if isDead {
+				styledLabels = append(styledLabels, lipgloss.NewStyle().Foreground(lipgloss.Color("#6E7681")).Render("#"+lbl))
+			} else {
+				styledLabels = append(styledLabels, lipgloss.NewStyle().Foreground(lipgloss.Color("#"+strings.TrimPrefix(colorHex, "#"))).Bold(true).Render("#"+lbl))
+			}
 		}
-		labelText := strings.Join(labelParts, " ")
 
 		var styledName string
-		var styledLabels string
 		if isDead {
-			deadStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#6E7681"))
-			styledName = deadStyle.Render(repoDisplayName)
-			if labelText != "" {
-				styledLabels = " " + deadStyle.Render(labelText)
-			}
+			styledName = lipgloss.NewStyle().Foreground(lipgloss.Color("#6E7681")).Render(repoDisplayName)
 		} else {
 			styledName = lipgloss.NewStyle().Bold(true).Render(repoDisplayName)
-			if labelText != "" {
-				styledLabels = " " + lipgloss.NewStyle().Foreground(SecondaryColor).Render(labelText)
+		}
+
+		nameColText := "  " + styledName
+		rawNameLen := 2 + len(repoDisplayName)
+		if len(styledLabels) > 0 {
+			nameColText += " " + strings.Join(styledLabels, " ")
+			for _, lbl := range labels {
+				rawNameLen += 2 + len(lbl) // " #" + lbl
 			}
 		}
 
-		nameColText := "  " + styledName + styledLabels
+		// Display repository "About" text in italics with a slightly less light font
+		about := strings.TrimSpace(r.Description)
+		if about != "" && cols.NameWidth > rawNameLen+12 {
+			avail := cols.NameWidth - rawNameLen - 4
+			aboutSnippet := about
+			if len(aboutSnippet) > avail {
+				if avail > 4 {
+					aboutSnippet = aboutSnippet[:avail-1] + "…"
+				} else {
+					aboutSnippet = ""
+				}
+			}
+			if aboutSnippet != "" {
+				var styledAbout string
+				if isDead {
+					styledAbout = lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#555566")).Render(aboutSnippet)
+				} else {
+					styledAbout = lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#7D8590")).Render(aboutSnippet)
+				}
+				nameColText += "  " + styledAbout
+			}
+		}
 
-		// 3. SUMMARY column: 🛡️ Clean / [1c 2h 3m+] • ⑂ (prCount) • ⊙ (taskCount)
-		var secText string
+		// 3. (Vuln - PR - Issues) column: ( 0, 0, 0 ) / ( 1, 2, 3 ) - ( prCount ) - ( taskCount )
+		var vulnText string
 		sum := m.SecuritySummaries[r.Name]
 		if isDead {
 			deadStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#6E7681"))
 			if sum.Total == 0 {
-				secText = deadStyle.Render("🛡️ Clean")
+				vulnText = deadStyle.Render("( 0, 0, 0 )")
 			} else {
-				secText = deadStyle.Render(fmt.Sprintf("🛡️ (%d)", sum.Total))
+				medRest := sum.Medium + sum.Low
+				vulnText = deadStyle.Render(fmt.Sprintf("( %d, %d, %d )", sum.Critical, sum.High, medRest))
 			}
 		} else {
 			if sum.Total == 0 {
-				secText = lipgloss.NewStyle().Foreground(SuccessColor).Render("🛡️ Clean")
+				vulnText = lipgloss.NewStyle().Foreground(SuccessColor).Render("( 0, 0, 0 )")
 			} else {
-				var parts []string
+				medRest := sum.Medium + sum.Low
+				var cStr, hStr, mStr string
 				if sum.Critical > 0 {
-					parts = append(parts, lipgloss.NewStyle().Foreground(DangerColor).Bold(true).Render(fmt.Sprintf("%dc", sum.Critical)))
+					cStr = lipgloss.NewStyle().Foreground(DangerColor).Bold(true).Render(fmt.Sprintf("%d", sum.Critical))
+				} else {
+					cStr = lipgloss.NewStyle().Foreground(MutedColor).Render("0")
 				}
 				if sum.High > 0 {
-					parts = append(parts, lipgloss.NewStyle().Foreground(WarningColor).Bold(true).Render(fmt.Sprintf("%dh", sum.High)))
+					hStr = lipgloss.NewStyle().Foreground(WarningColor).Bold(true).Render(fmt.Sprintf("%d", sum.High))
+				} else {
+					hStr = lipgloss.NewStyle().Foreground(MutedColor).Render("0")
 				}
-				medRest := sum.Medium + sum.Low
 				if medRest > 0 {
-					parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("#E5C07B")).Render(fmt.Sprintf("%dm+", medRest)))
+					mStr = lipgloss.NewStyle().Foreground(lipgloss.Color("#E5C07B")).Bold(true).Render(fmt.Sprintf("%d", medRest))
+				} else {
+					mStr = lipgloss.NewStyle().Foreground(MutedColor).Render("0")
 				}
-				if len(parts) == 0 {
-					parts = append(parts, lipgloss.NewStyle().Foreground(WarningColor).Render(fmt.Sprintf("%d", sum.Total)))
-				}
-				secText = fmt.Sprintf("🛡️ [%s]", strings.Join(parts, " "))
+				vulnText = fmt.Sprintf("( %s, %s, %s )", cStr, hStr, mStr)
 			}
 		}
 
 		var prBadge string
 		if isDead {
-			prBadge = lipgloss.NewStyle().Foreground(lipgloss.Color("#6E7681")).Render(fmt.Sprintf("⑂ (%d)", prCount))
+			prBadge = lipgloss.NewStyle().Foreground(lipgloss.Color("#6E7681")).Render(fmt.Sprintf("( %d )", prCount))
 		} else if prCount > 0 {
-			prBadge = lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render(fmt.Sprintf("⑂ (%d)", prCount))
+			prBadge = "( " + lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render(fmt.Sprintf("%d", prCount)) + " )"
 		} else {
-			prBadge = lipgloss.NewStyle().Foreground(MutedColor).Render("⑂ (0)")
+			prBadge = lipgloss.NewStyle().Foreground(MutedColor).Render("( 0 )")
 		}
 
 		var taskBadge string
 		if isDead {
-			taskBadge = lipgloss.NewStyle().Foreground(lipgloss.Color("#6E7681")).Render(fmt.Sprintf("⊙ (%d)", taskCount))
+			taskBadge = lipgloss.NewStyle().Foreground(lipgloss.Color("#6E7681")).Render(fmt.Sprintf("( %d )", taskCount))
 		} else if taskCount > 0 {
-			taskBadge = lipgloss.NewStyle().Foreground(lipgloss.Color("#98C379")).Bold(true).Render(fmt.Sprintf("⊙ (%d)", taskCount))
+			taskBadge = "( " + lipgloss.NewStyle().Foreground(lipgloss.Color("#98C379")).Bold(true).Render(fmt.Sprintf("%d", taskCount)) + " )"
 		} else {
-			taskBadge = lipgloss.NewStyle().Foreground(MutedColor).Render("⊙ (0)")
+			taskBadge = lipgloss.NewStyle().Foreground(MutedColor).Render("( 0 )")
 		}
 
-		summaryColText := fmt.Sprintf("%s • %s • %s", secText, prBadge, taskBadge)
+		summaryColText := fmt.Sprintf("%s - %s - %s", vulnText, prBadge, taskBadge)
 
 		// 4. Git badge
 		gitBadge := st.Badge()

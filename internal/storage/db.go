@@ -192,6 +192,15 @@ func (d *DB) migrate() error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_repo_labels_squad ON repo_labels (squad);
 	CREATE INDEX IF NOT EXISTS idx_repo_labels_name ON repo_labels (repo_name);
+
+	CREATE TABLE IF NOT EXISTS label_meta (
+		squad TEXT NOT NULL DEFAULT '',
+		label TEXT NOT NULL,
+		color TEXT NOT NULL DEFAULT '',
+		description TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (squad, label)
+	);
+	CREATE INDEX IF NOT EXISTS idx_label_meta_squad ON label_meta (squad);
 	`
 	_, err := d.db.Exec(schema)
 	return err
@@ -1257,7 +1266,78 @@ func (d *DB) SaveRepoLabels(repoID int64, repoName string, labels []string, squa
 		}
 	}
 
+	// Garbage collect any labels from label_meta that have no repositories in repo_labels for this squad
+	_, _ = tx.Exec(`
+		DELETE FROM label_meta
+		WHERE squad = ? AND label NOT IN (
+			SELECT DISTINCT label FROM repo_labels WHERE squad = ?
+		)
+	`, squad, squad)
+
 	return tx.Commit()
+}
+
+func (d *DB) SaveLabelColors(squad string, colors map[string]string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO label_meta (squad, label, color)
+		VALUES (?, ?, ?)
+		ON CONFLICT(squad, label) DO UPDATE SET
+			color = excluded.color
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for l, c := range colors {
+		clean := strings.ToLower(strings.TrimSpace(l))
+		if clean == "" {
+			continue
+		}
+		if _, err := stmt.Exec(squad, clean, c); err != nil {
+			return err
+		}
+	}
+
+	// Garbage collect any labels that have no repositories in repo_labels for this squad
+	_, _ = tx.Exec(`
+		DELETE FROM label_meta
+		WHERE squad = ? AND label NOT IN (
+			SELECT DISTINCT label FROM repo_labels WHERE squad = ?
+		)
+	`, squad, squad)
+
+	return tx.Commit()
+}
+
+func (d *DB) GetLabelColors(squad string) (map[string]string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.db.Query(`SELECT label, color FROM label_meta WHERE squad = ?`, squad)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]string)
+	for rows.Next() {
+		var l, c string
+		if err := rows.Scan(&l, &c); err != nil {
+			return nil, err
+		}
+		result[l] = c
+	}
+	return result, rows.Err()
 }
 
 func (d *DB) GetRepoLabelsForSquad(squad string) (map[int64][]string, error) {
