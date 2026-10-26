@@ -145,32 +145,31 @@ func TestTaskSorting_PriorityAndUpdated(t *testing.T) {
 func TestTaskSubtabs_MineAndSquad(t *testing.T) {
 	m := createTestTasksModel()
 
-	// 1. Default subtab is My Tasks
+	// 1. Default board is My Tasks
 	if m.ActiveTaskSubtab != TaskSubtabMine {
 		t.Errorf("expected default subtab to be TaskSubtabMine, got %v", m.ActiveTaskSubtab)
 	}
 
 	rendered := m.renderTasksView()
-	// Must contain subtab headers with indicators
+	// Must contain My Tasks board header and personal tasks
 	if !strings.Contains(rendered, "My Tasks (4)") {
 		t.Errorf("expected rendered view to contain 'My Tasks (4)', got:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "Squad Tasks (2)") {
-		t.Errorf("expected rendered view to contain 'Squad Tasks (2)', got:\n%s", rendered)
-	}
-	// Must contain personal tasks
 	if !strings.Contains(rendered, "High priority personal task (newer)") {
 		t.Errorf("expected rendered view to contain personal task")
 	}
 
-	// 2. Switch subtab to Squad Tasks via 'l'
+	// 2. Switch board to Squad Tasks via 'l'
 	updated, _ := m.handleTasksKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
 	m = updated.(Model)
-	if m.ActiveTaskSubtab != TaskSubtabSquad {
-		t.Errorf("expected ActiveTaskSubtab == TaskSubtabSquad after 'l', got %v", m.ActiveTaskSubtab)
+	if m.ActiveTab != TabSquadTasks {
+		t.Errorf("expected ActiveTab == TabSquadTasks after 'l', got %v", m.ActiveTab)
 	}
 
 	squadRendered := m.renderTasksView()
+	if !strings.Contains(squadRendered, "Squad Tasks") || !strings.Contains(squadRendered, "(2)") {
+		t.Errorf("expected squad view to contain 'Squad Tasks' and '(2)', got:\n%s", squadRendered)
+	}
 	if !strings.Contains(squadRendered, "Squad task assigned to alice") {
 		t.Errorf("expected squad view to contain alice squad task")
 	}
@@ -181,8 +180,8 @@ func TestTaskSubtabs_MineAndSquad(t *testing.T) {
 	// 3. Switch back to My Tasks via 'h'
 	updated, _ = m.handleTasksKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
 	m = updated.(Model)
-	if m.ActiveTaskSubtab != TaskSubtabMine {
-		t.Errorf("expected ActiveTaskSubtab == TaskSubtabMine after 'h', got %v", m.ActiveTaskSubtab)
+	if m.ActiveTab != TabMyTasks {
+		t.Errorf("expected ActiveTab == TabMyTasks after 'h', got %v", m.ActiveTab)
 	}
 }
 

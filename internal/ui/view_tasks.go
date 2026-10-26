@@ -108,46 +108,40 @@ func (m Model) renderTasksView() string {
 	activeTasks := m.getActiveTasks()
 	recentDone := m.getRecentDoneTasks()
 
-	// 1. Subtab Bar Header
+	// 1. Task Board Header Banner
 	mineOpen := len(m.PersonalTasks)
 	squadOpen := len(m.SquadTasks)
 	allDoneCount := len(m.getSortedDoneTasks())
 
-	subtabMineText := fmt.Sprintf(" My Tasks (%d) ", mineOpen)
-	subtabSquadText := fmt.Sprintf(" Squad Tasks (%d) ", squadOpen)
-
-	var subtabMine, subtabSquad string
-	if !m.isSquadTasks() {
-		subtabMine = ActiveTabStyle.Render(subtabMineText)
-		subtabSquad = InactiveTabStyle.Render(subtabSquadText)
-	} else {
-		subtabMine = InactiveTabStyle.Render(subtabMineText)
-		subtabSquad = ActiveTabStyle.Render(subtabSquadText)
-	}
-
-	subtabsRow := lipgloss.JoinHorizontal(lipgloss.Top, subtabMine, "  ", subtabSquad)
-
 	var activeRepo string
-	if !m.isSquadTasks() {
-		activeRepo = m.getTaskTargetRepoFullName(TaskTargetPersonal)
-	} else {
+	var boardName string
+	if m.isSquadTasks() {
 		activeRepo = m.getTaskTargetRepoFullName(TaskTargetSquad)
+		squadName := ""
+		if m.Config != nil && m.Config.ActiveSquad != "" {
+			squadName = fmt.Sprintf(" (%s)", m.Config.ActiveSquad)
+		}
+		boardName = fmt.Sprintf("👥 Squad Tasks%s (%d)", squadName, squadOpen)
+	} else {
+		activeRepo = m.getTaskTargetRepoFullName(TaskTargetPersonal)
+		boardName = fmt.Sprintf("📋 My Tasks (%d)", mineOpen)
 	}
 
-	var repoInfoBadge string
+	boardBadge := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Render(boardName)
+
+	var headerBanner string
 	if m.InlineEditing {
-		repoInfoBadge = MetaBarStyle.Render(fmt.Sprintf("  •  Repo: %s  •  [Editing Title: Enter to save, Esc to cancel]", activeRepo))
+		headerBanner = "  " + boardBadge + MetaBarStyle.Render(fmt.Sprintf("  •  Repo: %s  •  [Editing Title: Enter to save, Esc to cancel]", activeRepo))
 	} else if m.InlineAdding {
-		repoInfoBadge = MetaBarStyle.Render(fmt.Sprintf("  •  Repo: %s  •  [New Task: Enter to create, Esc to cancel]", activeRepo))
+		headerBanner = "  " + boardBadge + MetaBarStyle.Render(fmt.Sprintf("  •  Repo: %s  •  [New Task: Enter to create, Esc to cancel]", activeRepo))
 	} else {
 		allDoneBadge := lipgloss.NewStyle().Foreground(lipgloss.Color("#8888AA")).Render(fmt.Sprintf("[d] All Done (%d)", allDoneCount))
 		if m.isSquadTasks() {
-			repoInfoBadge = MetaBarStyle.Render(fmt.Sprintf("  •  Repo: %s  •  %s  •  [a] Add Task  [A] Assign  [n] Notes  [Space] Done", activeRepo, allDoneBadge))
+			headerBanner = "  " + boardBadge + MetaBarStyle.Render(fmt.Sprintf("  •  Repo: %s  •  %s  •  [a] Add Task  [A] Assign  [n] Notes  [Space] Done", activeRepo, allDoneBadge))
 		} else {
-			repoInfoBadge = MetaBarStyle.Render(fmt.Sprintf("  •  Repo: %s  •  %s  •  [a] Add Task  [n] Notes  [Space] Done", activeRepo, allDoneBadge))
+			headerBanner = "  " + boardBadge + MetaBarStyle.Render(fmt.Sprintf("  •  Repo: %s  •  %s  •  [a] Add Task  [n] Notes  [Space] Done", activeRepo, allDoneBadge))
 		}
 	}
-	headerBanner := "  " + subtabsRow + repoInfoBadge
 
 	// 2. Table Layout
 	cursorW := 3
