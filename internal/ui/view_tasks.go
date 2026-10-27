@@ -29,27 +29,60 @@ func (m Model) isSquadTasks() bool {
 	return m.ActiveTaskSubtab == TaskSubtabSquad
 }
 
-func (m Model) getActiveTasks() []github.Task {
-	var list []github.Task
-	if !m.isSquadTasks() {
-		list = append(list, m.PersonalTasks...)
-	} else {
-		list = append(list, m.SquadTasks...)
+func (m Model) isTasksTab() bool {
+	return m.ActiveTab == TabMyTasks || m.ActiveTab == TabSquadTasks
+}
+
+func (m Model) getSquadPartitionedTasks() ([]github.Task, []github.Task) {
+	var reviews []github.Task
+	var general []github.Task
+	for _, t := range m.SquadTasks {
+		if t.IsPRReview() {
+			reviews = append(reviews, t)
+		} else {
+			general = append(general, t)
+		}
 	}
 
-	sort.SliceStable(list, func(i, j int) bool {
-		rankI := list[i].Priority.Rank()
-		rankJ := list[j].Priority.Rank()
-		if rankI != rankJ {
-			return rankI < rankJ
-		}
-		if !list[i].UpdatedAt.Equal(list[j].UpdatedAt) {
-			return list[i].UpdatedAt.After(list[j].UpdatedAt)
-		}
-		return list[i].Number > list[j].Number
-	})
+	sortTasks := func(slice []github.Task) {
+		sort.SliceStable(slice, func(i, j int) bool {
+			rankI := slice[i].Priority.Rank()
+			rankJ := slice[j].Priority.Rank()
+			if rankI != rankJ {
+				return rankI < rankJ
+			}
+			if !slice[i].UpdatedAt.Equal(slice[j].UpdatedAt) {
+				return slice[i].UpdatedAt.After(slice[j].UpdatedAt)
+			}
+			return slice[i].Number > slice[j].Number
+		})
+	}
 
-	return list
+	sortTasks(reviews)
+	sortTasks(general)
+	return reviews, general
+}
+
+func (m Model) getActiveTasks() []github.Task {
+	if !m.isSquadTasks() {
+		var list []github.Task
+		list = append(list, m.PersonalTasks...)
+		sort.SliceStable(list, func(i, j int) bool {
+			rankI := list[i].Priority.Rank()
+			rankJ := list[j].Priority.Rank()
+			if rankI != rankJ {
+				return rankI < rankJ
+			}
+			if !list[i].UpdatedAt.Equal(list[j].UpdatedAt) {
+				return list[i].UpdatedAt.After(list[j].UpdatedAt)
+			}
+			return list[i].Number > list[j].Number
+		})
+		return list
+	}
+
+	reviews, general := m.getSquadPartitionedTasks()
+	return append(reviews, general...)
 }
 
 func (m Model) getDisplayTasks() []github.Task {
@@ -73,9 +106,37 @@ const (
 )
 
 func (m Model) getCursorTarget() (cursorLocationType, *github.Task) {
-	activeTasks := m.getActiveTasks()
 	recentDone := m.getRecentDoneTasks()
 
+	if m.isSquadTasks() {
+		reviews, general := m.getSquadPartitionedTasks()
+		cursor := m.TaskCursor
+
+		if cursor < len(reviews) {
+			return locActiveTask, &reviews[cursor]
+		}
+		cursor -= len(reviews)
+
+		if m.InlineAdding {
+			if cursor == 0 {
+				return locInlineNew, nil
+			}
+			cursor--
+		}
+
+		if cursor < len(general) {
+			return locActiveTask, &general[cursor]
+		}
+		cursor -= len(general)
+
+		if cursor < len(recentDone) {
+			return locCompletedTask, &recentDone[cursor]
+		}
+		return locActiveTask, nil
+	}
+
+	// Personal tasks
+	activeTasks := m.getActiveTasks()
 	cursor := m.TaskCursor
 	if m.InlineAdding {
 		if cursor == 0 {
@@ -175,162 +236,189 @@ func (m Model) renderTasksView() string {
 	)
 	renderedTableHead := TableHeaderStyle.Render(tableHead)
 
-	var rows []string
-	rows = append(rows, headerBanner, "", renderedTableHead)
+	formatTaskRow := func(t github.Task, isCurrent bool) string {
+		var prioBadge string
+		if t.IsPRReview() {
+			switch t.Priority {
+			case github.PriorityHigh:
+				prioBadge = lipgloss.NewStyle().Bold(true).Foreground(DangerColor).Render("[⑂ HIGH]")
+			case github.PriorityLow:
+				prioBadge = lipgloss.NewStyle().Foreground(SuccessColor).Render("[⑂ LOW]")
+			default:
+				prioBadge = lipgloss.NewStyle().Foreground(WarningColor).Render("[⑂ MED]")
+			}
+		} else {
+			switch t.Priority {
+			case github.PriorityHigh:
+				prioBadge = lipgloss.NewStyle().Bold(true).Foreground(DangerColor).Render("[🔴 HIGH]")
+			case github.PriorityLow:
+				prioBadge = lipgloss.NewStyle().Foreground(SuccessColor).Render("[🟢 LOW]")
+			default:
+				prioBadge = lipgloss.NewStyle().Foreground(WarningColor).Render("[🟡 MED]")
+			}
+		}
 
-	// Available lines for active tasks
-	doneLines := 0
-	if len(recentDone) > 0 {
-		doneLines = len(recentDone) + 2 // 2 lines for separator and blank
-	}
-	visibleCount := m.Height - 10 - doneLines
-	if visibleCount < 3 {
-		visibleCount = 3
-	}
-
-	rowIdx := 0
-
-	// Inline adding row
-	if m.InlineAdding {
-		prioBadge := lipgloss.NewStyle().Bold(true).Foreground(WarningColor).Render("[🟡 MED]")
-		switch m.InlineNewPriority {
-		case github.PriorityHigh:
-			prioBadge = lipgloss.NewStyle().Bold(true).Foreground(DangerColor).Render("[🔴 HIGH]")
-		case github.PriorityLow:
-			prioBadge = lipgloss.NewStyle().Foreground(SuccessColor).Render("[🟢 LOW]")
+		var titleDisplay string
+		if m.InlineEditing && t.ID == m.InlineEditTaskID {
+			titleDisplay = m.InlineEditTitleInput.View()
+		} else {
+			titleDisplay = strings.ReplaceAll(strings.ReplaceAll(t.Title, "\r", " "), "\n", " ")
+			if t.IsPRReview() {
+				prPrefix := lipgloss.NewStyle().Foreground(lipgloss.Color("#A371F7")).Bold(true).Render("⑂ ")
+				titleDisplay = prPrefix + titleDisplay
+			}
+			if len(titleDisplay) > titleW-2 && titleW > 3 {
+				titleDisplay = titleDisplay[:titleW-3] + "…"
+			}
+			if isCurrent {
+				titleDisplay = lipgloss.NewStyle().Bold(true).Render(titleDisplay)
+			}
 		}
 
 		notesIcon := " · "
-		if len(strings.TrimSpace(m.InlineNewNotes)) > 0 {
+		if len(strings.TrimSpace(t.Body)) > 0 {
 			notesIcon = "📝"
 		}
 
-		assigneeDisplay := "Unassigned"
-		if m.InlineNewAssignee != "" {
-			assigneeDisplay = "@" + m.InlineNewAssignee
+		var assigneeText string
+		if len(t.Assignees) > 0 {
+			assigneeText = "@" + strings.Join(t.Assignees, ", @")
+			if len(assigneeText) > assigneeW-2 && assigneeW > 3 {
+				assigneeText = assigneeText[:assigneeW-3] + "…"
+			}
+			assigneeText = lipgloss.NewStyle().Foreground(SecondaryColor).Render(assigneeText)
+		} else if t.IsPRReview() {
+			assigneeText = lipgloss.NewStyle().Foreground(WarningColor).Bold(true).Render("Unassigned")
+		} else {
+			assigneeText = lipgloss.NewStyle().Foreground(MutedColor).Render("Unassigned")
 		}
-		assigneeText := lipgloss.NewStyle().Foreground(SecondaryColor).Render(assigneeDisplay)
-		dateText := lipgloss.NewStyle().Foreground(MutedColor).Render("Draft")
-		issueText := lipgloss.NewStyle().Foreground(WarningColor).Render("(new)")
 
-		inlineCells := lipgloss.JoinHorizontal(lipgloss.Top,
-			cursorCol.Render("▶ "),
+		updatedText := formatTimeAgo(t.UpdatedAt)
+
+		issueRef := fmt.Sprintf("%s#%d", t.RepoName, t.Number)
+		if len(issueRef) > repoW-2 && repoW > 3 {
+			issueRef = issueRef[:repoW-3] + "…"
+		}
+		issueRefText := lipgloss.NewStyle().Foreground(HighlightColor).Render(issueRef)
+
+		cursorText := "  "
+		if isCurrent {
+			cursorText = "▶ "
+		}
+
+		rowCells := lipgloss.JoinHorizontal(lipgloss.Top,
+			cursorCol.Render(cursorText),
 			prioCol.Render(prioBadge),
-			titleCol.Render(m.InlineNewTitleInput.View()),
+			titleCol.Render(titleDisplay),
 			notesCol.Render(notesIcon),
 			assigneeCol.Render(assigneeText),
-			updatedCol.Render(dateText),
-			repoCol.Render(issueText),
+			updatedCol.Render(updatedText),
+			repoCol.Render(issueRefText),
 		)
-		rows = append(rows, SelectedRowStyle.MaxHeight(1).Render(inlineCells))
-		rowIdx++
+
+		if isCurrent {
+			return SelectedRowStyle.MaxHeight(1).Render(rowCells)
+		}
+		return NormalRowStyle.MaxHeight(1).Render(rowCells)
 	}
 
-	// Active Tasks
-	if len(activeTasks) == 0 && !m.InlineAdding {
-		rows = append(rows, lipgloss.NewStyle().Foreground(MutedColor).Render("   No active tasks. Press [a] to add a task inline!"))
-	} else {
-		// Calculate scrolling for active tasks
-		start := 0
-		activeCursor := m.TaskCursor
-		if m.InlineAdding {
-			activeCursor--
-		}
-		if activeCursor >= visibleCount {
-			start = activeCursor - visibleCount + 1
-		}
-		end := start + visibleCount
-		if end > len(activeTasks) {
-			end = len(activeTasks)
-		}
-
-		for i := start; i < end; i++ {
-			t := activeTasks[i]
-			isCurrent := (rowIdx == m.TaskCursor)
-
-			var prioBadge string
-			if t.IsPRReview() {
-				switch t.Priority {
-				case github.PriorityHigh:
-					prioBadge = lipgloss.NewStyle().Bold(true).Foreground(DangerColor).Render("[⑂ HIGH]")
-				case github.PriorityLow:
-					prioBadge = lipgloss.NewStyle().Foreground(SuccessColor).Render("[⑂ LOW]")
-				default:
-					prioBadge = lipgloss.NewStyle().Foreground(WarningColor).Render("[⑂ MED]")
-				}
-			} else {
-				switch t.Priority {
-				case github.PriorityHigh:
-					prioBadge = lipgloss.NewStyle().Bold(true).Foreground(DangerColor).Render("[🔴 HIGH]")
-				case github.PriorityLow:
-					prioBadge = lipgloss.NewStyle().Foreground(SuccessColor).Render("[🟢 LOW]")
-				default:
-					prioBadge = lipgloss.NewStyle().Foreground(WarningColor).Render("[🟡 MED]")
-				}
-			}
-
-			var titleDisplay string
-			if m.InlineEditing && t.ID == m.InlineEditTaskID {
-				titleDisplay = m.InlineEditTitleInput.View()
-			} else {
-				titleDisplay = strings.ReplaceAll(strings.ReplaceAll(t.Title, "\r", " "), "\n", " ")
-				if t.IsPRReview() {
-					prPrefix := lipgloss.NewStyle().Foreground(lipgloss.Color("#A371F7")).Bold(true).Render("⑂ ")
-					titleDisplay = prPrefix + titleDisplay
-				}
-				if len(titleDisplay) > titleW-2 && titleW > 3 {
-					titleDisplay = titleDisplay[:titleW-3] + "…"
-				}
-				if isCurrent {
-					titleDisplay = lipgloss.NewStyle().Bold(true).Render(titleDisplay)
-				}
+	var renderInlineAddingRow func() string
+	if m.InlineAdding {
+		renderInlineAddingRow = func() string {
+			prioBadge := lipgloss.NewStyle().Bold(true).Foreground(WarningColor).Render("[🟡 MED]")
+			switch m.InlineNewPriority {
+			case github.PriorityHigh:
+				prioBadge = lipgloss.NewStyle().Bold(true).Foreground(DangerColor).Render("[🔴 HIGH]")
+			case github.PriorityLow:
+				prioBadge = lipgloss.NewStyle().Foreground(SuccessColor).Render("[🟢 LOW]")
 			}
 
 			notesIcon := " · "
-			if len(strings.TrimSpace(t.Body)) > 0 {
+			if len(strings.TrimSpace(m.InlineNewNotes)) > 0 {
 				notesIcon = "📝"
 			}
 
-			var assigneeText string
-			if len(t.Assignees) > 0 {
-				assigneeText = "@" + strings.Join(t.Assignees, ", @")
-				if len(assigneeText) > assigneeW-2 && assigneeW > 3 {
-					assigneeText = assigneeText[:assigneeW-3] + "…"
-				}
-				assigneeText = lipgloss.NewStyle().Foreground(SecondaryColor).Render(assigneeText)
-			} else {
-				assigneeText = lipgloss.NewStyle().Foreground(MutedColor).Render("Unassigned")
+			assigneeDisplay := "Unassigned"
+			if m.InlineNewAssignee != "" {
+				assigneeDisplay = "@" + m.InlineNewAssignee
 			}
+			assigneeText := lipgloss.NewStyle().Foreground(SecondaryColor).Render(assigneeDisplay)
+			dateText := lipgloss.NewStyle().Foreground(MutedColor).Render("Draft")
+			issueText := lipgloss.NewStyle().Foreground(WarningColor).Render("(new)")
 
-			updatedText := formatTimeAgo(t.UpdatedAt)
-
-			issueRef := fmt.Sprintf("%s#%d", t.RepoName, t.Number)
-			if len(issueRef) > repoW-2 && repoW > 3 {
-				issueRef = issueRef[:repoW-3] + "…"
-			}
-			issueRefText := lipgloss.NewStyle().Foreground(HighlightColor).Render(issueRef)
-
-			cursorText := "  "
-			if isCurrent {
-				cursorText = "▶ "
-			}
-
-			rowCells := lipgloss.JoinHorizontal(lipgloss.Top,
-				cursorCol.Render(cursorText),
+			inlineCells := lipgloss.JoinHorizontal(lipgloss.Top,
+				cursorCol.Render("▶ "),
 				prioCol.Render(prioBadge),
-				titleCol.Render(titleDisplay),
+				titleCol.Render(m.InlineNewTitleInput.View()),
 				notesCol.Render(notesIcon),
 				assigneeCol.Render(assigneeText),
-				updatedCol.Render(updatedText),
-				repoCol.Render(issueRefText),
+				updatedCol.Render(dateText),
+				repoCol.Render(issueText),
 			)
+			return SelectedRowStyle.MaxHeight(1).Render(inlineCells)
+		}
+	}
 
-			if isCurrent {
-				rows = append(rows, SelectedRowStyle.MaxHeight(1).Render(rowCells))
-			} else {
-				rows = append(rows, NormalRowStyle.MaxHeight(1).Render(rowCells))
+	var rows []string
+	rows = append(rows, headerBanner)
+	rowIdx := 0
+
+	if m.isSquadTasks() {
+		reviews, general := m.getSquadPartitionedTasks()
+
+		// 1. OUTSTANDING REVIEWS TABLE
+		sepReviews := lipgloss.NewStyle().Foreground(SecondaryColor).Bold(true).Render(
+			fmt.Sprintf("─── ⑂ OUTSTANDING REVIEWS (%d) ──────────────────────────────────────────────────────────", len(reviews)),
+		)
+		rows = append(rows, "", sepReviews, renderedTableHead)
+
+		if len(reviews) == 0 {
+			rows = append(rows, lipgloss.NewStyle().Foreground(MutedColor).Render("   ✓ No outstanding pull request reviews for squad."))
+		} else {
+			for _, t := range reviews {
+				isCurrent := (rowIdx == m.TaskCursor)
+				rows = append(rows, formatTaskRow(t, isCurrent))
+				rowIdx++
 			}
+		}
+
+		// 2. SQUAD TASKS TABLE
+		sepTasks := lipgloss.NewStyle().Foreground(HighlightColor).Bold(true).Render(
+			fmt.Sprintf("─── 📋 SQUAD TASKS (%d) ──────────────────────────────────────────────────────────────────", len(general)),
+		)
+		rows = append(rows, "", sepTasks, renderedTableHead)
+
+		if m.InlineAdding {
+			rows = append(rows, renderInlineAddingRow())
 			rowIdx++
+		}
+
+		if len(general) == 0 && !m.InlineAdding {
+			rows = append(rows, lipgloss.NewStyle().Foreground(MutedColor).Render("   No active squad tasks. Press [a] to add a task inline!"))
+		} else {
+			for _, t := range general {
+				isCurrent := (rowIdx == m.TaskCursor)
+				rows = append(rows, formatTaskRow(t, isCurrent))
+				rowIdx++
+			}
+		}
+	} else {
+		// Personal tasks
+		rows = append(rows, "", renderedTableHead)
+
+		if m.InlineAdding {
+			rows = append(rows, renderInlineAddingRow())
+			rowIdx++
+		}
+
+		if len(activeTasks) == 0 && !m.InlineAdding {
+			rows = append(rows, lipgloss.NewStyle().Foreground(MutedColor).Render("   No active tasks. Press [a] to add a task inline!"))
+		} else {
+			for _, t := range activeTasks {
+				isCurrent := (rowIdx == m.TaskCursor)
+				rows = append(rows, formatTaskRow(t, isCurrent))
+				rowIdx++
+			}
 		}
 	}
 
@@ -492,6 +580,10 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			body := m.InlineNewNotes
 
 			now := time.Now()
+			taskLabels := []string{priority.Label()}
+			if isSquad && m.Config != nil && m.Config.ActiveSquad != "" {
+				taskLabels = append(taskLabels, "squad:"+strings.ToLower(strings.TrimSpace(m.Config.ActiveSquad)))
+			}
 			tempTask := github.Task{
 				ID:          -now.UnixNano(),
 				Number:      0,
@@ -503,7 +595,7 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				RepoName:    repo,
 				Author:      m.AuthUser,
 				Assignees:   assignees,
-				Labels:      []string{priority.Label()},
+				Labels:      taskLabels,
 				CreatedAt:   now,
 				UpdatedAt:   now,
 				IsSquadTask: isSquad,
@@ -684,15 +776,17 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.InlineNewPriority = github.PriorityMedium
 		if m.isSquadTasks() {
 			m.InlineNewAssignee = ""
+			reviews, _ := m.getSquadPartitionedTasks()
+			m.TaskCursor = len(reviews)
 		} else {
 			m.InlineNewAssignee = m.AuthUser
+			m.TaskCursor = 0
 		}
 		ti := textinput.New()
 		ti.Placeholder = "What needs to be done? (Enter to create, Esc to cancel)"
 		ti.Prompt = ""
 		ti.Focus()
 		m.InlineNewTitleInput = ti
-		m.TaskCursor = 0
 		return m, textinput.Blink
 
 	case "enter", "e":
@@ -705,8 +799,8 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				_ = OpenBrowser(targetURL)
 
-				// If a review task is assigned to multiples, unassign from everyone but the person launching the review
-				if len(task.Assignees) > 1 && m.AuthUser != "" {
+				// If an unassigned or multi-assigned review task is launched, claim it for the current user
+				if (len(task.Assignees) == 0 || len(task.Assignees) > 1) && m.AuthUser != "" {
 					newAssignees := []string{m.AuthUser}
 					taskCopy := *task
 					taskCopy.Assignees = newAssignees
@@ -944,7 +1038,7 @@ func (m Model) handleTasksKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				_ = OpenBrowser(targetURL)
 
-				if len(task.Assignees) > 1 && m.AuthUser != "" {
+				if (len(task.Assignees) == 0 || len(task.Assignees) > 1) && m.AuthUser != "" {
 					newAssignees := []string{m.AuthUser}
 					taskCopy := *task
 					taskCopy.Assignees = newAssignees

@@ -172,7 +172,17 @@ func (m Model) handleSelectSquadModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			_ = m.Config.SetActiveSquad(selected.Name)
 			m.ActiveModal = ModalNone
 
-			// Trigger refresh of squad activity
+			// Filter cached squad tasks immediately for instant UI response
+			if m.DB != nil {
+				if sTasks, err := m.DB.GetTasks(true, "open"); err == nil {
+					m.SquadTasks = github.FilterTasksForSquad(sTasks, selected.Name)
+				}
+				if sDone, err := m.DB.GetTasks(true, "closed"); err == nil {
+					m.SquadDoneTasks = github.FilterTasksForSquad(sDone, selected.Name)
+				}
+			}
+
+			// Trigger refresh of squad activity and squad tasks
 			return m, tea.Batch(
 				func() tea.Msg {
 					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -187,7 +197,7 @@ func (m Model) handleSelectSquadModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						RateLimit:   m.GHClient.RateLimit(),
 					}
 				},
-				m.fetchSquadAvatarsCmd(selected.Members),
+				m.loadTasksCmd(),
 			)
 		}
 	}
@@ -224,9 +234,12 @@ func (m Model) handleCreateSquadModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.ModalInput.Reset()
 			m.ModalInput.Placeholder = "Type to search members or enter username..."
 			m.ModalInput.Focus()
-			return m, func() tea.Msg {
-				return StatusToastMsg(fmt.Sprintf("Created squad '%s'. Select members below!", squadName))
-			}
+			return m, tea.Batch(
+				func() tea.Msg {
+					return StatusToastMsg(fmt.Sprintf("Created squad '%s'. Select members below!", squadName))
+				},
+				m.syncSquadsFileCmd(),
+			)
 		}
 	default:
 		var cmd tea.Cmd
@@ -369,24 +382,27 @@ func (m Model) handleAddMemberModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.ModalInput.Reset()
 			m.ModalInput.Blur()
 
-			// Refresh squad activity
-			return m, func() tea.Msg {
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				squad := m.Config.GetActiveSquad()
-				var members []string
-				if squad != nil {
-					members = squad.Members
-				}
-				events, _ := m.GHClient.FetchSquadActivity(ctx, members, nil)
-				return DataLoadedMsg{
-					Repos:       m.Repos,
-					PRs:         m.PRs,
-					SquadEvents: events,
-					Security:    m.SecuritySummaries,
-					RateLimit:   m.GHClient.RateLimit(),
-				}
-			}
+			// Refresh squad activity and sync squads.json
+			return m, tea.Batch(
+				func() tea.Msg {
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					squad := m.Config.GetActiveSquad()
+					var members []string
+					if squad != nil {
+						members = squad.Members
+					}
+					events, _ := m.GHClient.FetchSquadActivity(ctx, members, nil)
+					return DataLoadedMsg{
+						Repos:       m.Repos,
+						PRs:         m.PRs,
+						SquadEvents: events,
+						Security:    m.SecuritySummaries,
+						RateLimit:   m.GHClient.RateLimit(),
+					}
+				},
+				m.syncSquadsFileCmd(),
+			)
 		}
 	default:
 		prevVal := m.ModalInput.Value()
@@ -422,8 +438,9 @@ Repositories Tab (1):
   [t]                 Open shell / new window in tmux session (auto-clones if needed)
   [Esc]               Clear active filter and sorting
   [Enter]             Open repo in dedicated browser
-  [o]                 Open GitHub Web Tabs Submenu (Issues, PRs, Actions, Security...)
-  [S]                 Open Security (Dependabot) tab directly in browser
+  [o]                 Open GitHub Web Tabs Submenu (with [y] Yank URL leader)
+  [O]                 Assign / unassign repository ownership to active squad
+  [S]                 Filter repositories owned by active squad (toggle)
   [l]                 Manage Labels (assign / create labels)
   [c]                 Clone repo to ~/workspaces/
   [u]                 Fast-forward clean behind repo
@@ -431,7 +448,8 @@ Repositories Tab (1):
 Pull Requests Tab (2):
   [j/k] or [↑/↓]      Select pull request
   [m]                 Merge approved pull request directly
-  [t]                 Create PR review task in squad tasks
+  [t]                 Request review from squad or squad member
+  [y]                 Yank PR URL to clipboard
   [f]                 Filter PRs by title, repo, or author
   [o]                 Open PR in browser
   [p]                 Trigger GitHub Copilot PR review

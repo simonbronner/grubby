@@ -44,3 +44,11 @@ func TestRepoClonedMsg_PostAction(t *testing.T) {
 		t.Errorf("expected docs to be marked as cloned")
 	}
 }
+
+func TestShell_GetAttachedTmuxClientTTY(t *testing.T) {
+	// Should execute without panicking regardless of tmux presence
+	tty := getAttachedTmuxClientTTY()
+	// If tmux is installed and clients attached, tty is non-empty, otherwise empty
+	_ = tty
+}
+

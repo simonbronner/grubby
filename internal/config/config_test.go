@@ -136,4 +136,69 @@ func TestConfigLoadAndSave(t *testing.T) {
 	if cfg.IsRepoHidden("core-tasks") {
 		t.Errorf("expected core-tasks to be unhidden")
 	}
+
+	// Test Central Tasks Repo Resolution
+	// 1. Unset: defaultOrg/grubby-tasks
+	o, r := cfg.GetCentralTasksRepo("acme-corp")
+	if o != "acme-corp" || r != "grubby-tasks" {
+		t.Errorf("expected acme-corp/grubby-tasks, got %s/%s", o, r)
+	}
+	if fn := cfg.GetCentralTasksRepoFullName("acme-corp"); fn != "acme-corp/grubby-tasks" {
+		t.Errorf("expected acme-corp/grubby-tasks, got %s", fn)
+	}
+
+	// 2. Explicit repo name only
+	_ = cfg.SetCentralTasksRepo("tasks")
+	o, r = cfg.GetCentralTasksRepo("acme-corp")
+	if o != "acme-corp" || r != "tasks" {
+		t.Errorf("expected acme-corp/tasks, got %s/%s", o, r)
+	}
+
+	// 3. Explicit owner/repo
+	_ = cfg.SetCentralTasksRepo("custom-org/central-workspace")
+	o, r = cfg.GetCentralTasksRepo("acme-corp")
+	if o != "custom-org" || r != "central-workspace" {
+		t.Errorf("expected custom-org/central-workspace, got %s/%s", o, r)
+	}
+	if fn := cfg.GetCentralTasksRepoFullName("acme-corp"); fn != "custom-org/central-workspace" {
+		t.Errorf("expected custom-org/central-workspace, got %s", fn)
+	}
+
+	// Test Squad Repo Ownership
+	_ = cfg.CreateSquad("security", "SecOps", []string{"eve"})
+	if cfg.IsRepoOwnedBySquad("security", "auth-service") {
+		t.Errorf("expected auth-service not owned initially")
+	}
+
+	// Claim ownership
+	owned, err := cfg.ToggleRepoOwnership("security", "auth-service")
+	if err != nil || !owned {
+		t.Fatalf("expected ToggleRepoOwnership to return true, got %v, err: %v", owned, err)
+	}
+	if !cfg.IsRepoOwnedBySquad("security", "auth-service") {
+		t.Errorf("expected auth-service to be owned by security squad")
+	}
+
+	// Another squad can also own the same repo (multiple squad owners)
+	_ = cfg.CreateSquad("core", "Core Platform", []string{"simon"})
+	owned2, _ := cfg.ToggleRepoOwnership("core", "auth-service")
+	if !owned2 || !cfg.IsRepoOwnedBySquad("core", "auth-service") {
+		t.Errorf("expected core squad to also own auth-service")
+	}
+
+	squadsForRepo := cfg.GetSquadsForRepo("auth-service")
+	if len(squadsForRepo) != 2 {
+		t.Fatalf("expected 2 squads owning auth-service, got %v", squadsForRepo)
+	}
+
+	reposForSecurity := cfg.GetReposForSquad("security")
+	if len(reposForSecurity) != 1 || reposForSecurity[0] != "auth-service" {
+		t.Errorf("expected [auth-service] for security squad, got %v", reposForSecurity)
+	}
+
+	// Unassign ownership
+	unowned, _ := cfg.ToggleRepoOwnership("security", "auth-service")
+	if unowned || cfg.IsRepoOwnedBySquad("security", "auth-service") {
+		t.Errorf("expected auth-service to be unassigned from security")
+	}
 }

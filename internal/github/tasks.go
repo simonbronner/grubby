@@ -69,6 +69,35 @@ func ParsePriority(labels []string) TaskPriority {
 	return PriorityMedium
 }
 
+// FilterTasksForSquad filters a list of tasks for the specified squad name.
+// If a task has a "squad:<name>" label, it only matches if <name> equals squadName.
+// If a task has NO squad label (e.g. legacy tasks), it is included by default for backwards compatibility.
+func FilterTasksForSquad(tasks []Task, squadName string) []Task {
+	if strings.TrimSpace(squadName) == "" {
+		return tasks
+	}
+	targetLabel := "squad:" + strings.ToLower(strings.TrimSpace(squadName))
+	var filtered []Task
+	for _, t := range tasks {
+		hasSquadLabel := false
+		matchesSquad := false
+		for _, l := range t.Labels {
+			clean := strings.ToLower(strings.TrimSpace(l))
+			if strings.HasPrefix(clean, "squad:") {
+				hasSquadLabel = true
+				if clean == targetLabel {
+					matchesSquad = true
+					break
+				}
+			}
+		}
+		if matchesSquad || !hasSquadLabel {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
+}
+
 type Task struct {
 	ID          int64        `json:"id"`
 	Number      int          `json:"number"`
@@ -272,6 +301,11 @@ func (c *Client) ensurePriorityLabels(ctx context.Context, owner, repo string) e
 
 // FetchTasks retrieves open and closed issues from the specified repository and maps them into Tasks.
 func (c *Client) FetchTasks(ctx context.Context, owner, repo string, isSquad bool) ([]Task, error) {
+	return c.FetchTasksFiltered(ctx, owner, repo, "", isSquad)
+}
+
+// FetchTasksFiltered retrieves open and closed issues from the specified repository, optionally filtered by a GitHub label.
+func (c *Client) FetchTasksFiltered(ctx context.Context, owner, repo string, labelFilter string, isSquad bool) ([]Task, error) {
 	cleanOwner := strings.TrimSpace(owner)
 	cleanRepo := strings.TrimSpace(repo)
 	if cleanOwner == "" || cleanRepo == "" {
@@ -280,6 +314,9 @@ func (c *Client) FetchTasks(ctx context.Context, owner, repo string, isSquad boo
 
 	fetchURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues?state=all&per_page=100&sort=updated&direction=desc",
 		url.PathEscape(cleanOwner), url.PathEscape(cleanRepo))
+	if labelFilter != "" {
+		fetchURL += fmt.Sprintf("&labels=%s", url.QueryEscape(labelFilter))
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", fetchURL, nil)
 	if err != nil {

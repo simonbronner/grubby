@@ -267,3 +267,33 @@ func TestPRKeyHandling_MergeNonApprovedPR(t *testing.T) {
 		t.Errorf("expected toast to mention 'requires APPROVED', got %q", string(statusToast))
 	}
 }
+
+func TestPRKeyHandling_YankURL(t *testing.T) {
+	m := createTestPRModel()
+	m.PRs = []github.PullRequest{
+		{
+			Number: 42,
+			Repo:   "grubby",
+			Title:  "Feature X",
+			Author: "alice",
+			URL:    "https://github.com/acme/grubby/pull/42",
+		},
+	}
+	m.PRCursor = 0
+
+	// Press 'y' to yank URL
+	_, cmd := m.handlePRsKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	if cmd == nil {
+		t.Fatalf("expected toast cmd for yank URL, got nil")
+	}
+
+	toastMsg := cmd()
+	statusToast, ok := toastMsg.(StatusToastMsg)
+	if !ok {
+		t.Fatalf("expected StatusToastMsg, got %T", toastMsg)
+	}
+	if !strings.Contains(string(statusToast), "Copied PR #42 URL to clipboard") || !strings.Contains(string(statusToast), "https://github.com/acme/grubby/pull/42") {
+		t.Errorf("unexpected toast message: %q", string(statusToast))
+	}
+}
+

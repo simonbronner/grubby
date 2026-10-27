@@ -383,6 +383,102 @@ func TestTaskInlineEditing_HotkeysDisabledUntilFinished(t *testing.T) {
 	}
 }
 
+func TestSquadTaskInlineEditing_HotkeysDisabledUntilFinished(t *testing.T) {
+	m := createTestTasksModel()
+	m.ActiveTab = TabSquadTasks
+	m.ActiveTaskSubtab = TaskSubtabSquad
+	m.TaskCursor = 0 // Top task in squad tasks
+
+	// 1. Enter edit mode via m.Update
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = res.(Model)
+	if !m.InlineEditing {
+		t.Fatalf("expected InlineEditing == true on Squad Tasks tab")
+	}
+
+	// 2. Header and Footer should reflect editing mode without regular hotkeys
+	footer := m.renderFooter()
+	if !strings.Contains(footer, "[Enter] Save Title  [Esc] Cancel") {
+		t.Errorf("footer should show save/cancel prompt on squad tasks, got: %s", footer)
+	}
+	if strings.Contains(footer, "[a] Add") || strings.Contains(footer, "[Space] Toggle Done") || strings.Contains(footer, "[?] Help") {
+		t.Errorf("footer should NOT display regular task hotkeys while editing title on squad tasks: %s", footer)
+	}
+
+	header := m.renderTasksView()
+	if !strings.Contains(header, "[Editing Title: Enter to save, Esc to cancel]") {
+		t.Errorf("header should show editing banner on squad tasks, got: %s", header)
+	}
+	if strings.Contains(header, "[a] Add Task") || strings.Contains(header, "[Space] Done") {
+		t.Errorf("header banner should NOT display task hotkeys while editing on squad tasks: %s", header)
+	}
+
+	// 3. Global hotkey 'q' must NOT quit - it should type 'q' into input
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	m = res.(Model)
+	if cmd != nil {
+		msg := cmd()
+		if _, ok := msg.(tea.QuitMsg); ok {
+			t.Fatalf("'q' while editing title on squad tasks should NOT quit the application!")
+		}
+	}
+	if !m.InlineEditing {
+		t.Fatalf("InlineEditing should remain true while typing on squad tasks")
+	}
+	if !strings.HasSuffix(m.InlineEditTitleInput.Value(), "q") {
+		t.Errorf("expected 'q' to be typed into input, got %q", m.InlineEditTitleInput.Value())
+	}
+
+	// 4. Global hotkey '1' must NOT switch to Repos tab
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	m = res.(Model)
+	if m.ActiveTab != TabSquadTasks {
+		t.Fatalf("expected ActiveTab to stay TabSquadTasks, got %d", m.ActiveTab)
+	}
+
+	// 5. Global hotkey '?' must NOT open Help modal
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	m = res.(Model)
+	if m.ActiveModal != ModalNone {
+		t.Fatalf("expected ActiveModal to remain ModalNone on squad tasks, got %v", m.ActiveModal)
+	}
+
+	// 6. Global hotkey 'r' must NOT trigger refresh
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	m = res.(Model)
+	if m.Loading {
+		t.Fatalf("'r' should NOT trigger data refresh while editing title on squad tasks")
+	}
+
+	// 7. Tasks hotkey 'a' must NOT start InlineAdding
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = res.(Model)
+	if m.InlineAdding {
+		t.Fatalf("'a' should NOT trigger InlineAdding while editing title on squad tasks")
+	}
+
+	// 8. Tasks hotkey 'Space' must NOT toggle done
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	m = res.(Model)
+	if len(m.SquadDoneTasks) != 0 {
+		t.Fatalf("Space should NOT toggle squad task done while editing title")
+	}
+
+	// 9. Pressing 'Esc' finishes editing and restores hotkeys
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = res.(Model)
+	if m.InlineEditing {
+		t.Fatalf("expected InlineEditing == false after pressing Esc on squad tasks")
+	}
+
+	// Normal hotkeys should be restored in footer
+	restoredFooter := m.renderFooter()
+	if !strings.Contains(restoredFooter, "[Enter] Edit Title") || !strings.Contains(restoredFooter, "[a] Add") {
+		t.Errorf("expected regular hotkeys restored after exiting edit mode on squad tasks, got: %s", restoredFooter)
+	}
+}
+
+
 func TestTaskNotesModal(t *testing.T) {
 	m := createTestTasksModel()
 	m.TaskCursor = 3 // select #101 which has body notes "Has some body notes here"
@@ -625,8 +721,8 @@ func TestPRReviewTask_OpenModalFromPRView(t *testing.T) {
 	if !strings.Contains(view, "Fix database connection leak") {
 		t.Errorf("expected modal to render PR title")
 	}
-	if !strings.Contains(view, "Assign to:") {
-		t.Errorf("expected modal to render Assign to checklist header")
+	if !strings.Contains(view, "Select Reviewer") {
+		t.Errorf("expected modal to render Select Reviewer header")
 	}
 	if !strings.Contains(view, "pr-review") {
 		t.Errorf("expected modal to render pr-review label")
@@ -639,40 +735,33 @@ func TestPRReviewTask_OpenModalFromPRView(t *testing.T) {
 		t.Errorf("expected priority High after pressing 'p', got %s", m.PRTaskPriority)
 	}
 
-	// Pressing Enter on member list must NOT submit (toggles selection)
-	res, noSubmitCmd := m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
-	m = res.(Model)
-	if noSubmitCmd != nil {
-		t.Fatalf("pressing Enter on member list should NOT submit task creation!")
-	}
-	if m.ActiveModal != ModalCreatePRTask {
-		t.Fatalf("modal should remain open after Enter on member list")
-	}
-
-	// Tab down to buttons field (field 0 -> field 1 -> field 2)
-	res, _ = m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyTab})
-	m = res.(Model)
-	if m.PRTaskFocusedField != 1 {
-		t.Fatalf("expected focused field 1 (Priority) after Tab, got %d", m.PRTaskFocusedField)
-	}
-
-	res, _ = m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyTab})
-	m = res.(Model)
-	if m.PRTaskFocusedField != 2 {
-		t.Fatalf("expected focused field 2 (Buttons) after second Tab, got %d", m.PRTaskFocusedField)
-	}
-	if m.PRTaskActiveButton != 0 {
-		t.Fatalf("expected active button 0 (Create Task), got %d", m.PRTaskActiveButton)
-	}
-
-	// Submit modal with 'Enter' on [ Create Task ] button
+	// Pressing Enter on Squad option (cursor 0) submits unassigned review request immediately!
 	res, submitCmd := m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
 	m = res.(Model)
 	if submitCmd == nil {
-		t.Fatalf("expected createPRTaskCmd on Enter when on Create Task button")
+		t.Fatalf("expected createPRTaskCmd on Enter when confirming review request")
 	}
 	if m.ActiveModal != ModalNone {
 		t.Errorf("expected modal to close after submitting")
+	}
+
+	// Verify task was added to SquadTasks as unassigned
+	if len(m.SquadTasks) == 0 {
+		t.Fatalf("expected task in SquadTasks")
+	}
+	created := m.SquadTasks[0]
+	if len(created.Assignees) != 0 {
+		t.Errorf("expected unassigned review task, got assignees %v", created.Assignees)
+	}
+
+	// Verify Squad Tasks page renders OUTSTANDING REVIEWS table
+	m.ActiveTab = TabSquadTasks
+	tasksView := m.renderTasksView()
+	if !strings.Contains(tasksView, "OUTSTANDING REVIEWS") {
+		t.Errorf("expected OUTSTANDING REVIEWS header in squad tasks view, got:\n%s", tasksView)
+	}
+	if !strings.Contains(tasksView, "Unassigned") {
+		t.Errorf("expected Unassigned in squad tasks view, got:\n%s", tasksView)
 	}
 }
 
@@ -818,47 +907,38 @@ func TestPRReviewTask_SoloSquadCreationOnEnter(t *testing.T) {
 		t.Fatalf("expected ModalCreatePRTask, got %v", m.ActiveModal)
 	}
 
-	// In solo squad, user should be in candidates and checked by default
+	// In solo squad, user should be in candidates
 	if len(m.PRTaskCandidates) == 0 {
 		t.Fatalf("expected PRTaskCandidates to include simonbronner")
 	}
-	if !m.PRTaskSelectedMembers["simonbronner"] {
-		t.Errorf("expected simonbronner to be selected by default in solo squad")
-	}
 
-	// 2. Press Enter on member list -> toggles selection, does NOT submit
-	res, noCmd := m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
-	m = res.(Model)
-	if noCmd != nil {
-		t.Fatalf("expected nil cmd on Enter while on member list (stopping quick-save)")
-	}
-
-	// 3. Tab down to buttons field (field 0 -> field 1 -> field 2)
-	res, _ = m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyTab})
-	m = res.(Model)
-	res, _ = m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyTab})
-	m = res.(Model)
-	if m.PRTaskFocusedField != 2 {
-		t.Fatalf("expected focused field 2 (Buttons), got %d", m.PRTaskFocusedField)
-	}
-
-	// 4. Press Enter on [ Create Task ] button -> MUST create task and close modal!
+	// 2. Select individual squad member (cursor = 1) and press Enter -> creates task assigned to that person
+	m.PRTaskMemberCursor = 1
 	res, submitCmd := m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
 	m = res.(Model)
 	if submitCmd == nil {
-		t.Fatalf("expected submitCmd on Enter on Create Task button, got nil")
+		t.Fatalf("expected submitCmd on Enter, got nil")
 	}
 	if m.ActiveModal != ModalNone {
 		t.Errorf("expected modal to close on Enter, but ActiveModal is %v", m.ActiveModal)
 	}
+	if len(m.SquadTasks) == 0 || len(m.SquadTasks[0].Assignees) != 1 || m.SquadTasks[0].Assignees[0] != "simonbronner" {
+		t.Fatalf("expected task assigned to simonbronner, got %+v", m.SquadTasks)
+	}
 
-	// 5. Test if user clears all selections (unassigned task) and creates:
-	// It must create an unassigned task and close modal, NEVER block!
+	// 3. Test quick selection '0' / 's' creates unassigned squad task
 	m.ActiveModal = ModalCreatePRTask
-	m.PRTaskFocusedField = 2
-	m.PRTaskActiveButton = 0
-	m.PRTaskSelectedMembers = make(map[string]bool)
-	res, submitCmdUnassigned := m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	res, submitCmdUnassigned := m.handleCreatePRTaskModalKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m = res.(Model)
+	if submitCmdUnassigned == nil {
+		t.Fatalf("expected submitCmdUnassigned on 's', got nil")
+	}
+	if m.ActiveModal != ModalNone {
+		t.Errorf("expected modal to close for unassigned task, got %v", m.ActiveModal)
+	}
+	if len(m.SquadTasks[0].Assignees) != 0 {
+		t.Errorf("expected unassigned review task from 's', got %v", m.SquadTasks[0].Assignees)
+	}
 	m = res.(Model)
 	if submitCmdUnassigned == nil {
 		t.Fatalf("expected submitCmdUnassigned on Enter, got nil (must not block!)")
@@ -1229,3 +1309,155 @@ func TestInitialModel_EagerSQLiteLoading(t *testing.T) {
 		t.Errorf("expected 10 made / 40 saved requests loaded, got made=%d saved=%d", m.RequestsMade, m.RequestsSaved)
 	}
 }
+
+func TestCentralizedTasksAndSquadLabeling(t *testing.T) {
+	cfg := &config.Config{
+		DefaultOrg:  "acme-corp",
+		ActiveSquad: "core",
+		Squads: []config.SquadConfig{
+			{Name: "core", DisplayName: "Core Platform", Members: []string{"simonb"}},
+			{Name: "frontend", DisplayName: "UI Team", Members: []string{"charlie"}},
+		},
+	}
+
+	m := Model{
+		Config:     cfg,
+		AuthUser:   "simonb",
+		CurrentOrg: "acme-corp",
+	}
+
+	// 1. Verify personal task repo target is isolated in user's personal repo
+	personalRepo := m.getTaskTargetRepoFullName(TaskTargetPersonal)
+	if personalRepo != "simonb/tasks" {
+		t.Errorf("expected personal task repo 'simonb/tasks', got %q", personalRepo)
+	}
+
+	// 2. Verify default central tasks repo is <org>/grubby-tasks
+	squadRepo := m.getTaskTargetRepoFullName(TaskTargetSquad)
+	if squadRepo != "acme-corp/grubby-tasks" {
+		t.Errorf("expected squad task repo 'acme-corp/grubby-tasks', got %q", squadRepo)
+	}
+
+	// 3. Verify configured central tasks repo
+	cfg.CentralTasksRepo = "shared-org/all-tasks"
+	squadRepoCustom := m.getTaskTargetRepoFullName(TaskTargetSquad)
+	if squadRepoCustom != "shared-org/all-tasks" {
+		t.Errorf("expected custom squad task repo 'shared-org/all-tasks', got %q", squadRepoCustom)
+	}
+
+	// 4. Test FilterTasksForSquad
+	allSquadTasks := []github.Task{
+		{ID: 1, Title: "Core Task 1", Labels: []string{"priority: high", "squad:core"}},
+		{ID: 2, Title: "Frontend Task", Labels: []string{"priority: low", "squad:frontend"}},
+		{ID: 3, Title: "Core Task 2", Labels: []string{"squad:core"}},
+		{ID: 4, Title: "Legacy Task", Labels: []string{"priority: medium"}}, // No squad label -> fallback included
+	}
+
+	coreFiltered := github.FilterTasksForSquad(allSquadTasks, "core")
+	if len(coreFiltered) != 3 {
+		t.Fatalf("expected 3 tasks for 'core' (2 core + 1 legacy), got %d", len(coreFiltered))
+	}
+	if coreFiltered[0].Title != "Core Task 1" || coreFiltered[1].Title != "Core Task 2" || coreFiltered[2].Title != "Legacy Task" {
+		t.Errorf("unexpected core filtered tasks: %+v", coreFiltered)
+	}
+
+	frontendFiltered := github.FilterTasksForSquad(allSquadTasks, "frontend")
+	if len(frontendFiltered) != 2 {
+		t.Fatalf("expected 2 tasks for 'frontend' (1 frontend + 1 legacy), got %d", len(frontendFiltered))
+	}
+	if frontendFiltered[0].Title != "Frontend Task" || frontendFiltered[1].Title != "Legacy Task" {
+		t.Errorf("unexpected frontend filtered tasks: %+v", frontendFiltered)
+	}
+}
+
+func TestSquadTasks_OutstandingReviewsTableAndAutoClaim(t *testing.T) {
+	m := createTestTasksModel()
+	m.ActiveTab = TabSquadTasks
+	m.ActiveTaskSubtab = TaskSubtabSquad
+	m.AuthUser = "alice"
+
+	// Create 2 squad tasks: 1 unassigned review, 1 regular task
+	m.SquadTasks = []github.Task{
+		{
+			ID:          101,
+			Number:      101,
+			Title:       "Implement auth caching",
+			RepoName:    "core-svc",
+			Priority:    github.PriorityHigh,
+			Labels:      []string{"feature"},
+			Assignees:   []string{"bob"},
+			State:       "open",
+			UpdatedAt:   time.Now(),
+			IsSquadTask: true,
+		},
+		{
+			ID:          102,
+			Number:      102,
+			Title:       "Review PR #42: Fix DB leak (core-svc)",
+			Body:        "Review pull request: https://github.com/acme/core-svc/pull/42",
+			RepoName:    "core-svc",
+			Priority:    github.PriorityMedium,
+			Labels:      []string{github.LabelPRReview},
+			Assignees:   []string{}, // Unassigned review!
+			State:       "open",
+			UpdatedAt:   time.Now(),
+			IsSquadTask: true,
+		},
+	}
+
+	// 1. Verify rendering has OUTSTANDING REVIEWS and SQUAD TASKS sections
+	view := m.renderTasksView()
+	if !strings.Contains(view, "OUTSTANDING REVIEWS") {
+		t.Fatalf("expected view to contain OUTSTANDING REVIEWS header, got:\n%s", view)
+	}
+	if !strings.Contains(view, "SQUAD TASKS") {
+		t.Fatalf("expected view to contain SQUAD TASKS header, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Unassigned") {
+		t.Fatalf("expected view to display 'Unassigned' review, got:\n%s", view)
+	}
+
+	// 2. Reviews should come first in cursor order (cursor 0 = Review PR #102)
+	loc, cursorTask := m.getCursorTarget()
+	if loc != locActiveTask || cursorTask == nil || cursorTask.ID != 102 {
+		t.Fatalf("expected cursor 0 to point to review task 102, got loc %v, task %+v", loc, cursorTask)
+	}
+	if !cursorTask.IsPRReview() {
+		t.Fatalf("expected task 102 to be PR review")
+	}
+
+	// 3. Press Enter on unassigned review -> should auto-claim it for alice!
+	updated, cmd := m.handleTasksKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("expected command on Enter")
+	}
+
+	// Verify task 102 now has alice as assignee in SquadTasks
+	var task102 *github.Task
+	for i := range m.SquadTasks {
+		if m.SquadTasks[i].ID == 102 {
+			task102 = &m.SquadTasks[i]
+			break
+		}
+	}
+	if task102 == nil {
+		t.Fatalf("task 102 not found in SquadTasks")
+	}
+	if len(task102.Assignees) != 1 || task102.Assignees[0] != "alice" {
+		t.Fatalf("expected task 102 to be claimed by alice, got assignees %v", task102.Assignees)
+	}
+
+	// 4. Press 'a' to add new task inline -> cursor lands at index 1 (right after reviews)
+	updatedA, _ := m.handleTasksKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updatedA.(Model)
+	if !m.InlineAdding {
+		t.Fatalf("expected InlineAdding to be true")
+	}
+	locA, _ := m.getCursorTarget()
+	if locA != locInlineNew {
+		t.Fatalf("expected cursor target to be locInlineNew, got %v", locA)
+	}
+}
+
+

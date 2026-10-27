@@ -202,6 +202,28 @@ func (d *DB) migrate() error {
 		PRIMARY KEY (squad, label)
 	);
 	CREATE INDEX IF NOT EXISTS idx_label_meta_squad ON label_meta (squad);
+
+	CREATE TABLE IF NOT EXISTS squads (
+		name TEXT PRIMARY KEY,
+		display_name TEXT NOT NULL DEFAULT '',
+		description TEXT NOT NULL DEFAULT '',
+		updated_at DATETIME NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS squad_members (
+		squad_name TEXT NOT NULL,
+		member_login TEXT NOT NULL,
+		PRIMARY KEY (squad_name, member_login)
+	);
+	CREATE INDEX IF NOT EXISTS idx_squad_members_squad ON squad_members (squad_name);
+
+	CREATE TABLE IF NOT EXISTS squad_repos (
+		squad_name TEXT NOT NULL,
+		repo_name TEXT NOT NULL,
+		PRIMARY KEY (squad_name, repo_name)
+	);
+	CREATE INDEX IF NOT EXISTS idx_squad_repos_squad ON squad_repos (squad_name);
+	CREATE INDEX IF NOT EXISTS idx_squad_repos_repo ON squad_repos (repo_name);
 	`
 	if _, err := d.db.Exec(schema); err != nil {
 		return err
@@ -1449,3 +1471,151 @@ func (d *DB) GetAllUniqueLabels(squad string) ([]string, error) {
 	}
 	return labels, rows.Err()
 }
+
+// --- Squads & Members ---
+
+// SaveSquads caches squad structures and rosters locally in SQLite.
+func (d *DB) SaveSquads(squads []github.SquadDefinition) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Clear existing squads, members, and repos to reflect remote state
+	if _, err := tx.Exec(`DELETE FROM squad_repos`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM squad_members`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM squads`); err != nil {
+		return err
+	}
+
+	stmtSquad, err := tx.Prepare(`
+		INSERT INTO squads (name, display_name, description, updated_at)
+		VALUES (?, ?, ?, ?)
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmtSquad.Close()
+
+	stmtMember, err := tx.Prepare(`
+		INSERT INTO squad_members (squad_name, member_login)
+		VALUES (?, ?)
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmtMember.Close()
+
+	stmtRepo, err := tx.Prepare(`
+		INSERT INTO squad_repos (squad_name, repo_name)
+		VALUES (?, ?)
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmtRepo.Close()
+
+	now := time.Now()
+	for _, s := range squads {
+		cleanName := strings.TrimSpace(s.Name)
+		if cleanName == "" {
+			continue
+		}
+		disp := s.DisplayName
+		if disp == "" {
+			disp = cleanName
+		}
+		if _, err := stmtSquad.Exec(cleanName, disp, s.Description, now); err != nil {
+			return err
+		}
+
+		for _, m := range s.Members {
+			cleanMember := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(m), "@"))
+			if cleanMember == "" {
+				continue
+			}
+			if _, err := stmtMember.Exec(cleanName, cleanMember); err != nil {
+				return err
+			}
+		}
+
+		for _, r := range s.Repos {
+			cleanRepo := strings.ToLower(strings.TrimSpace(r))
+			if cleanRepo == "" {
+				continue
+			}
+			if _, err := stmtRepo.Exec(cleanName, cleanRepo); err != nil {
+				return err
+			}
+		}
+	}
+
+	return tx.Commit()
+}
+
+// GetSquads retrieves cached squads and rosters from SQLite.
+func (d *DB) GetSquads() ([]github.SquadDefinition, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.db.Query(`SELECT name, display_name, description FROM squads ORDER BY name ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var squads []github.SquadDefinition
+	for rows.Next() {
+		var s github.SquadDefinition
+		if err := rows.Scan(&s.Name, &s.DisplayName, &s.Description); err != nil {
+			return nil, err
+		}
+		squads = append(squads, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Fetch members for each squad
+	for i := range squads {
+		memRows, err := d.db.Query(`SELECT member_login FROM squad_members WHERE squad_name = ? ORDER BY member_login ASC`, squads[i].Name)
+		if err != nil {
+			return nil, err
+		}
+		for memRows.Next() {
+			var m string
+			if err := memRows.Scan(&m); err != nil {
+				memRows.Close()
+				return nil, err
+			}
+			squads[i].Members = append(squads[i].Members, m)
+		}
+		memRows.Close()
+
+		// Fetch owned repos for each squad
+		repoRows, err := d.db.Query(`SELECT repo_name FROM squad_repos WHERE squad_name = ? ORDER BY repo_name ASC`, squads[i].Name)
+		if err != nil {
+			return nil, err
+		}
+		for repoRows.Next() {
+			var r string
+			if err := repoRows.Scan(&r); err != nil {
+				repoRows.Close()
+				return nil, err
+			}
+			squads[i].Repos = append(squads[i].Repos, r)
+		}
+		repoRows.Close()
+	}
+
+	return squads, nil
+}
+

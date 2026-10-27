@@ -107,8 +107,8 @@ func (m Model) getSelectedRepo() *github.Repository {
 }
 
 func (m Model) isTierCollapsed(tier storage.RepoTier) bool {
-	// Auto-expand all tiers when a search or label filter is active
-	if strings.TrimSpace(m.RepoFilter) != "" || strings.TrimSpace(m.RepoGroupFilter) != "" {
+	// Auto-expand all tiers when a search, label, or squad filter is active
+	if strings.TrimSpace(m.RepoFilter) != "" || strings.TrimSpace(m.RepoGroupFilter) != "" || m.SquadFilterActive {
 		return false
 	}
 	if m.CollapsedTiers == nil {
@@ -208,6 +208,14 @@ func (m Model) getDisplayRepos() []github.Repository {
 			}
 
 			if !matchesName && !matchesLabel {
+				continue
+			}
+		}
+
+		// 3. Squad ownership filter (from Shift-S hotkey)
+		if m.SquadFilterActive && m.Config != nil {
+			activeSquad := m.Config.GetActiveSquad()
+			if activeSquad != nil && !m.Config.IsRepoOwnedBySquad(activeSquad.Name, r.Name) {
 				continue
 			}
 		}
@@ -342,12 +350,28 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg { return StatusToastMsg("Sorted repositories by vulnerabilities (most to least)") }
 		}
 		return m, func() tea.Msg { return StatusToastMsg("Reset repository sort order to default") }
+	case "S":
+		// 'S' (Shift-S): filter out all repositories not owned by the active squad
+		if m.Config == nil || m.Config.ActiveSquad == "" {
+			return m, func() tea.Msg { return StatusToastMsg("No active squad selected") }
+		}
+		m.SquadFilterActive = !m.SquadFilterActive
+		m.RepoCursor = m.firstSelectableRepoIndex()
+		if m.SquadFilterActive {
+			squadName := m.Config.ActiveSquad
+			if s := m.Config.GetActiveSquad(); s != nil && s.DisplayName != "" {
+				squadName = s.DisplayName
+			}
+			return m, func() tea.Msg { return StatusToastMsg(fmt.Sprintf("Filtered repos owned by squad '%s'", squadName)) }
+		}
+		return m, func() tea.Msg { return StatusToastMsg("Cleared squad repo filter") }
 	case "esc":
 		// 'esc' clears active filters and sorting
-		if m.RepoFilter != "" || m.RepoGroupFilter != "" || m.RepoSortVulnerabilities {
+		if m.RepoFilter != "" || m.RepoGroupFilter != "" || m.RepoSortVulnerabilities || m.SquadFilterActive {
 			m.RepoFilter = ""
 			m.RepoGroupFilter = ""
 			m.RepoSortVulnerabilities = false
+			m.SquadFilterActive = false
 			m.RepoCursor = m.firstSelectableRepoIndex()
 			return m, func() tea.Msg { return StatusToastMsg("Cleared all repository filters and sorting") }
 		}
@@ -506,16 +530,41 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m = m.focusRepoCursor(repo.Name)
 		m.ActiveModal = ModalRepoTabs
 		m.ModalCursor = 0
+		m.RepoTabsYankLeader = false
 		return m, m.fetchSingleRepoCmd(m.CurrentOrg, repo.Name)
-	case "S":
-		// 'S' opens repository Security (Dependabot) directly in dedicated browser
-		m = m.recordRepoInteraction(repo.Name)
-		m = m.focusRepoCursor(repo.Name)
-		url := fmt.Sprintf("https://github.com/%s/security/dependabot", repo.FullName)
-		_ = OpenBrowser(url)
+	case "O":
+		// 'O' (Shift-O) assigns or unassigns ownership of the selected repo to the current active squad
+		if m.Config == nil || m.Config.ActiveSquad == "" {
+			return m, func() tea.Msg { return StatusToastMsg("No active squad configured") }
+		}
+		activeSquad := m.Config.ActiveSquad
+		nowOwned, err := m.Config.ToggleRepoOwnership(activeSquad, repo.Name)
+		if err != nil {
+			return m, func() tea.Msg { return StatusToastMsg("Error: " + err.Error()) }
+		}
+		if m.DB != nil {
+			var squadDefs []github.SquadDefinition
+			for _, s := range m.Config.Squads {
+				squadDefs = append(squadDefs, github.SquadDefinition{
+					Name:        s.Name,
+					DisplayName: s.DisplayName,
+					Members:     s.Members,
+					Repos:       s.Repos,
+				})
+			}
+			_ = m.DB.SaveSquads(squadDefs)
+		}
+		dispName := activeSquad
+		if s := m.Config.GetActiveSquad(); s != nil && s.DisplayName != "" {
+			dispName = s.DisplayName
+		}
+		toastText := fmt.Sprintf("✓ Assigned '%s' to squad '%s'", repo.Name, dispName)
+		if !nowOwned {
+			toastText = fmt.Sprintf("Removed '%s' from squad '%s'", repo.Name, dispName)
+		}
 		return m, tea.Batch(
-			func() tea.Msg { return StatusToastMsg("Opened Security tab for " + repo.Name) },
-			m.fetchSingleRepoCmd(m.CurrentOrg, repo.Name),
+			func() tea.Msg { return StatusToastMsg(toastText) },
+			m.syncSquadsFileCmd(),
 		)
 	case "l", "g":
 		// Open Labels modal for current repo
@@ -596,7 +645,7 @@ func (m Model) renderReposView() string {
 		return fmt.Sprintf("\n  %s Fetching repositories from GitHub...\n", m.Spinner.View())
 	}
 	if len(items) == 0 {
-		if m.RepoFilter != "" || m.RepoGroupFilter != "" {
+		if m.RepoFilter != "" || m.RepoGroupFilter != "" || m.SquadFilterActive {
 			return "\n  No repositories match the current filter(s).\n  Press [Esc] to clear filters.\n"
 		}
 		return "\n  No repositories found for " + m.CurrentOrg + ".\n"
@@ -630,6 +679,13 @@ func (m Model) renderReposView() string {
 
 	// Active filter indicator if filtering or sorting is on
 	var filterBadges []string
+	if m.SquadFilterActive && m.Config != nil {
+		squadName := m.Config.ActiveSquad
+		if s := m.Config.GetActiveSquad(); s != nil && s.DisplayName != "" {
+			squadName = s.DisplayName
+		}
+		filterBadges = append(filterBadges, lipgloss.NewStyle().Foreground(HighlightColor).Bold(true).Render("Squad: "+squadName))
+	}
 	if m.RepoGroupFilter != "" {
 		filterBadges = append(filterBadges, lipgloss.NewStyle().Foreground(PrimaryColor).Bold(true).Render("Label: #"+strings.TrimPrefix(m.RepoGroupFilter, "#")))
 	}
@@ -778,15 +834,27 @@ func (m Model) renderReposView() string {
 			}
 		}
 
+		// Squad ownership indicator
+		isOwned := false
+		if m.Config != nil && m.Config.ActiveSquad != "" {
+			isOwned = m.Config.IsRepoOwnedBySquad(m.Config.ActiveSquad, r.Name)
+		}
+
 		var styledName string
+		squadPrefix := ""
+		if isOwned {
+			squadPrefix = "👥 "
+		}
 		if isDead {
-			styledName = lipgloss.NewStyle().Foreground(lipgloss.Color("#6E7681")).Render(repoDisplayName)
+			styledName = lipgloss.NewStyle().Foreground(lipgloss.Color("#6E7681")).Render(squadPrefix + repoDisplayName)
+		} else if isOwned {
+			styledName = lipgloss.NewStyle().Foreground(HighlightColor).Bold(true).Render(squadPrefix + repoDisplayName)
 		} else {
 			styledName = lipgloss.NewStyle().Bold(true).Render(repoDisplayName)
 		}
 
 		nameColText := "  " + styledName
-		rawNameLen := 2 + len(repoDisplayName)
+		rawNameLen := 2 + len(squadPrefix) + len(repoDisplayName)
 		if len(styledLabels) > 0 {
 			nameColText += " " + strings.Join(styledLabels, " ")
 			for _, lbl := range labels {

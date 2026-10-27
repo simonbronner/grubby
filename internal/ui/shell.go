@@ -106,46 +106,79 @@ func GetTmuxSessionsMap() map[string]int {
 	return res
 }
 
-// activateOrOpenGrubbyITermWindow ensures a single dedicated iTerm2 window (tagged as "Grubby")
-// is either activated if it exists or created if it does not.
-// If writeCmd is non-empty, it sends that command string into the window's current session.
-func activateOrOpenGrubbyITermWindow(writeCmd string) error {
+// getAttachedTmuxClientTTY returns the tty of the attached tmux client (e.g. /dev/ttys002) if any.
+func getAttachedTmuxClientTTY() string {
+	if !HasTmux() {
+		return ""
+	}
+	out, err := exec.Command("tmux", "list-clients", "-F", "#{client_tty}").Output()
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) > 0 && lines[0] != "" {
+		return strings.TrimSpace(lines[0])
+	}
+	return ""
+}
+
+// activateOrOpenGrubbyITermWindow ensures an iTerm2 tab is focused or created.
+// If a tab matching tabTitle or the attached tmux client tty exists, it switches to that tab.
+// Otherwise, it creates a new tab with default profile, names the session tabTitle, and runs writeCmd.
+func activateOrOpenGrubbyITermWindow(writeCmd string, tabTitle string) error {
 	if _, err := os.Stat("/Applications/iTerm.app"); err != nil {
 		return fmt.Errorf("iTerm not installed")
+	}
+
+	clientTTY := ""
+	if TmuxHasAttachedClients() {
+		clientTTY = getAttachedTmuxClientTTY()
 	}
 
 	script := fmt.Sprintf(`
 tell application "iTerm"
 	activate
-	set targetWin to missing value
+	set targetTTY to %q
+	set targetName to %q
+	set cmdToRun to %q
+	set found to false
 	repeat with w in windows
-		tell current session of w
-			try
-				if (variable named "user.grubby_shell") is "true" then
-					set targetWin to w
+		repeat with t in tabs of w
+			repeat with s in sessions of t
+				if targetTTY is not "" and (tty of s) is equal to targetTTY then
+					tell t to select
+					tell w to select
+					set found to true
+					exit repeat
+				else if targetName is not "" and ((name of s) contains targetName) then
+					tell t to select
+					tell w to select
+					set found to true
 					exit repeat
 				end if
-			end try
-		end tell
+			end repeat
+			if found then exit repeat
+		end repeat
+		if found then exit repeat
 	end repeat
-	if targetWin is not missing value then
-		tell targetWin to select
-		if %q is not "" then
-			tell current session of targetWin to write text %q
-		end if
-	else
-		set targetWin to (create window with default profile)
-		tell current session of targetWin
-			try
-				set variable named "user.grubby_shell" to "true"
-				set name to "Grubby"
-			end try
-			if %q is not "" then
-				write text %q
-			end if
-		end tell
+	if not found and cmdToRun is not "" then
+		try
+			tell current window
+				create tab with default profile
+				tell current session
+					if targetName is not "" then set name to targetName
+					write text cmdToRun
+				end tell
+			end tell
+		on error
+			create window with default profile
+			tell current session of current window
+				if targetName is not "" then set name to targetName
+				write text cmdToRun
+			end tell
+		end try
 	end if
-end tell`, writeCmd, writeCmd, writeCmd, writeCmd)
+end tell`, clientTTY, tabTitle, writeCmd)
 
 	cmd := exec.Command("osascript", "-e", script)
 	return cmd.Run()
@@ -172,7 +205,7 @@ func OpenRepoShell(repoName, repoDir string) (string, error) {
 
 	if !tmuxInstalled {
 		shellCmd := fmt.Sprintf("cd %q && clear", repoDir)
-		err := activateOrOpenGrubbyITermWindow(shellCmd)
+		err := activateOrOpenGrubbyITermWindow(shellCmd, repoName)
 		if err != nil {
 			err = activateOrOpenTerminalApp(shellCmd)
 		}
@@ -196,10 +229,10 @@ func OpenRepoShell(repoName, repoDir string) (string, error) {
 	// Connect client in Grubby iTerm window
 	if TmuxHasAttachedClients() {
 		_ = exec.Command("tmux", "switch-client", "-t", sessionName).Run()
-		_ = activateOrOpenGrubbyITermWindow("")
+		_ = activateOrOpenGrubbyITermWindow("", sessionName)
 	} else {
 		attachCmd := fmt.Sprintf("tmux attach-session -t %s", sessionName)
-		err := activateOrOpenGrubbyITermWindow(attachCmd)
+		err := activateOrOpenGrubbyITermWindow(attachCmd, sessionName)
 		if err != nil {
 			_ = activateOrOpenTerminalApp(attachCmd)
 		}
@@ -221,7 +254,7 @@ func GoToRepoSession(repoName, repoDir string) (string, error) {
 
 	if !tmuxInstalled {
 		shellCmd := fmt.Sprintf("cd %q && clear", repoDir)
-		err := activateOrOpenGrubbyITermWindow(shellCmd)
+		err := activateOrOpenGrubbyITermWindow(shellCmd, repoName)
 		if err != nil {
 			err = activateOrOpenTerminalApp(shellCmd)
 		}
@@ -242,10 +275,10 @@ func GoToRepoSession(repoName, repoDir string) (string, error) {
 	// Connect client in Grubby iTerm window
 	if TmuxHasAttachedClients() {
 		_ = exec.Command("tmux", "switch-client", "-t", sessionName).Run()
-		_ = activateOrOpenGrubbyITermWindow("")
+		_ = activateOrOpenGrubbyITermWindow("", sessionName)
 	} else {
 		attachCmd := fmt.Sprintf("tmux attach-session -t %s", sessionName)
-		err := activateOrOpenGrubbyITermWindow(attachCmd)
+		err := activateOrOpenGrubbyITermWindow(attachCmd, sessionName)
 		if err != nil {
 			_ = activateOrOpenTerminalApp(attachCmd)
 		}
@@ -303,10 +336,10 @@ func OpenRepoEditor(repoName, repoDir string) (string, error) {
 	// Connect client in Grubby iTerm window
 	if TmuxHasAttachedClients() {
 		_ = exec.Command("tmux", "switch-client", "-t", sessionName).Run()
-		_ = activateOrOpenGrubbyITermWindow("")
+		_ = activateOrOpenGrubbyITermWindow("", sessionName)
 	} else {
 		attachCmd := fmt.Sprintf("tmux attach-session -t %s", sessionName)
-		err := activateOrOpenGrubbyITermWindow(attachCmd)
+		err := activateOrOpenGrubbyITermWindow(attachCmd, sessionName)
 		if err != nil {
 			_ = activateOrOpenTerminalApp(attachCmd)
 		}

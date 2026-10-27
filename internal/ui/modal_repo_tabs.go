@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type RepoTabOption struct {
@@ -30,11 +31,21 @@ func (m Model) renderRepoTabsModal() string {
 		return ""
 	}
 
-	title := ModalTitleStyle.Render(fmt.Sprintf("Open GitHub Tab: %s", repo.FullName))
+	var title string
+	var hint string
+	if m.RepoTabsYankLeader {
+		title = ModalTitleStyle.Render(fmt.Sprintf("📋 Yank URL to Clipboard: %s", repo.FullName))
+		hint = lipgloss.NewStyle().Foreground(WarningColor).Bold(true).Render(
+			"📋 YANK MODE: Press [c/p/i/a/d/r/n/s] or [Enter/y] to copy URL to clipboard, [Esc] to cancel.\n",
+		)
+	} else {
+		title = ModalTitleStyle.Render(fmt.Sprintf("Open GitHub Tab: %s", repo.FullName))
+		hint = "Use [↑/↓] or [c/p/i/a/d/r/n/s], [Enter] to open in browser, [y] Yank leader, [Esc] to exit.\n"
+	}
 
 	var lines []string
 	lines = append(lines, title)
-	lines = append(lines, "Use [↑/↓] or [c/p/i/a/d/r/n/s] to choose tab, [Enter] to open in dedicated browser, [Esc] to exit.\n")
+	lines = append(lines, hint)
 
 	for i, opt := range repoTabOptions {
 		cursor := "  "
@@ -58,18 +69,64 @@ func (m Model) handleRepoTabsModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	repo := m.getSelectedRepo()
 	if repo == nil {
 		m.ActiveModal = ModalNone
+		m.RepoTabsYankLeader = false
 		return m, nil
 	}
 
 	key := strings.ToLower(msg.String())
 
+	// Handle 'y' leader key
+	if key == "y" {
+		if !m.RepoTabsYankLeader {
+			m.RepoTabsYankLeader = true
+			return m, nil
+		}
+		// Pressing 'y' again while in yank mode copies currently highlighted option's URL
+		if m.ModalCursor >= 0 && m.ModalCursor < len(repoTabOptions) {
+			opt := repoTabOptions[m.ModalCursor]
+			m.ActiveModal = ModalNone
+			m.RepoTabsYankLeader = false
+			m = m.recordRepoInteraction(repo.Name)
+			m = m.focusRepoCursor(repo.Name)
+			url := fmt.Sprintf("https://github.com/%s%s", repo.FullName, opt.Path)
+			_ = CopyToClipboard(url)
+			return m, func() tea.Msg {
+				return StatusToastMsg(fmt.Sprintf("Copied %s URL to clipboard: %s", opt.Name, url))
+			}
+		}
+		m.RepoTabsYankLeader = false
+		return m, nil
+	}
+
+	if key == "esc" {
+		if m.RepoTabsYankLeader {
+			m.RepoTabsYankLeader = false
+			return m, nil
+		}
+		m.ActiveModal = ModalNone
+		return m, nil
+	}
+
+	if key == "q" {
+		m.ActiveModal = ModalNone
+		m.RepoTabsYankLeader = false
+		return m, nil
+	}
+
 	// Match mnemonic letter hotkeys
 	for _, opt := range repoTabOptions {
 		if key == opt.Key {
 			m.ActiveModal = ModalNone
+			url := fmt.Sprintf("https://github.com/%s%s", repo.FullName, opt.Path)
+			if m.RepoTabsYankLeader {
+				m.RepoTabsYankLeader = false
+				_ = CopyToClipboard(url)
+				return m, func() tea.Msg {
+					return StatusToastMsg(fmt.Sprintf("Copied %s URL to clipboard: %s", opt.Name, url))
+				}
+			}
 			m = m.recordRepoInteraction(repo.Name)
 			m = m.focusRepoCursor(repo.Name)
-			url := fmt.Sprintf("https://github.com/%s%s", repo.FullName, opt.Path)
 			_ = OpenBrowser(url)
 			return m, func() tea.Msg {
 				return StatusToastMsg(fmt.Sprintf("Opened %s %s in dedicated browser", repo.Name, opt.Name))
@@ -78,9 +135,6 @@ func (m Model) handleRepoTabsModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
-	case "esc", "q":
-		m.ActiveModal = ModalNone
-		return m, nil
 	case "up", "k":
 		if m.ModalCursor > 0 {
 			m.ModalCursor--
@@ -94,9 +148,16 @@ func (m Model) handleRepoTabsModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if idx >= 0 && idx < len(repoTabOptions) {
 			opt := repoTabOptions[idx]
 			m.ActiveModal = ModalNone
+			url := fmt.Sprintf("https://github.com/%s%s", repo.FullName, opt.Path)
+			if m.RepoTabsYankLeader {
+				m.RepoTabsYankLeader = false
+				_ = CopyToClipboard(url)
+				return m, func() tea.Msg {
+					return StatusToastMsg(fmt.Sprintf("Copied %s URL to clipboard: %s", opt.Name, url))
+				}
+			}
 			m = m.recordRepoInteraction(repo.Name)
 			m = m.focusRepoCursor(repo.Name)
-			url := fmt.Sprintf("https://github.com/%s%s", repo.FullName, opt.Path)
 			_ = OpenBrowser(url)
 			return m, func() tea.Msg {
 				return StatusToastMsg(fmt.Sprintf("Opened %s %s in dedicated browser", repo.Name, opt.Name))
@@ -106,9 +167,16 @@ func (m Model) handleRepoTabsModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.ModalCursor >= 0 && m.ModalCursor < len(repoTabOptions) {
 			opt := repoTabOptions[m.ModalCursor]
 			m.ActiveModal = ModalNone
+			url := fmt.Sprintf("https://github.com/%s%s", repo.FullName, opt.Path)
+			if m.RepoTabsYankLeader {
+				m.RepoTabsYankLeader = false
+				_ = CopyToClipboard(url)
+				return m, func() tea.Msg {
+					return StatusToastMsg(fmt.Sprintf("Copied %s URL to clipboard: %s", opt.Name, url))
+				}
+			}
 			m = m.recordRepoInteraction(repo.Name)
 			m = m.focusRepoCursor(repo.Name)
-			url := fmt.Sprintf("https://github.com/%s%s", repo.FullName, opt.Path)
 			_ = OpenBrowser(url)
 			return m, func() tea.Msg {
 				return StatusToastMsg(fmt.Sprintf("Opened %s %s in dedicated browser", repo.Name, opt.Name))

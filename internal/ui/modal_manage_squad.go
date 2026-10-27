@@ -288,6 +288,7 @@ func (m Model) handleManageSquadModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(
 				func() tea.Msg { return StatusToastMsg(toastMsg) },
 				m.reloadSquadActivityCmd(),
+				m.syncSquadsFileCmd(),
 			)
 		default:
 			prevVal := m.ModalInput.Value()
@@ -339,6 +340,7 @@ func (m Model) handleManageSquadModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(
 				func() tea.Msg { return StatusToastMsg(toastMsg) },
 				m.reloadSquadActivityCmd(),
+				m.syncSquadsFileCmd(),
 			)
 		}
 
@@ -357,9 +359,12 @@ func (m Model) handleManageSquadModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.SquadManageMode = SquadModeOverview
 					m.ModalInput.Reset()
 					m.ModalInput.Blur()
-					return m, func() tea.Msg {
-						return StatusToastMsg(fmt.Sprintf("Renamed squad to '%s'", newName))
-					}
+					return m, tea.Batch(
+						func() tea.Msg {
+							return StatusToastMsg(fmt.Sprintf("Renamed squad to '%s'", newName))
+						},
+						m.syncSquadsFileCmd(),
+					)
 				}
 			}
 			m.SquadManageMode = SquadModeOverview
@@ -379,9 +384,12 @@ func (m Model) handleManageSquadModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.ActiveModal = ModalNone
 			m.SquadManageMode = SquadModeOverview
 			m.ManagedSquadName = ""
-			return m, func() tea.Msg {
-				return StatusToastMsg(fmt.Sprintf("Deleted squad '%s'", squadName))
-			}
+			return m, tea.Batch(
+				func() tea.Msg {
+					return StatusToastMsg(fmt.Sprintf("Deleted squad '%s'", squadName))
+				},
+				m.syncSquadsFileCmd(),
+			)
 		case "n", "esc":
 			m.SquadManageMode = SquadModeOverview
 			return m, nil

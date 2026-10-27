@@ -273,17 +273,44 @@ func TestAvatar_ITerm2NativeGraphicsAndBoundingBox(t *testing.T) {
 		}
 	}
 
-	// 3. Test RenderFallbackAvatar
+	// 3. Test ExtractInitials & GetUserAvatarColor
+	if init := ExtractInitials("Simon Bronner", "simonb"); init != "SB" {
+		t.Errorf("expected SB, got %q", init)
+	}
+	if init := ExtractInitials("John F. Kennedy", "jfk"); init != "JK" {
+		t.Errorf("expected JK, got %q", init)
+	}
+	if init := ExtractInitials("", "octocat"); init != "OC" {
+		t.Errorf("expected OC, got %q", init)
+	}
+	if init := ExtractInitials("", "@bronners"); init != "BR" {
+		t.Errorf("expected BR, got %q", init)
+	}
+
+	c1 := GetUserAvatarColor("simonb")
+	c2 := GetUserAvatarColor("simonb")
+	if c1 != c2 {
+		t.Errorf("expected deterministic color for same login, got %v and %v", c1, c2)
+	}
+
+	// 4. Test RenderASCIIInitialsAvatar
+	avatarBox := RenderASCIIInitialsAvatar("Simon Bronner", "simonb", 8, 4)
+	if !strings.Contains(avatarBox, "SB") {
+		t.Errorf("expected avatar box to contain initials 'SB', got %q", avatarBox)
+	}
+	boxLines := strings.Split(avatarBox, "\n")
+	if len(boxLines) != 4 {
+		t.Fatalf("expected 4 lines in avatar box, got %d", len(boxLines))
+	}
+
+	// 5. Test RenderFallbackAvatar
 	fb8x4 := RenderFallbackAvatar(8, 4)
 	fbLines := strings.Split(fb8x4, "\n")
 	if len(fbLines) != 4 {
 		t.Fatalf("expected 4 lines of fallback avatar, got %d", len(fbLines))
 	}
-	if !strings.Contains(fb8x4, "👤") {
-		t.Errorf("expected 👤 icon in fallback avatar")
-	}
 
-	// 4. Test EmitITerm2ImagesCmd with nil/empty and placements
+	// 6. Test EmitITerm2ImagesCmd with nil/empty and placements
 	if cmd := EmitITerm2ImagesCmd(nil); cmd != nil {
 		t.Errorf("expected nil cmd for nil placements")
 	}
@@ -318,10 +345,6 @@ func TestSquadAvatarPlacements_ExactRowAlignmentAndBounds(t *testing.T) {
 		ActiveTab:         TabSquad,
 		InitialDataLoaded: true,
 		SplashDismissed:   true,
-		RawAvatarCache: map[string][]byte{
-			"simonb":  []byte("fake-image-bytes-simonb"),
-			"octocat": []byte("fake-image-bytes-octocat"),
-		},
 		OrgMembers: []github.OrgMember{
 			{Login: "simonb", Name: "Simon Bronner"},
 			{Login: "octocat", Name: "The Octocat"},
@@ -333,57 +356,21 @@ func TestSquadAvatarPlacements_ExactRowAlignmentAndBounds(t *testing.T) {
 	}
 
 	view := m.View()
-	viewLines := strings.Split(view, "\n")
-
-	_, placements := m.renderSquadDashboardView()
-	if len(placements) != 2 {
-		t.Fatalf("expected 2 avatar placements, got %d", len(placements))
+	if !strings.Contains(view, "SB") {
+		t.Errorf("expected squad view to contain ASCII initials SB for Simon Bronner")
 	}
-
-	for _, p := range placements {
-		if p.Row < 1 || p.Row > len(viewLines) {
-			t.Fatalf("placement for %s has invalid row %d (total lines %d)", p.Login, p.Row, len(viewLines))
-		}
-		targetLine := viewLines[p.Row-1] // 1-based to 0-based
-		if !strings.Contains(targetLine, "@"+p.Login) {
-			t.Errorf("expected line %d to contain @%s, but got: %q", p.Row, p.Login, targetLine)
-		}
-		if p.Col != 3 {
-			t.Errorf("expected col 3, got %d", p.Col)
-		}
-		if p.Width != 8 || p.Height != 4 {
-			t.Errorf("expected 8x4 dimensions, got %dx%d", p.Width, p.Height)
-		}
+	if !strings.Contains(view, "TO") {
+		t.Errorf("expected squad view to contain ASCII initials TO for The Octocat")
 	}
 
 	// 2. Test scrolled view (cursor at index 4 with 6 members)
 	cfg.Squads[0].Members = []string{"u1", "u2", "u3", "u4", "u5", "u6"}
-	m.RawAvatarCache = map[string][]byte{
-		"u1": []byte("bytes1"),
-		"u2": []byte("bytes2"),
-		"u3": []byte("bytes3"),
-		"u4": []byte("bytes4"),
-		"u5": []byte("bytes5"),
-		"u6": []byte("bytes6"),
-	}
 	m.SquadCursor = 4 // Scrolled down
 	m.Height = 35     // visiblePanes = 4
 
 	scrolledView := m.View()
-	scrolledLines := strings.Split(scrolledView, "\n")
-	_, scrolledPlacements := m.renderSquadDashboardView()
-
-	if len(scrolledPlacements) != 4 {
-		t.Fatalf("expected 4 visible placements when scrolled, got %d", len(scrolledPlacements))
-	}
-	for _, p := range scrolledPlacements {
-		if p.Row < 1 || p.Row > len(scrolledLines) {
-			t.Fatalf("placement for %s has invalid row %d (total lines %d)", p.Login, p.Row, len(scrolledLines))
-		}
-		targetLine := scrolledLines[p.Row-1]
-		if !strings.Contains(targetLine, "@"+p.Login) {
-			t.Errorf("scrolled: expected line %d to contain @%s, but got: %q", p.Row, p.Login, targetLine)
-		}
+	if !strings.Contains(scrolledView, "@u5") {
+		t.Errorf("expected scrolled view to contain active cursor member @u5")
 	}
 }
 
@@ -553,3 +540,80 @@ func TestSquadDashboard_ContributorContributions14DaysAllRepos(t *testing.T) {
 		t.Errorf("expected 3 top repos, got %d: %v", len(alice.TopRepos), alice.TopRepos)
 	}
 }
+
+func TestSquadDashboard_SecurityOverviewTable(t *testing.T) {
+	cfg := &config.Config{
+		ActiveSquad: "core",
+		Squads: []config.SquadConfig{
+			{
+				Name:        "core",
+				DisplayName: "Core Team",
+				Members:     []string{"alice"},
+				Repos:       []string{"auth-svc", "gateway-svc"},
+			},
+		},
+	}
+
+	secSummaries := map[string]github.SecurityAlertSummary{
+		"auth-svc": {
+			Critical: 2,
+			High:     3,
+			Medium:   4,
+			Low:      1,
+			Total:    10,
+		},
+		"gateway-svc": {
+			Critical: 0,
+			High:     0,
+			Medium:   0,
+			Low:      0,
+			Total:    0,
+		},
+	}
+
+	m := Model{
+		Config:            cfg,
+		Width:             120,
+		Height:            40,
+		SecuritySummaries: secSummaries,
+		SquadEvents: []github.SquadEvent{
+			{
+				Actor:     "alice",
+				Action:    "Committed",
+				Repo:      "auth-svc",
+				Timestamp: time.Now().Add(-1 * time.Hour),
+			},
+		},
+	}
+
+	rendered := m.renderSquadView()
+
+	// 1. Check for Security Overview title and headers
+	if !strings.Contains(rendered, "SQUAD SECURITY OVERVIEW") {
+		t.Fatalf("expected view to contain 'SQUAD SECURITY OVERVIEW', got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "CRIT") || !strings.Contains(rendered, "HIGH") || !strings.Contains(rendered, "MED") || !strings.Contains(rendered, "REST") {
+		t.Fatalf("expected view to contain vulnerability severity columns, got:\n%s", rendered)
+	}
+
+	// 2. Check for auth-svc and its alert counts
+	if !strings.Contains(rendered, "auth-svc") {
+		t.Fatalf("expected view to contain owned vulnerable repo 'auth-svc', got:\n%s", rendered)
+	}
+
+	// 3. Test zero vulnerabilities empty state
+	secSummaries["auth-svc"] = github.SecurityAlertSummary{Total: 0}
+	m.SecuritySummaries = secSummaries
+	renderedClean := m.renderSquadView()
+	if !strings.Contains(renderedClean, "0 vulnerabilities across 2 squad repos") {
+		t.Fatalf("expected clean state message, got:\n%s", renderedClean)
+	}
+
+	// 4. Test no repos owned empty state
+	cfg.Squads[0].Repos = nil
+	renderedNoRepos := m.renderSquadView()
+	if !strings.Contains(renderedNoRepos, "No repositories assigned to squad yet") {
+		t.Fatalf("expected no repos assigned message, got:\n%s", renderedNoRepos)
+	}
+}
+

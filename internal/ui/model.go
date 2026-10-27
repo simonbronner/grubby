@@ -3,7 +3,6 @@ package ui
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -247,6 +246,7 @@ type Model struct {
 	RepoCursor              int
 	RepoFilter              string
 	RepoGroupFilter         string
+	SquadFilterActive       bool
 	RepoSortVulnerabilities bool
 	RepoFilterInput         textinput.Model
 	TmuxSessions            map[string]TmuxSessionInfo
@@ -336,6 +336,7 @@ type Model struct {
 	ModalCursor        int
 	ModalInput         textinput.Model
 	SelectedRepoGroups map[string]bool // groupName -> inGroup
+	RepoTabsYankLeader bool            // true when in yank leader mode for repo tabs modal
 
 	// Layout
 	Width  int
@@ -464,6 +465,14 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 				m.HiddenRepos[k] = true
 			}
 		}
+		if cachedSquads, err := db.GetSquads(); err == nil && len(cachedSquads) > 0 {
+			for _, s := range cachedSquads {
+				_ = cfg.CreateSquad(s.Name, s.DisplayName, s.Members)
+				if len(s.Repos) > 0 {
+					_ = cfg.SetSquadRepos(s.Name, s.Repos)
+				}
+			}
+		}
 		if labels, err := db.GetRepoLabelsForSquad(cfg.ActiveSquad); err == nil && len(labels) > 0 {
 			m.RepoLabels = labels
 		}
@@ -495,10 +504,10 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 				m.PersonalDoneTasks = pDone
 			}
 			if sTasks, err := db.GetTasks(true, "open"); err == nil {
-				m.SquadTasks = sTasks
+				m.SquadTasks = github.FilterTasksForSquad(sTasks, cfg.ActiveSquad)
 			}
 			if sDone, err := db.GetTasks(true, "closed"); err == nil {
-				m.SquadDoneTasks = sDone
+				m.SquadDoneTasks = github.FilterTasksForSquad(sDone, cfg.ActiveSquad)
 			}
 			if events, err := db.GetSquadEvents(100); err == nil {
 				m.SquadEvents = events
@@ -643,20 +652,61 @@ func (m Model) loadDataCmd() tea.Cmd {
 			}
 		}
 
-		// Fetch Tasks for Personal and Squad
-		allPersonal, _ := m.GHClient.FetchTasks(ctx, authUser, "tasks", false)
-		personalTasks, personalDoneTasks, autoClosedPersonal := m.GHClient.CheckAndAutoClosePRTasks(ctx, allPersonal)
-
-		squadName := "default-squad"
-		if m.Config != nil && m.Config.ActiveSquad != "" {
-			squadName = m.Config.ActiveSquad
-		}
-		squadRepo := fmt.Sprintf("%s-tasks", squadName)
 		orgTarget := m.CurrentOrg
 		if orgTarget == "" {
 			orgTarget = authUser
 		}
-		allSquad, _ := m.GHClient.FetchTasks(ctx, orgTarget, squadRepo, true)
+		centralOwner, centralRepo := m.Config.GetCentralTasksRepo(orgTarget)
+
+		// 1. Synchronize squads.json from central repo
+		if squadsFile, _, err := m.GHClient.FetchSquadsFile(ctx, centralOwner, centralRepo); err == nil && squadsFile != nil && len(squadsFile.Squads) > 0 {
+			for _, s := range squadsFile.Squads {
+				_ = m.Config.CreateSquad(s.Name, s.DisplayName, s.Members)
+				if len(s.Repos) > 0 {
+					_ = m.Config.SetSquadRepos(s.Name, s.Repos)
+				}
+			}
+			if m.DB != nil {
+				_ = m.DB.SaveSquads(squadsFile.Squads)
+			}
+		}
+
+		// 2. Synchronize repo-labels.json from central repo
+		if squadLabels, err := m.GHClient.FetchSquadRepoLabels(ctx, centralOwner, centralRepo); err == nil && squadLabels != nil {
+			for repoKey, lbls := range squadLabels.Mappings {
+				repoID, _ := strconv.ParseInt(repoKey, 10, 64)
+				repoName := ""
+				if repoID <= 0 {
+					repoName = repoKey
+				}
+				_ = m.DB.SaveRepoLabels(repoID, repoName, lbls, m.Config.ActiveSquad)
+			}
+			if len(squadLabels.Labels) > 0 {
+				colors := make(map[string]string)
+				for l, info := range squadLabels.Labels {
+					if info.Color != "" {
+						colors[l] = info.Color
+					}
+				}
+				_ = m.DB.SaveLabelColors(m.Config.ActiveSquad, colors)
+			}
+		}
+
+		// 3. Fetch Tasks for Personal (authUser/tasks) and Squad (central repo filtered by squad:<active_squad>)
+		allPersonal, _ := m.GHClient.FetchTasks(ctx, authUser, "tasks", false)
+		personalTasks, personalDoneTasks, autoClosedPersonal := m.GHClient.CheckAndAutoClosePRTasks(ctx, allPersonal)
+
+		squadFilter := ""
+		if m.Config != nil && m.Config.ActiveSquad != "" {
+			squadFilter = "squad:" + strings.ToLower(strings.TrimSpace(m.Config.ActiveSquad))
+		}
+		allSquad, _ := m.GHClient.FetchTasksFiltered(ctx, centralOwner, centralRepo, squadFilter, true)
+		if len(allSquad) == 0 && m.Config != nil && m.Config.CentralTasksRepo == "" && m.Config.ActiveSquad != "" {
+			legacyRepo := fmt.Sprintf("%s-tasks", m.Config.ActiveSquad)
+			if legacySquad, err := m.GHClient.FetchTasks(ctx, orgTarget, legacyRepo, true); err == nil && len(legacySquad) > 0 {
+				allSquad = legacySquad
+			}
+		}
 		squadTasks, squadDoneTasks, autoClosedSquad := m.GHClient.CheckAndAutoClosePRTasks(ctx, allSquad)
 
 		if m.DB != nil {
@@ -743,16 +793,22 @@ func (m Model) loadTasksCmd() tea.Cmd {
 		allPersonal, _ := m.GHClient.FetchTasks(ctx, user, "tasks", false)
 		personalTasks, personalDoneTasks, autoClosedPersonal := m.GHClient.CheckAndAutoClosePRTasks(ctx, allPersonal)
 
-		squadName := "default-squad"
-		if m.Config != nil && m.Config.ActiveSquad != "" {
-			squadName = m.Config.ActiveSquad
-		}
-		squadRepo := fmt.Sprintf("%s-tasks", squadName)
 		org := m.CurrentOrg
 		if org == "" {
 			org = user
 		}
-		allSquad, _ := m.GHClient.FetchTasks(ctx, org, squadRepo, true)
+		centralOwner, centralRepo := m.Config.GetCentralTasksRepo(org)
+		squadFilter := ""
+		if m.Config != nil && m.Config.ActiveSquad != "" {
+			squadFilter = "squad:" + strings.ToLower(strings.TrimSpace(m.Config.ActiveSquad))
+		}
+		allSquad, _ := m.GHClient.FetchTasksFiltered(ctx, centralOwner, centralRepo, squadFilter, true)
+		if len(allSquad) == 0 && m.Config != nil && m.Config.CentralTasksRepo == "" && m.Config.ActiveSquad != "" {
+			legacyRepo := fmt.Sprintf("%s-tasks", m.Config.ActiveSquad)
+			if legacySquad, err := m.GHClient.FetchTasks(ctx, org, legacyRepo, true); err == nil && len(legacySquad) > 0 {
+				allSquad = legacySquad
+			}
+		}
 		squadTasks, squadDoneTasks, autoClosedSquad := m.GHClient.CheckAndAutoClosePRTasks(ctx, allSquad)
 
 		return TasksLoadedMsg{
@@ -766,16 +822,33 @@ func (m Model) loadTasksCmd() tea.Cmd {
 }
 
 func (m Model) createTaskCmd(owner, repo, title, body string, priority github.TaskPriority, assignees []string, isSquad bool) tea.Cmd {
+	var extraLabels []string
+	if isSquad && m.Config != nil && m.Config.ActiveSquad != "" {
+		extraLabels = append(extraLabels, "squad:"+strings.ToLower(strings.TrimSpace(m.Config.ActiveSquad)))
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 
-		task, err := m.GHClient.CreateTask(ctx, owner, repo, title, body, priority, assignees, isSquad)
+		task, err := m.GHClient.CreateTaskWithLabels(ctx, owner, repo, title, body, priority, extraLabels, assignees, isSquad)
 		return TaskCreatedMsg{Task: task, Err: err}
 	}
 }
 
 func (m Model) createPRTaskCmd(owner, repo, title, body string, priority github.TaskPriority, labels []string, assignees []string, isSquad bool, pr github.PullRequest) tea.Cmd {
+	if isSquad && m.Config != nil && m.Config.ActiveSquad != "" {
+		squadLabel := "squad:" + strings.ToLower(strings.TrimSpace(m.Config.ActiveSquad))
+		hasSquadLabel := false
+		for _, l := range labels {
+			if strings.EqualFold(l, squadLabel) {
+				hasSquadLabel = true
+				break
+			}
+		}
+		if !hasSquadLabel {
+			labels = append(labels, squadLabel)
+		}
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -835,6 +908,39 @@ func (m Model) getSquadAssigneeOptions() []string {
 	// 5. Current Authenticated User
 	if m.AuthUser != "" {
 		addCandidate(m.AuthUser)
+	}
+
+	return list
+}
+
+func (m Model) getSquadMembersForReview(prAuthor string) []string {
+	var list []string
+	seen := make(map[string]bool)
+
+	addMember := func(candidate string) {
+		clean := strings.TrimSpace(candidate)
+		lower := strings.ToLower(clean)
+		if lower == "" || seen[lower] {
+			return
+		}
+		seen[lower] = true
+		list = append(list, clean)
+	}
+
+	// 1. Members of the active squad first
+	if m.Config != nil {
+		if active := m.Config.GetActiveSquad(); active != nil {
+			for _, mem := range active.Members {
+				addMember(mem)
+			}
+		}
+	}
+
+	// 2. Fallback to all squad assignee options if active squad has no members configured
+	if len(list) == 0 {
+		for _, cand := range m.getSquadAssigneeOptions() {
+			addMember(cand)
+		}
 	}
 
 	return list
@@ -1600,7 +1706,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// When editing or adding a task inline, route keystrokes directly to task keys (disabling global hotkeys)
-		if m.ActiveTab == TabTasks && (m.InlineEditing || m.InlineAdding) {
+		if m.isTasksTab() && (m.InlineEditing || m.InlineAdding) {
 			return m.handleTasksKeys(msg)
 		}
 
@@ -1687,11 +1793,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.SearchInput, cmd = m.SearchInput.Update(msg)
 		cmds = append(cmds, cmd)
 	}
-	if m.ActiveTab == TabTasks && m.InlineEditing {
+	if m.isTasksTab() && m.InlineEditing {
 		var cmd tea.Cmd
 		m.InlineEditTitleInput, cmd = m.InlineEditTitleInput.Update(msg)
 		cmds = append(cmds, cmd)
-	} else if m.ActiveTab == TabTasks && m.InlineAdding {
+	} else if m.isTasksTab() && m.InlineAdding {
 		var cmd tea.Cmd
 		m.InlineNewTitleInput, cmd = m.InlineNewTitleInput.Update(msg)
 		cmds = append(cmds, cmd)
@@ -1941,16 +2047,16 @@ func (m Model) renderFooter() string {
 	var help string
 	switch m.ActiveTab {
 	case TabRepos:
-		if m.RepoFilter != "" || m.RepoGroupFilter != "" || m.RepoSortVulnerabilities {
-			help = "[p] PRs  [/] Filter  [#] Labels  [v] Sort Vulns  [s] Session  [e] Editor  [t] Shell  [Esc] Clear  [Enter] Web  [o] Submenu  [l] Labels  [c] Clone  [?] Help"
+		if m.RepoFilter != "" || m.RepoGroupFilter != "" || m.RepoSortVulnerabilities || m.SquadFilterActive {
+			help = "[p] PRs  [/] Filter  [#] Labels  [S] Squad Filter  [v] Sort Vulns  [s] Session  [e] Editor  [t] Shell  [Esc] Clear  [Enter] Web  [o] Submenu  [O] Claim  [l] Labels  [c] Clone  [?] Help"
 		} else {
-			help = "[p] PRs  [/] Filter  [#] Labels  [v] Sort Vulns  [s] Session  [e] Editor  [t] Shell  [Enter] Web  [o] Submenu  [l] Labels  [c] Clone  [u] Sync  [?] Help"
+			help = "[p] PRs  [/] Filter  [#] Labels  [S] Squad Filter  [v] Sort Vulns  [s] Session  [e] Editor  [t] Shell  [Enter] Web  [o] Submenu  [O] Claim  [l] Labels  [c] Clone  [u] Sync  [?] Help"
 		}
 	case TabPRs:
 		if m.PRFilter != "" {
-			help = "[m] Merge  [f] Filter  [Esc] Clear Filter  [t] Create Task  [o] Browser  [p] Copilot Review  [c] Checkout Branch  [?] Help"
+			help = "[m] Merge  [f] Filter  [Esc] Clear Filter  [t] Request Review  [y] Yank URL  [o] Browser  [p] Copilot Review  [c] Checkout Branch  [?] Help"
 		} else {
-			help = "[m] Merge  [f] Filter  [t] Create Task  [o] Browser  [p] Copilot Review  [c] Checkout Branch  [r] Refresh  [?] Help"
+			help = "[m] Merge  [f] Filter  [t] Request Review  [y] Yank URL  [o] Browser  [p] Copilot Review  [c] Checkout Branch  [r] Refresh  [?] Help"
 		}
 	case TabMyTasks:
 		if m.InlineAdding {
@@ -2078,6 +2184,7 @@ func OpenBrowser(url string) error {
 
 func OpenInITermNvim(dir string, filePath string, lineNum int) error {
 	if _, err := os.Stat("/Applications/iTerm.app"); err == nil {
+		repoName := filepath.Base(dir)
 		var nvimCmd string
 		if filePath != "" && lineNum > 0 {
 			nvimCmd = fmt.Sprintf("cd %q && nvim +%d %q", dir, lineNum, filePath)
@@ -2087,26 +2194,8 @@ func OpenInITermNvim(dir string, filePath string, lineNum int) error {
 			nvimCmd = fmt.Sprintf("cd %q && nvim .", dir)
 		}
 
-		script := fmt.Sprintf(`
-tell application "iTerm"
-	activate
-	try
-		tell current window
-			create tab with default profile
-			tell current session
-				write text %q
-			end tell
-		end tell
-	on error
-		create window with default profile
-		tell current session of current window
-			write text %q
-		end tell
-	end try
-end tell`, nvimCmd, nvimCmd)
-
-		cmd := exec.Command("osascript", "-e", script)
-		return cmd.Run()
+		tabTitle := "nvim:" + repoName
+		return activateOrOpenGrubbyITermWindow(nvimCmd, tabTitle)
 	}
 
 	// Fallback if iTerm is not installed
@@ -2132,25 +2221,10 @@ func OpenInEditor(editor, path string, lineNum int) error {
 
 func OpenInShell(dir string) error {
 	if _, err := os.Stat("/Applications/iTerm.app"); err == nil {
-		script := fmt.Sprintf(`
-tell application "iTerm"
-	activate
-	try
-		tell current window
-			create tab with default profile
-			tell current session
-				write text "cd %q && clear"
-			end tell
-		end tell
-	on error
-		create window with default profile
-		tell current session of current window
-			write text "cd %q && clear"
-		end tell
-	end try
-end tell`, dir, dir)
-		cmd := exec.Command("osascript", "-e", script)
-		if err := cmd.Run(); err == nil {
+		repoName := filepath.Base(dir)
+		shellCmd := fmt.Sprintf("cd %q && clear", dir)
+		tabTitle := "shell:" + repoName
+		if err := activateOrOpenGrubbyITermWindow(shellCmd, tabTitle); err == nil {
 			return nil
 		}
 		return exec.Command("open", "-a", "iTerm", dir).Start()
@@ -2159,49 +2233,7 @@ end tell`, dir, dir)
 }
 
 func (m Model) fetchSquadAvatarsCmd(logins []string) tea.Cmd {
-	if m.GHClient == nil {
-		return nil
-	}
-	var cmds []tea.Cmd
-	for _, login := range logins {
-		lClean := strings.TrimSpace(login)
-		if lClean == "" {
-			continue
-		}
-		lLower := strings.ToLower(lClean)
-		if m.RawAvatarCache != nil {
-			if _, exists := m.RawAvatarCache[lLower]; exists {
-				continue
-			}
-		}
-
-		ghClient := m.GHClient
-		profile := m.ProfileCache[lLower]
-
-		cmds = append(cmds, func() tea.Msg {
-			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-			defer cancel()
-
-			avatarURL := profile.AvatarURL
-			if avatarURL == "" {
-				avatarURL = fmt.Sprintf("https://github.com/%s.png?size=64", url.PathEscape(lClean))
-			}
-
-			data, err := ghClient.DownloadAvatar(ctx, avatarURL)
-			if err != nil || len(data) == 0 {
-				return nil
-			}
-
-			return AvatarLoadedMsg{
-				Login:   lLower,
-				RawData: data,
-			}
-		})
-	}
-	if len(cmds) == 0 {
-		return nil
-	}
-	return tea.Batch(cmds...)
+	return nil
 }
 
 func (m Model) recordRepoInteraction(repoName string) Model {
@@ -2385,10 +2417,13 @@ func (m Model) getLabelColor(label string) string {
 }
 
 func (m Model) syncSquadRepoLabelsCmd(repoID int64, repoName string, labels []string) tea.Cmd {
-	if m.GHClient == nil || m.Config == nil || m.Config.ActiveSquad == "" || m.CurrentOrg == "" {
+	if m.GHClient == nil || m.Config == nil || m.CurrentOrg == "" {
 		return nil
 	}
-	squadRepo := fmt.Sprintf("%s-tasks", m.Config.ActiveSquad)
+	owner, repo := m.Config.GetCentralTasksRepo(m.CurrentOrg)
+	if owner == "" || repo == "" {
+		return nil
+	}
 	repoIDStr := strconv.FormatInt(repoID, 10)
 	if repoID <= 0 {
 		repoIDStr = repoName
@@ -2396,7 +2431,7 @@ func (m Model) syncSquadRepoLabelsCmd(repoID int64, repoName string, labels []st
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		_ = m.GHClient.SaveSquadRepoLabels(ctx, m.CurrentOrg, squadRepo, func(mappings map[string][]string) error {
+		_ = m.GHClient.SaveSquadRepoLabels(ctx, owner, repo, func(mappings map[string][]string) error {
 			if len(labels) > 0 {
 				mappings[repoIDStr] = labels
 			} else {
@@ -2404,6 +2439,68 @@ func (m Model) syncSquadRepoLabelsCmd(repoID int64, repoName string, labels []st
 			}
 			return nil
 		})
+		return nil
+	}
+}
+
+func (m Model) syncSquadsFileCmd() tea.Cmd {
+	if m.GHClient == nil || m.Config == nil {
+		return nil
+	}
+	org := m.CurrentOrg
+	if org == "" {
+		org = m.AuthUser
+	}
+	owner, repo := m.Config.GetCentralTasksRepo(org)
+	if owner == "" || repo == "" {
+		return nil
+	}
+
+	var squadDefs []github.SquadDefinition
+	for _, s := range m.Config.Squads {
+		squadDefs = append(squadDefs, github.SquadDefinition{
+			Name:        s.Name,
+			DisplayName: s.DisplayName,
+			Members:     s.Members,
+			Repos:       s.Repos,
+		})
+	}
+	author := m.AuthUser
+	if author == "" {
+		author = "grubby"
+	}
+
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		_ = m.GHClient.SaveSquadsFile(ctx, owner, repo, author, func(squads *[]github.SquadDefinition) error {
+			localMap := make(map[string]github.SquadDefinition)
+			for _, s := range squadDefs {
+				localMap[strings.ToLower(s.Name)] = s
+			}
+			var merged []github.SquadDefinition
+			remoteSeen := make(map[string]bool)
+			for _, remote := range *squads {
+				lower := strings.ToLower(remote.Name)
+				remoteSeen[lower] = true
+				if local, exists := localMap[lower]; exists {
+					merged = append(merged, local)
+				} else {
+					merged = append(merged, remote)
+				}
+			}
+			for _, local := range squadDefs {
+				if !remoteSeen[strings.ToLower(local.Name)] {
+					merged = append(merged, local)
+				}
+			}
+			*squads = merged
+			return nil
+		})
+		if m.DB != nil {
+			_ = m.DB.SaveSquads(squadDefs)
+		}
 		return nil
 	}
 }

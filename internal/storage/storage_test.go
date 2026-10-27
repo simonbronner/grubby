@@ -557,4 +557,65 @@ func TestRepoHidden_SQLite(t *testing.T) {
 	}
 }
 
+func TestSquadsStorage(t *testing.T) {
+	db := setupTestDB(t)
+
+	initial := []github.SquadDefinition{
+		{
+			Name:        "core",
+			DisplayName: "Core Platform",
+			Description: "Core backend services",
+			Members:     []string{"simonb", "alice"},
+			Repos:       []string{"grubby", "auth-svc"},
+		},
+		{
+			Name:        "frontend",
+			DisplayName: "Web Team",
+			Description: "UI and web clients",
+			Members:     []string{"charlie", "diana"},
+			Repos:       []string{"web-client"},
+		},
+	}
+
+	if err := db.SaveSquads(initial); err != nil {
+		t.Fatalf("SaveSquads failed: %v", err)
+	}
+
+	squads, err := db.GetSquads()
+	if err != nil {
+		t.Fatalf("GetSquads failed: %v", err)
+	}
+	if len(squads) != 2 {
+		t.Fatalf("expected 2 squads, got %d", len(squads))
+	}
+	if squads[0].Name != "core" || len(squads[0].Members) != 2 || len(squads[0].Repos) != 2 {
+		t.Errorf("unexpected squad 0: %+v", squads[0])
+	}
+	if squads[1].Name != "frontend" || len(squads[1].Members) != 2 || len(squads[1].Repos) != 1 {
+		t.Errorf("unexpected squad 1: %+v", squads[1])
+	}
+
+	// Update squads: replace with updated list
+	updated := []github.SquadDefinition{
+		{
+			Name:        "core",
+			DisplayName: "Core Platform & Infra",
+			Description: "Updated desc",
+			Members:     []string{"simonb", "alice", "bob"},
+		},
+	}
+	if err := db.SaveSquads(updated); err != nil {
+		t.Fatalf("SaveSquads update failed: %v", err)
+	}
+
+	reloaded, _ := db.GetSquads()
+	if len(reloaded) != 1 {
+		t.Fatalf("expected 1 squad after update, got %d", len(reloaded))
+	}
+	if len(reloaded[0].Members) != 3 {
+		t.Errorf("expected 3 members in core squad, got %d", len(reloaded[0].Members))
+	}
+}
+
+
 

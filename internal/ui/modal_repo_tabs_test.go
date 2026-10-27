@@ -142,3 +142,76 @@ func TestRepoTabsModal_ActsOnSelectedRepoNotFirst(t *testing.T) {
 		t.Errorf("expected cursor to remain focused on third-repo, got %+v (cursor %d)", selectedAfter, m.RepoCursor)
 	}
 }
+
+func TestRepoTabsModal_YankLeaderKey(t *testing.T) {
+	repos := []github.Repository{
+		{Name: "my-service", FullName: "acme/my-service"},
+	}
+
+	m := Model{
+		ActiveTab:   TabRepos,
+		ActiveModal: ModalRepoTabs,
+		Repos:       repos,
+		RepoCursor:  1, // 0 is TierHeader, 1 is my-service
+	}
+
+	// 1. Initial view offers [y] Yank leader
+	viewInitial := m.renderRepoTabsModal()
+	if !strings.Contains(viewInitial, "[y] Yank leader") {
+		t.Fatalf("expected view to offer '[y] Yank leader', got:\n%s", viewInitial)
+	}
+
+	// 2. Press 'y' to enter yank mode
+	updated, _ := m.handleRepoTabsModalKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = updated.(Model)
+
+	if !m.RepoTabsYankLeader {
+		t.Fatalf("expected RepoTabsYankLeader to be true after pressing 'y'")
+	}
+	if m.ActiveModal != ModalRepoTabs {
+		t.Fatalf("modal should stay open in yank mode")
+	}
+
+	// 3. View should show YANK MODE header
+	viewYankMode := m.renderRepoTabsModal()
+	if !strings.Contains(viewYankMode, "YANK MODE") {
+		t.Fatalf("expected view to display 'YANK MODE', got:\n%s", viewYankMode)
+	}
+
+	// 4. Press 'p' in yank mode -> copies pull requests URL to clipboard and closes modal
+	updatedP, cmdP := m.handleRepoTabsModalKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = updatedP.(Model)
+
+	if m.ActiveModal != ModalNone {
+		t.Fatalf("expected modal to close after yanking")
+	}
+	if m.RepoTabsYankLeader {
+		t.Fatalf("expected RepoTabsYankLeader to be false after yanking")
+	}
+	if cmdP == nil {
+		t.Fatalf("expected toast cmd after yanking")
+	}
+	toast := string(cmdP().(StatusToastMsg))
+	if !strings.Contains(toast, "Copied") || !strings.Contains(toast, "https://github.com/acme/my-service/pulls") {
+		t.Fatalf("expected toast confirming copied URL, got: %s", toast)
+	}
+
+	// 5. Test pressing 'y' then 'y' again (yy) copies highlighted item (Option 0 = Code overview)
+	m.ActiveModal = ModalRepoTabs
+	m.ModalCursor = 0
+	updatedY1, _ := m.handleRepoTabsModalKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = updatedY1.(Model)
+	if !m.RepoTabsYankLeader {
+		t.Fatalf("expected yank mode")
+	}
+	updatedY2, cmdY2 := m.handleRepoTabsModalKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = updatedY2.(Model)
+	if m.ActiveModal != ModalNone {
+		t.Fatalf("expected modal to close after second 'y'")
+	}
+	toast2 := string(cmdY2().(StatusToastMsg))
+	if !strings.Contains(toast2, "https://github.com/acme/my-service") {
+		t.Fatalf("expected toast for code overview URL, got: %s", toast2)
+	}
+}
+

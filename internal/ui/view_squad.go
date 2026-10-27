@@ -371,11 +371,7 @@ func (m Model) renderSquadView() string {
 }
 
 func (m Model) emitSquadMemberAvatarsCmd() tea.Cmd {
-	if m.ActiveTab != TabSquad || m.ActiveModal != ModalNone {
-		return nil
-	}
-	_, placements := m.renderSquadDashboardView()
-	return EmitITerm2ImagesCmd(placements)
+	return nil
 }
 
 func (m Model) renderSquadDashboardView() (string, []AvatarPlacement) {
@@ -404,46 +400,56 @@ func (m Model) renderSquadDashboardView() (string, []AvatarPlacement) {
 	var sections []string
 	sections = append(sections, banner)
 
-	// 2. Most Active Repositories (Squad-Wide, Last 14 Days)
+	// 2. Active Repositories & Security Overview Side-by-Side
+	displayLimit := 10
+
+	// --- Left Table: Most Active Repositories ---
+	var leftLines []string
 	repoHeader := lipgloss.NewStyle().Bold(true).Foreground(SecondaryColor).Render("  🔥 MOST ACTIVE REPOSITORIES (LAST 14 DAYS)")
-	sections = append(sections, repoHeader)
+	leftLines = append(leftLines, repoHeader)
+
+	leftWidth := (m.Width - 6) / 2
+	if leftWidth < 48 {
+		leftWidth = 48
+	}
+	rightWidth := m.Width - leftWidth - 6
+	if rightWidth < 46 {
+		rightWidth = 46
+	}
+
+	repoColW := 18
+	statColW := 6
+	contribColW := leftWidth - 4 - repoColW - (statColW * 4) - 4
+	if contribColW < 10 {
+		contribColW = 10
+	}
+
+	repoStyle := lipgloss.NewStyle().Width(repoColW).MaxWidth(repoColW).MaxHeight(1).Inline(true)
+	statStyle := lipgloss.NewStyle().Width(statColW).MaxWidth(statColW).MaxHeight(1).Inline(true)
+	contribStyle := lipgloss.NewStyle().Width(contribColW).MaxWidth(contribColW).MaxHeight(1).Inline(true)
+
+	tableHead := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		"    ",
+		TableHeaderStyle.Render(repoStyle.Render("REPOSITORY")),
+		TableHeaderStyle.Render(statStyle.Render("CMT")),
+		TableHeaderStyle.Render(statStyle.Render("PSH")),
+		TableHeaderStyle.Render(statStyle.Render("REV")),
+		TableHeaderStyle.Render(statStyle.Render("MRG")),
+		TableHeaderStyle.Render(contribStyle.Render("CONTRIB")),
+	)
+	leftLines = append(leftLines, tableHead)
 
 	if len(dashboard.ActiveRepos) == 0 {
-		sections = append(sections, lipgloss.NewStyle().Foreground(MutedColor).Render("     No repository activity recorded for squad members in the last 14 days."))
+		leftLines = append(leftLines, lipgloss.NewStyle().Foreground(MutedColor).Render("    No repository activity recorded for squad members."))
 	} else {
-		// Render top 10 active repos table
-		displayLimit := 10
-		if len(dashboard.ActiveRepos) < displayLimit {
-			displayLimit = len(dashboard.ActiveRepos)
+		limit := displayLimit
+		if len(dashboard.ActiveRepos) < limit {
+			limit = len(dashboard.ActiveRepos)
 		}
-
-		repoColW := 24
-		statColW := 10
-		contribColW := m.Width - repoColW - (statColW * 4) - 22
-		if contribColW < 16 {
-			contribColW = 16
-		}
-
-		repoStyle := lipgloss.NewStyle().Width(repoColW).MaxWidth(repoColW).MaxHeight(1).Inline(true)
-		statStyle := lipgloss.NewStyle().Width(statColW).MaxWidth(statColW).MaxHeight(1).Inline(true)
-		contribStyle := lipgloss.NewStyle().Width(contribColW).MaxWidth(contribColW).MaxHeight(1).Inline(true)
-
-		tableHead := lipgloss.JoinHorizontal(
-			lipgloss.Top,
-			"      ",
-			TableHeaderStyle.Render(repoStyle.Render("REPOSITORY")),
-			TableHeaderStyle.Render(statStyle.Render("COMMITS")),
-			TableHeaderStyle.Render(statStyle.Render("PUSHES")),
-			TableHeaderStyle.Render(statStyle.Render("REVIEWS")),
-			TableHeaderStyle.Render(statStyle.Render("MERGES")),
-			TableHeaderStyle.Render(contribStyle.Render("CONTRIBUTORS")),
-		)
-		var tableRows []string
-		tableRows = append(tableRows, tableHead)
-
-		for i := 0; i < displayLimit; i++ {
+		for i := 0; i < limit; i++ {
 			r := dashboard.ActiveRepos[i]
-			rank := fmt.Sprintf("#%-2d ", i+1)
+			rank := fmt.Sprintf("#%-2d", i+1)
 
 			repoText := r.RepoName
 			if len(repoText) > repoColW-2 {
@@ -456,7 +462,7 @@ func (m Model) renderSquadDashboardView() (string, []AvatarPlacement) {
 				for _, c := range r.Contributors {
 					handles = append(handles, "@"+c)
 				}
-				contribText = strings.Join(handles, ", ")
+				contribText = strings.Join(handles, ",")
 				if len(contribText) > contribColW-2 {
 					contribText = contribText[:contribColW-3] + "…"
 				}
@@ -464,7 +470,7 @@ func (m Model) renderSquadDashboardView() (string, []AvatarPlacement) {
 
 			row := lipgloss.JoinHorizontal(
 				lipgloss.Top,
-				lipgloss.NewStyle().Foreground(MutedColor).Render(rank),
+				lipgloss.NewStyle().Foreground(MutedColor).Render(rank+" "),
 				repoStyle.Render(lipgloss.NewStyle().Bold(true).Foreground(HighlightColor).Render(repoText)),
 				statStyle.Render(fmt.Sprintf("%d", r.Commits)),
 				statStyle.Render(fmt.Sprintf("%d", r.Pushes)),
@@ -472,9 +478,150 @@ func (m Model) renderSquadDashboardView() (string, []AvatarPlacement) {
 				statStyle.Render(fmt.Sprintf("%d", r.Merges)),
 				contribStyle.Render(lipgloss.NewStyle().Foreground(SecondaryColor).Render(contribText)),
 			)
-			tableRows = append(tableRows, "  "+row)
+			leftLines = append(leftLines, "  "+row)
 		}
-		sections = append(sections, strings.Join(tableRows, "\n"))
+	}
+
+	// --- Right Table: Security Overview (Squad-Owned Repos) ---
+	type SquadSecItem struct {
+		RepoName string
+		Critical int
+		High     int
+		Medium   int
+		Rest     int
+		Total    int
+	}
+
+	var squadSecItems []SquadSecItem
+	var ownedRepos []string
+	if activeSquad != nil && m.Config != nil {
+		ownedRepos = m.Config.GetReposForSquad(activeSquad.Name)
+	}
+
+	for _, repoName := range ownedRepos {
+		cleanName := strings.TrimSpace(repoName)
+		if cleanName == "" {
+			continue
+		}
+		sec, ok := m.SecuritySummaries[cleanName]
+		if !ok {
+			for k, v := range m.SecuritySummaries {
+				if strings.EqualFold(k, cleanName) {
+					sec = v
+					ok = true
+					break
+				}
+			}
+		}
+		if ok && (sec.Total > 0 || sec.Critical+sec.High+sec.Medium+sec.Low > 0) {
+			squadSecItems = append(squadSecItems, SquadSecItem{
+				RepoName: cleanName,
+				Critical: sec.Critical,
+				High:     sec.High,
+				Medium:   sec.Medium,
+				Rest:     sec.Low,
+				Total:    sec.Total,
+			})
+		}
+	}
+
+	sort.Slice(squadSecItems, func(i, j int) bool {
+		if squadSecItems[i].Critical != squadSecItems[j].Critical {
+			return squadSecItems[i].Critical > squadSecItems[j].Critical
+		}
+		if squadSecItems[i].High != squadSecItems[j].High {
+			return squadSecItems[i].High > squadSecItems[j].High
+		}
+		if squadSecItems[i].Medium != squadSecItems[j].Medium {
+			return squadSecItems[i].Medium > squadSecItems[j].Medium
+		}
+		if squadSecItems[i].Rest != squadSecItems[j].Rest {
+			return squadSecItems[i].Rest > squadSecItems[j].Rest
+		}
+		return strings.ToLower(squadSecItems[i].RepoName) < strings.ToLower(squadSecItems[j].RepoName)
+	})
+
+	var rightLines []string
+	secHeader := lipgloss.NewStyle().Bold(true).Foreground(WarningColor).Render("  🛡️ SQUAD SECURITY OVERVIEW")
+	rightLines = append(rightLines, secHeader)
+
+	secColW := 18
+	secStatW := 6
+
+	secRepoStyle := lipgloss.NewStyle().Width(secColW).MaxWidth(secColW).MaxHeight(1).Inline(true)
+	secStatStyle := lipgloss.NewStyle().Width(secStatW).MaxWidth(secStatW).MaxHeight(1).Inline(true)
+
+	secTableHead := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		"  ",
+		TableHeaderStyle.Render(secRepoStyle.Render("REPOSITORY")),
+		TableHeaderStyle.Render(secStatStyle.Render("CRIT")),
+		TableHeaderStyle.Render(secStatStyle.Render("HIGH")),
+		TableHeaderStyle.Render(secStatStyle.Render("MED")),
+		TableHeaderStyle.Render(secStatStyle.Render("REST")),
+		TableHeaderStyle.Render(secStatStyle.Render("TOTAL")),
+	)
+	rightLines = append(rightLines, secTableHead)
+
+	if len(ownedRepos) == 0 {
+		rightLines = append(rightLines, lipgloss.NewStyle().Foreground(MutedColor).Render("    No repositories assigned to squad yet.\n    (Press [O] on Repositories tab to assign)"))
+	} else if len(squadSecItems) == 0 {
+		rightLines = append(rightLines, lipgloss.NewStyle().Foreground(SuccessColor).Bold(true).Render(fmt.Sprintf("    ✓ 0 vulnerabilities across %d squad repos", len(ownedRepos))))
+	} else {
+		limit := displayLimit
+		if len(squadSecItems) < limit {
+			limit = len(squadSecItems)
+		}
+		for i := 0; i < limit; i++ {
+			item := squadSecItems[i]
+			rName := item.RepoName
+			if len(rName) > secColW-2 {
+				rName = rName[:secColW-3] + "…"
+			}
+
+			var critStr, highStr, medStr, restStr string
+			if item.Critical > 0 {
+				critStr = lipgloss.NewStyle().Bold(true).Foreground(DangerColor).Render(fmt.Sprintf("%d", item.Critical))
+			} else {
+				critStr = lipgloss.NewStyle().Foreground(MutedColor).Render("-")
+			}
+			if item.High > 0 {
+				highStr = lipgloss.NewStyle().Bold(true).Foreground(WarningColor).Render(fmt.Sprintf("%d", item.High))
+			} else {
+				highStr = lipgloss.NewStyle().Foreground(MutedColor).Render("-")
+			}
+			if item.Medium > 0 {
+				medStr = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E5C07B")).Render(fmt.Sprintf("%d", item.Medium))
+			} else {
+				medStr = lipgloss.NewStyle().Foreground(MutedColor).Render("-")
+			}
+			if item.Rest > 0 {
+				restStr = lipgloss.NewStyle().Foreground(lipgloss.Color("#56B6C2")).Render(fmt.Sprintf("%d", item.Rest))
+			} else {
+				restStr = lipgloss.NewStyle().Foreground(MutedColor).Render("-")
+			}
+			totalStr := lipgloss.NewStyle().Bold(true).Foreground(HighlightColor).Render(fmt.Sprintf("%d", item.Total))
+
+			secRow := lipgloss.JoinHorizontal(
+				lipgloss.Top,
+				secRepoStyle.Render(lipgloss.NewStyle().Bold(true).Foreground(HighlightColor).Render(rName)),
+				secStatStyle.Render(critStr),
+				secStatStyle.Render(highStr),
+				secStatStyle.Render(medStr),
+				secStatStyle.Render(restStr),
+				secStatStyle.Render(totalStr),
+			)
+			rightLines = append(rightLines, "  "+secRow)
+		}
+	}
+
+	leftBlock := strings.Join(leftLines, "\n")
+	rightBlock := strings.Join(rightLines, "\n")
+
+	if m.Width >= 100 {
+		sections = append(sections, lipgloss.JoinHorizontal(lipgloss.Top, leftBlock, "   ", rightBlock))
+	} else {
+		sections = append(sections, leftBlock, rightBlock)
 	}
 
 	// 3. Squad Member Contribution Panes
@@ -570,24 +717,8 @@ func (m Model) renderSquadDashboardView() (string, []AvatarPlacement) {
 
 		textBlock := lipgloss.JoinVertical(lipgloss.Left, line1, line2, line3, line4)
 
-		// Avatar: reserve a blank rectangular bounding box using Lip Gloss
-		// if native image data is available, or render fallback monogram badge.
-		var avatar string
-		memLower := strings.ToLower(mem.Login)
-		rawBytes := m.RawAvatarCache[memLower]
-		if len(rawBytes) > 0 {
-			avatar = RenderAvatarBoundingBox(8, 4)
-			placements = append(placements, AvatarPlacement{
-				Login:    mem.Login,
-				Row:      currentRow,
-				Col:      3, // Column 3: terminal is 1-based, MarginLeft(2) shifts 2 cells
-				Width:    8,
-				Height:   4,
-				RawBytes: rawBytes,
-			})
-		} else {
-			avatar = RenderFallbackAvatar(8, 4)
-		}
+		// Render deterministic, multi-color ASCII initials avatar
+		avatar := RenderASCIIInitialsAvatar(mem.Name, mem.Login, 8, 4)
 
 		cardContent := lipgloss.JoinHorizontal(lipgloss.Top, avatar, "  ", textBlock)
 		contributorStyle := lipgloss.NewStyle().

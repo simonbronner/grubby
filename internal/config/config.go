@@ -16,6 +16,7 @@ type SquadConfig struct {
 	DisplayName string   `yaml:"display_name"`
 	GithubTeam  string   `yaml:"github_team,omitempty"`
 	Members     []string `yaml:"members"`
+	Repos       []string `yaml:"repos,omitempty"`
 }
 
 type GroupConfig struct {
@@ -42,6 +43,7 @@ type Config struct {
 	Proxy              string               `yaml:"proxy,omitempty"`
 	InsecureSkipVerify bool           `yaml:"insecure_skip_verify,omitempty"`
 	HiddenRepos        []string       `yaml:"hidden_repos,omitempty"`
+	CentralTasksRepo   string         `yaml:"central_tasks_repo,omitempty"`
 
 	filePath string     `yaml:"-"`
 	mu       sync.Mutex `yaml:"-"`
@@ -431,6 +433,135 @@ func (c *Config) SetSquadMembers(squadName string, members []string) error {
 	return fmt.Errorf("squad '%s' not found", squadName)
 }
 
+// Squad Repo Ownership Helpers
+
+func (c *Config) IsRepoOwnedBySquad(squadName, repoName string) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	cleanRepo := strings.ToLower(strings.TrimSpace(repoName))
+	for _, s := range c.Squads {
+		if strings.EqualFold(s.Name, squadName) {
+			for _, r := range s.Repos {
+				if strings.ToLower(strings.TrimSpace(r)) == cleanRepo {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	return false
+}
+
+func (c *Config) ToggleRepoOwnership(squadName, repoName string) (bool, error) {
+	if c == nil {
+		return false, nil
+	}
+	c.mu.Lock()
+
+	cleanRepo := strings.ToLower(strings.TrimSpace(repoName))
+	if cleanRepo == "" {
+		c.mu.Unlock()
+		return false, fmt.Errorf("invalid repository name")
+	}
+
+	squadIdx := -1
+	for i := range c.Squads {
+		if strings.EqualFold(c.Squads[i].Name, squadName) {
+			squadIdx = i
+			break
+		}
+	}
+
+	if squadIdx == -1 {
+		// Auto-create squad if it doesn't exist
+		c.Squads = append(c.Squads, SquadConfig{
+			Name:        squadName,
+			DisplayName: squadName,
+			Repos:       []string{cleanRepo},
+		})
+		c.mu.Unlock()
+		return true, c.Save()
+	}
+
+	inSquad := false
+	var updatedRepos []string
+	for _, r := range c.Squads[squadIdx].Repos {
+		if strings.ToLower(strings.TrimSpace(r)) == cleanRepo {
+			inSquad = true
+		} else {
+			updatedRepos = append(updatedRepos, r)
+		}
+	}
+
+	if inSquad {
+		c.Squads[squadIdx].Repos = updatedRepos
+		c.mu.Unlock()
+		return false, c.Save()
+	}
+
+	c.Squads[squadIdx].Repos = append(c.Squads[squadIdx].Repos, cleanRepo)
+	c.mu.Unlock()
+	return true, c.Save()
+}
+
+func (c *Config) GetReposForSquad(squadName string) []string {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, s := range c.Squads {
+		if strings.EqualFold(s.Name, squadName) {
+			res := make([]string, len(s.Repos))
+			copy(res, s.Repos)
+			return res
+		}
+	}
+	return nil
+}
+
+func (c *Config) GetSquadsForRepo(repoName string) []string {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	cleanRepo := strings.ToLower(strings.TrimSpace(repoName))
+	var squads []string
+	for _, s := range c.Squads {
+		for _, r := range s.Repos {
+			if strings.ToLower(strings.TrimSpace(r)) == cleanRepo {
+				squads = append(squads, s.Name)
+				break
+			}
+		}
+	}
+	return squads
+}
+
+func (c *Config) SetSquadRepos(squadName string, repos []string) error {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+
+	for i := range c.Squads {
+		if strings.EqualFold(c.Squads[i].Name, squadName) {
+			c.Squads[i].Repos = repos
+			c.mu.Unlock()
+			return c.Save()
+		}
+	}
+	c.mu.Unlock()
+	return fmt.Errorf("squad '%s' not found", squadName)
+}
+
 // Repo Interaction Helpers
 
 // RecordRepoInteraction stores the current timestamp for a repository action and persists the config.
@@ -502,4 +633,63 @@ func (c *Config) ToggleRepoHidden(repoName string) (bool, error) {
 	err := c.SetRepoHidden(repoName, nowHidden)
 	return nowHidden, err
 }
+
+// Central Tasks Repository Helpers
+
+// GetCentralTasksRepo resolves the owner and repo name for the central tasks repository.
+// If central_tasks_repo is configured as "owner/repo", it returns (owner, repo).
+// If configured as "repo", it returns (defaultOrg or c.DefaultOrg, repo).
+// If unset, it defaults to (defaultOrg or c.DefaultOrg, "grubby-tasks").
+func (c *Config) GetCentralTasksRepo(defaultOrg string) (owner, repo string) {
+	if c == nil {
+		if defaultOrg != "" {
+			return defaultOrg, "grubby-tasks"
+		}
+		return "", "grubby-tasks"
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	tasksRepo := strings.TrimSpace(c.CentralTasksRepo)
+	if tasksRepo == "" {
+		org := defaultOrg
+		if org == "" {
+			org = c.DefaultOrg
+		}
+		return org, "grubby-tasks"
+	}
+
+	parts := strings.Split(tasksRepo, "/")
+	if len(parts) == 2 {
+		return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+	}
+
+	org := defaultOrg
+	if org == "" {
+		org = c.DefaultOrg
+	}
+	return org, strings.TrimSpace(parts[0])
+}
+
+// GetCentralTasksRepoFullName returns "owner/repo" or "repo" if owner is empty.
+func (c *Config) GetCentralTasksRepoFullName(defaultOrg string) string {
+	owner, repo := c.GetCentralTasksRepo(defaultOrg)
+	if owner == "" {
+		return repo
+	}
+	return owner + "/" + repo
+}
+
+// SetCentralTasksRepo configures the central tasks repository and persists the config.
+func (c *Config) SetCentralTasksRepo(repoFullName string) error {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	c.CentralTasksRepo = strings.TrimSpace(repoFullName)
+	c.mu.Unlock()
+	return c.Save()
+}
+
 

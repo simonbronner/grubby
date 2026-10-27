@@ -946,5 +946,110 @@ func TestHideAndUnhideRepository(t *testing.T) {
 	}
 }
 
+func TestReposView_SquadOwnershipToggle_ShiftO(t *testing.T) {
+	m := createTestModel()
+	m.Config.ActiveSquad = "backend-squad"
+	m.Config.Squads = []config.SquadConfig{
+		{
+			Name:        "backend-squad",
+			DisplayName: "Backend Squad",
+			Members:     []string{"alice"},
+			Repos:       []string{},
+		},
+	}
+
+	// Select first repo: auth-service
+	items := m.getRepoTableItems()
+	var authIdx int = -1
+	for idx, it := range items {
+		if it.Kind == ItemRepo && it.Repo != nil && it.Repo.Name == "auth-service" {
+			authIdx = idx
+			break
+		}
+	}
+	if authIdx == -1 {
+		t.Fatalf("auth-service not found in repo table items")
+	}
+	m.RepoCursor = authIdx
+
+	if m.Config.IsRepoOwnedBySquad("backend-squad", "auth-service") {
+		t.Fatalf("expected auth-service not to be owned initially")
+	}
+
+	// Press 'O' (Shift-O)
+	updated, _ := m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'O'}})
+	m = updated.(Model)
+
+	if !m.Config.IsRepoOwnedBySquad("backend-squad", "auth-service") {
+		t.Fatalf("expected auth-service to be owned by backend-squad after Shift-O")
+	}
+
+	// Check that view contains ownership icon 👥
+	view := m.renderReposView()
+	if !strings.Contains(view, "👥 auth-service") {
+		t.Fatalf("expected view to contain '👥 auth-service', got:\n%s", view)
+	}
+
+	// Press 'O' again to toggle off
+	updated, _ = m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'O'}})
+	m = updated.(Model)
+
+	if m.Config.IsRepoOwnedBySquad("backend-squad", "auth-service") {
+		t.Fatalf("expected auth-service ownership to be removed after pressing Shift-O again")
+	}
+}
+
+func TestReposView_SquadFilterToggle_ShiftS(t *testing.T) {
+	m := createTestModel()
+	m.Config.ActiveSquad = "backend-squad"
+	m.Config.Squads = []config.SquadConfig{
+		{
+			Name:        "backend-squad",
+			DisplayName: "Backend Squad",
+			Members:     []string{"alice"},
+			Repos:       []string{"auth-service"},
+		},
+	}
+
+	if m.SquadFilterActive {
+		t.Fatalf("expected squad filter to be inactive initially")
+	}
+
+	// Initially all 4 repos are in display list
+	if len(m.getDisplayRepos()) != 4 {
+		t.Fatalf("expected 4 display repos initially, got %d", len(m.getDisplayRepos()))
+	}
+
+	// Press 'S' (Shift-S) to toggle squad filter on
+	updated, _ := m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'S'}})
+	m = updated.(Model)
+
+	if !m.SquadFilterActive {
+		t.Fatalf("expected SquadFilterActive to be true after pressing 'S'")
+	}
+
+	display := m.getDisplayRepos()
+	if len(display) != 1 || display[0].Name != "auth-service" {
+		t.Fatalf("expected only auth-service in display repos when squad filter active, got %+v", display)
+	}
+
+	view := m.renderReposView()
+	if !strings.Contains(view, "Squad: Backend Squad") {
+		t.Fatalf("expected view to display 'Squad: Backend Squad' filter badge, got:\n%s", view)
+	}
+
+	// Press 'esc' to clear squad filter
+	updated, _ = m.handleReposKeys(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+
+	if m.SquadFilterActive {
+		t.Fatalf("expected SquadFilterActive to be false after pressing 'esc'")
+	}
+	if len(m.getDisplayRepos()) != 4 {
+		t.Fatalf("expected 4 repos restored after clearing squad filter, got %d", len(m.getDisplayRepos()))
+	}
+}
+
+
 
 

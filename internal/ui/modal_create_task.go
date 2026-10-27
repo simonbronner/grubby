@@ -129,13 +129,19 @@ func (m Model) getTaskTargetRepoFullName(target TaskTarget) string {
 		return fmt.Sprintf("%s/tasks", user)
 	}
 
-	squadName := "default-squad"
-	if m.Config != nil && m.Config.ActiveSquad != "" {
-		squadName = m.Config.ActiveSquad
-	}
 	org := m.CurrentOrg
 	if org == "" {
 		org = m.AuthUser
+	}
+	if m.Config != nil {
+		owner, repo := m.Config.GetCentralTasksRepo(org)
+		if owner != "" && repo != "" {
+			return fmt.Sprintf("%s/%s", owner, repo)
+		}
+	}
+	squadName := "default-squad"
+	if m.Config != nil && m.Config.ActiveSquad != "" {
+		squadName = m.Config.ActiveSquad
 	}
 	return fmt.Sprintf("%s/%s-tasks", org, squadName)
 }
@@ -275,6 +281,10 @@ func (m Model) submitCreateTaskModal() (tea.Model, tea.Cmd) {
 	}
 
 	now := time.Now()
+	taskLabels := []string{priority.Label()}
+	if isSquad && m.Config != nil && m.Config.ActiveSquad != "" {
+		taskLabels = append(taskLabels, "squad:"+strings.ToLower(strings.TrimSpace(m.Config.ActiveSquad)))
+	}
 	tempTask := github.Task{
 		ID:          -now.UnixNano(),
 		Number:      0,
@@ -286,7 +296,7 @@ func (m Model) submitCreateTaskModal() (tea.Model, tea.Cmd) {
 		RepoName:    repo,
 		Author:      m.AuthUser,
 		Assignees:   assignees,
-		Labels:      []string{priority.Label()},
+		Labels:      taskLabels,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 		IsSquadTask: isSquad,

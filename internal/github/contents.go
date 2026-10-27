@@ -37,6 +37,23 @@ type GitHubFileCommitPayload struct {
 	Branch  string `json:"branch,omitempty"`
 }
 
+// SquadDefinition defines a single squad, its roster, and its owned repositories in squads.json.
+type SquadDefinition struct {
+	Name        string   `json:"name"`
+	DisplayName string   `json:"display_name"`
+	Description string   `json:"description,omitempty"`
+	Members     []string `json:"members"`
+	Repos       []string `json:"repos,omitempty"`
+}
+
+// SquadsFile represents the schema of squads.json in the central repository.
+type SquadsFile struct {
+	Version   int               `json:"version"`
+	UpdatedAt time.Time         `json:"updated_at"`
+	UpdatedBy string            `json:"updated_by,omitempty"`
+	Squads    []SquadDefinition `json:"squads"`
+}
+
 // LabelInfo represents the metadata of a label, including its color.
 type LabelInfo struct {
 	Color       string `json:"color"`                 // 6-digit hex color without '#' (e.g. "1d76db")
@@ -344,6 +361,132 @@ func (c *Client) FetchSquadRepoLabels(ctx context.Context, owner, squadTasksRepo
 	return &fileData, nil
 }
 
+
+// FetchSquadsFile loads squads.json (or .grubby/squads.json) from the central tasks repo.
+func (c *Client) FetchSquadsFile(ctx context.Context, owner, repo string) (*SquadsFile, string, error) {
+	if owner == "" || repo == "" {
+		return nil, "", nil
+	}
+
+	contentBytes, sha, err := c.GetFileContent(ctx, owner, repo, "squads.json")
+	if err != nil && errors.Is(err, ErrFileNotFound) {
+		// Fallback to .grubby/squads.json
+		contentBytes, sha, err = c.GetFileContent(ctx, owner, repo, ".grubby/squads.json")
+	}
+
+	if err != nil {
+		if errors.Is(err, ErrFileNotFound) {
+			return &SquadsFile{
+				Version: 1,
+				Squads:  nil,
+			}, "", ErrFileNotFound
+		}
+		return nil, "", err
+	}
+
+	var fileData SquadsFile
+	if err := json.Unmarshal(contentBytes, &fileData); err != nil {
+		return nil, "", fmt.Errorf("failed to parse squads.json: %w", err)
+	}
+
+	return &fileData, sha, nil
+}
+
+// SaveSquadsFile persists squad structures in squads.json with Compare-And-Swap (CAS) conflict resolution.
+func (c *Client) SaveSquadsFile(ctx context.Context, owner, repo, updatedBy string, updateFn func(squads *[]SquadDefinition) error) error {
+	if owner == "" || repo == "" {
+		return nil
+	}
+
+	const maxRetries = 3
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		targetPath := "squads.json"
+		contentBytes, sha, err := c.GetFileContent(ctx, owner, repo, targetPath)
+		if err != nil && errors.Is(err, ErrFileNotFound) {
+			// Check if .grubby/squads.json already exists
+			gbBytes, gbSha, gbErr := c.GetFileContent(ctx, owner, repo, ".grubby/squads.json")
+			if gbErr == nil {
+				targetPath = ".grubby/squads.json"
+				contentBytes = gbBytes
+				sha = gbSha
+				err = nil
+			}
+		}
+
+		if err != nil && !errors.Is(err, ErrFileNotFound) {
+			return err
+		}
+
+		var fileData SquadsFile
+		if len(contentBytes) > 0 {
+			_ = json.Unmarshal(contentBytes, &fileData)
+		}
+
+		if err := updateFn(&fileData.Squads); err != nil {
+			return err
+		}
+
+		// Normalize members and repos: clean handles/names, deduplicate
+		for i := range fileData.Squads {
+			var cleanMembers []string
+			seen := make(map[string]bool)
+			for _, m := range fileData.Squads[i].Members {
+				clean := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(m), "@"))
+				if clean != "" && !seen[clean] {
+					seen[clean] = true
+					cleanMembers = append(cleanMembers, clean)
+				}
+			}
+			fileData.Squads[i].Members = cleanMembers
+
+			var cleanRepos []string
+			seenRepo := make(map[string]bool)
+			for _, r := range fileData.Squads[i].Repos {
+				cleanR := strings.ToLower(strings.TrimSpace(r))
+				if cleanR != "" && !seenRepo[cleanR] {
+					seenRepo[cleanR] = true
+					cleanRepos = append(cleanRepos, cleanR)
+				}
+			}
+			fileData.Squads[i].Repos = cleanRepos
+
+			if fileData.Squads[i].DisplayName == "" {
+				fileData.Squads[i].DisplayName = fileData.Squads[i].Name
+			}
+		}
+
+		fileData.Version = 1
+		fileData.UpdatedAt = time.Now()
+		if updatedBy != "" {
+			fileData.UpdatedBy = updatedBy
+		}
+
+		newBytes, err := json.MarshalIndent(fileData, "", "  ")
+		if err != nil {
+			return err
+		}
+
+		msg := "chore(grubby): update squad definitions [skip ci]"
+		_, err = c.PutFileContent(ctx, owner, repo, targetPath, newBytes, sha, msg)
+		if err == nil {
+			return nil
+		}
+
+		if !errors.Is(err, ErrConflict) {
+			return err
+		}
+
+		// Conflict (HTTP 409): exponential backoff and retry
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(100*(1<<attempt)) * time.Millisecond):
+		}
+	}
+
+	return fmt.Errorf("failed to save squads.json after %d retries due to concurrent updates", maxRetries)
+}
 
 func ioReadAll(r ioReader) ([]byte, error) {
 	buf := bytes.NewBuffer(make([]byte, 0, 512))

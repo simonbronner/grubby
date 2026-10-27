@@ -199,3 +199,124 @@ func TestSaveSquadRepoLabels_ColorGenerationAndGarbageCollection(t *testing.T) {
 	}
 }
 
+func TestFetchSquadsFile(t *testing.T) {
+	initialData := SquadsFile{
+		Version: 1,
+		Squads: []SquadDefinition{
+			{Name: "core", DisplayName: "Core Team", Members: []string{"simonb", "alice"}},
+			{Name: "frontend", DisplayName: "UI Team", Members: []string{"bob"}},
+		},
+	}
+	bytesData, _ := json.Marshal(initialData)
+	encoded := base64.StdEncoding.EncodeToString(bytesData)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/my-org/grubby-tasks/contents/squads.json" {
+			resp := GitHubFileContentResponse{
+				Name:    "squads.json",
+				SHA:     "sha-squads-1",
+				Content: encoded,
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &Client{
+		httpClient: server.Client(),
+		apiBaseURL: server.URL,
+	}
+
+	file, sha, err := client.FetchSquadsFile(context.Background(), "my-org", "grubby-tasks")
+	if err != nil {
+		t.Fatalf("expected FetchSquadsFile to succeed, got: %v", err)
+	}
+	if sha != "sha-squads-1" {
+		t.Errorf("expected sha-squads-1, got %s", sha)
+	}
+	if len(file.Squads) != 2 || file.Squads[0].Name != "core" {
+		t.Errorf("unexpected squads: %+v", file.Squads)
+	}
+
+	// Test Not Found
+	_, _, err = client.FetchSquadsFile(context.Background(), "my-org", "non-existent")
+	if !errors.Is(err, ErrFileNotFound) {
+		t.Errorf("expected ErrFileNotFound, got: %v", err)
+	}
+}
+
+func TestSaveSquadsFile_CASAndNormalization(t *testing.T) {
+	var savedFile SquadsFile
+	attempt := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			initial := SquadsFile{
+				Version: 1,
+				Squads: []SquadDefinition{
+					{Name: "core", DisplayName: "Core Team", Members: []string{"simonb"}},
+				},
+			}
+			b, _ := json.Marshal(initial)
+			encoded := base64.StdEncoding.EncodeToString(b)
+			resp := GitHubFileContentResponse{
+				SHA:     "sha-v1",
+				Content: encoded,
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		if r.Method == http.MethodPut {
+			attempt++
+			if attempt == 1 {
+				// Simulate HTTP 409 Conflict on first attempt
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"message": "Conflict"}`))
+				return
+			}
+			// Second attempt succeeds
+			var payload GitHubFileCommitPayload
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			decoded, _ := base64.StdEncoding.DecodeString(payload.Content)
+			_ = json.Unmarshal(decoded, &savedFile)
+
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"content": {"sha": "sha-v2"}}`))
+			return
+		}
+	}))
+	defer server.Close()
+
+	client := &Client{
+		httpClient: server.Client(),
+		apiBaseURL: server.URL,
+	}
+
+	err := client.SaveSquadsFile(context.Background(), "my-org", "grubby-tasks", "simonb", func(squads *[]SquadDefinition) error {
+		*squads = append(*squads, SquadDefinition{
+			Name:    "infra",
+			Members: []string{"@Alice", "alice", " bob "},
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("expected SaveSquadsFile to succeed after retry, got: %v", err)
+	}
+
+	if len(savedFile.Squads) != 2 {
+		t.Fatalf("expected 2 squads, got %d", len(savedFile.Squads))
+	}
+	// Check member normalization on "infra" squad (alice deduplicated, @ stripped, bob trimmed)
+	infra := savedFile.Squads[1]
+	if len(infra.Members) != 2 || infra.Members[0] != "alice" || infra.Members[1] != "bob" {
+		t.Errorf("expected normalized members [alice, bob], got: %+v", infra.Members)
+	}
+	if savedFile.UpdatedBy != "simonb" {
+		t.Errorf("expected UpdatedBy simonb, got: %s", savedFile.UpdatedBy)
+	}
+}
+
+

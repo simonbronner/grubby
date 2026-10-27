@@ -57,7 +57,7 @@ end tell`
 	beforeOut, _ := exec.Command("osascript", "-e", beforeScript).Output()
 	beforeIDs := parseIDList(string(beforeOut))
 
-	// 3. Launch Chrome binary directly with --app so it connects to the primary running instance
+	// 3. Launch Chrome binary directly with --app=<url> so it creates a clean, dedicated chromeless app window.
 	chromeBin := "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 	cmd := exec.Command(chromeBin, fmt.Sprintf("--app=%s", url))
 	_ = cmd.Start()

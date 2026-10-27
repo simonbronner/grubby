@@ -77,6 +77,16 @@ func (m Model) handlePRsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			_ = OpenBrowser(pr.URL)
 			return m, func() tea.Msg { return StatusToastMsg(fmt.Sprintf("Opened PR #%d in browser", pr.Number)) }
 		}
+	case "y":
+		if len(prs) > 0 && m.PRCursor < len(prs) {
+			pr := prs[m.PRCursor]
+			if pr.URL != "" {
+				_ = CopyToClipboard(pr.URL)
+				return m, func() tea.Msg {
+					return StatusToastMsg(fmt.Sprintf("Copied PR #%d URL to clipboard: %s", pr.Number, pr.URL))
+				}
+			}
+		}
 	case "t":
 		if len(prs) > 0 && m.PRCursor < len(prs) {
 			pr := prs[m.PRCursor]
@@ -85,19 +95,9 @@ func (m Model) handlePRsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.PRTaskPriority = github.PriorityMedium
 			m.PRTaskFocusedField = 0
 			m.PRTaskActiveButton = 0
-			m.PRTaskMemberCursor = 0
-			m.PRTaskCandidates = m.getSquadAssigneeOptions()
+			m.PRTaskMemberCursor = 0 // 0 = Squad (unassigned)
+			m.PRTaskCandidates = m.getSquadMembersForReview(pr.Author)
 			m.PRTaskSelectedMembers = make(map[string]bool)
-
-			// Default selection: squad review candidates (excl. me & author), or myself if none
-			squadCands := m.getSquadReviewCandidates(pr.Author)
-			if len(squadCands) > 0 {
-				for _, c := range squadCands {
-					m.PRTaskSelectedMembers[c] = true
-				}
-			} else if m.AuthUser != "" {
-				m.PRTaskSelectedMembers[m.AuthUser] = true
-			}
 			return m, nil
 		}
 	case "p":
