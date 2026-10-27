@@ -1050,6 +1050,127 @@ func TestReposView_SquadFilterToggle_ShiftS(t *testing.T) {
 	}
 }
 
+func TestTierCollapsingDefaultsAndShortcuts(t *testing.T) {
+	now := time.Now()
+	repos := []github.Repository{
+		{Name: "hot-repo", PushedAt: now.Add(-1 * time.Hour)},
+		{Name: "warm-repo", PushedAt: now.Add(-10 * 24 * time.Hour)},
+		{Name: "cold-repo", PushedAt: now.Add(-60 * 24 * time.Hour)},
+		{Name: "dead-repo", PushedAt: now.Add(-400 * 24 * time.Hour)},
+		{Name: "hidden-repo", PushedAt: now.Add(-1 * time.Hour)},
+	}
+
+	tiers := map[string]storage.RepoTier{
+		"hot-repo":    storage.TierHot,
+		"warm-repo":   storage.TierWarm,
+		"cold-repo":   storage.TierCold,
+		"dead-repo":   storage.TierDead,
+		"hidden-repo": storage.TierHidden,
+	}
+
+	hiddenRepos := map[string]bool{
+		"hidden-repo": true,
+	}
+
+	m := Model{
+		ActiveTab:       TabRepos,
+		Repos:           repos,
+		RepoTiers:       tiers,
+		HiddenRepos:     hiddenRepos,
+		GitStatuses:     make(map[string]git.RepoGitStatus),
+		Width:           140,
+		Height:          30,
+		SplashDismissed: true,
+		CollapsedTiers: map[storage.RepoTier]bool{
+			storage.TierDead:   true,
+			storage.TierHidden: true,
+		},
+	}
+
+	// 1. Initial State: Dead and Hidden must be collapsed by default
+	if !m.isTierCollapsed(storage.TierDead) {
+		t.Fatalf("expected Dead tier to be collapsed by default")
+	}
+	if !m.isTierCollapsed(storage.TierHidden) {
+		t.Fatalf("expected Hidden tier to be collapsed by default")
+	}
+	if m.isTierCollapsed(storage.TierHot) {
+		t.Fatalf("expected Hot tier to be expanded by default")
+	}
+
+	items := m.getRepoTableItems()
+	// Hot Hdr (0), hot-repo (1), Warm Hdr (2), warm-repo (3), Cold Hdr (4), cold-repo (5), Dead Hdr (6), Hidden Hdr (7)
+	if len(items) != 8 {
+		t.Fatalf("expected 8 items with Dead and Hidden collapsed, got %d", len(items))
+	}
+	if items[6].Tier != storage.TierDead || items[6].Expanded {
+		t.Fatalf("expected item 6 to be collapsed Dead tier header")
+	}
+	if items[7].Tier != storage.TierHidden || items[7].Expanded {
+		t.Fatalf("expected item 7 to be collapsed Hidden tier header")
+	}
+
+	// 2. View Rendering: should display hint to expand on collapsed tiers, hint to collapse on expanded tiers
+	view := m.renderReposView()
+	if !strings.Contains(view, "[Space to expand]") {
+		t.Fatalf("expected view to contain '[Space to expand]', got:\n%s", view)
+	}
+	if !strings.Contains(view, "[Space to collapse]") {
+		t.Fatalf("expected view to contain '[Space to collapse]', got:\n%s", view)
+	}
+
+	// 3. Footer shows contextual controls when cursor is on Tier Header
+	m.RepoCursor = 0 // Hot Tier Header
+	footer := m.renderFooter()
+	if !strings.Contains(footer, "Toggle Tier") || !strings.Contains(footer, "Collapse All") {
+		t.Fatalf("expected tier header controls in footer when cursor on header, got:\n%s", footer)
+	}
+
+	// 4. Press Space on Hot Header (index 0) -> collapses Hot tier!
+	updated, _ := m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	m = updated.(Model)
+	if !m.isTierCollapsed(storage.TierHot) {
+		t.Fatalf("expected Hot tier to be collapsed after Space")
+	}
+
+	// 5. Press Left on a child repo row -> jumps cursor to parent tier header
+	m.RepoCursor = 2 // warm-repo
+	if m.getRepoTableItems()[m.RepoCursor].Kind != ItemRepo {
+		t.Fatalf("expected cursor at ItemRepo, got %+v", m.getRepoTableItems()[m.RepoCursor])
+	}
+	updated, _ = m.handleReposKeys(tea.KeyMsg{Type: tea.KeyLeft})
+	m = updated.(Model)
+	if m.RepoCursor != 1 || m.getRepoTableItems()[m.RepoCursor].Tier != storage.TierWarm {
+		t.Fatalf("expected cursor to jump to Warm header at index 1, got index %d", m.RepoCursor)
+	}
+
+	// 6. Press 'C' (Shift-C) -> collapses all tiers!
+	updated, _ = m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'C'}})
+	m = updated.(Model)
+	for _, tName := range []storage.RepoTier{storage.TierHot, storage.TierWarm, storage.TierCold, storage.TierDead, storage.TierHidden} {
+		if !m.isTierCollapsed(tName) {
+			t.Fatalf("expected tier %s to be collapsed after Shift-C", tName)
+		}
+	}
+	allCollapsedItems := m.getRepoTableItems()
+	if len(allCollapsedItems) != 5 {
+		t.Fatalf("expected 5 tier headers when all collapsed, got %d", len(allCollapsedItems))
+	}
+
+	// 7. Press 'E' (Shift-E) -> expands all tiers!
+	updated, _ = m.handleReposKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'E'}})
+	m = updated.(Model)
+	for _, tName := range []storage.RepoTier{storage.TierHot, storage.TierWarm, storage.TierCold, storage.TierDead, storage.TierHidden} {
+		if m.isTierCollapsed(tName) {
+			t.Fatalf("expected tier %s to be expanded after Shift-E", tName)
+		}
+	}
+	allExpandedItems := m.getRepoTableItems()
+	if len(allExpandedItems) != 10 { // 5 headers + 5 repos
+		t.Fatalf("expected 10 items when all expanded, got %d", len(allExpandedItems))
+	}
+}
+
 
 
 

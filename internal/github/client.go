@@ -433,11 +433,15 @@ func (c *Client) queryGraphQL(ctx context.Context, query string, variables map[s
 // FetchRepositoriesAndPRs fetches repos, open PRs, commit events, and vulnerability summaries for an owner (org or user).
 // Decoupled into optimized repository and indexed search queries to avoid GitHub 10s backend timeouts on large enterprise orgs.
 func (c *Client) FetchRepositoriesAndPRs(ctx context.Context, owner string) ([]Repository, []PullRequest, []SquadEvent, map[string]SecurityAlertSummary, error) {
-	// Query 1: Repositories, default branch commit history, and vulnerability alerts
+	// Query 1: Repositories, default branch commit history, and vulnerability alerts with pagination
 	repoQueryWithAlerts := `
-query($login: String!) {
+query($login: String!, $cursor: String) {
   repositoryOwner(login: $login) {
-    repositories(first: 50, orderBy: {field: PUSHED_AT, direction: DESC}) {
+    repositories(first: 50, after: $cursor, orderBy: {field: PUSHED_AT, direction: DESC}) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
       nodes {
         databaseId
         name
@@ -523,21 +527,19 @@ query($login: String!) {
 		} `json:"vulnerabilityAlerts"`
 	}
 
-	var repoResp struct {
-		RepositoryOwner struct {
-			Repositories struct {
-				Nodes []repoNode `json:"nodes"`
-			} `json:"repositories"`
-		} `json:"repositoryOwner"`
+	type pageInfo struct {
+		HasNextPage bool    `json:"hasNextPage"`
+		EndCursor   *string `json:"endCursor"`
 	}
 
-	err := c.queryGraphQL(ctx, repoQueryWithAlerts, map[string]interface{}{"login": owner}, &repoResp)
-	if err != nil {
-		// Fallback: Query repositories without vulnerabilityAlerts if org permissions / Dependabot disabled
-		repoQueryFallback := `
-query($login: String!) {
+	repoQueryFallback := `
+query($login: String!, $cursor: String) {
   repositoryOwner(login: $login) {
-    repositories(first: 50, orderBy: {field: PUSHED_AT, direction: DESC}) {
+    repositories(first: 50, after: $cursor, orderBy: {field: PUSHED_AT, direction: DESC}) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
       nodes {
         databaseId
         name
@@ -572,25 +574,72 @@ query($login: String!) {
   }
 }
 `
-		var fallbackResp struct {
-			RepositoryOwner struct {
-				Repositories struct {
-					Nodes []repoNode `json:"nodes"`
-				} `json:"repositories"`
-			} `json:"repositoryOwner"`
+
+	var allNodes []repoNode
+	var cursor *string
+	useFallback := false
+
+	// Paginate through repositories until all are fetched
+	for {
+		vars := map[string]interface{}{"login": owner}
+		if cursor != nil && *cursor != "" {
+			vars["cursor"] = *cursor
 		}
-		fallbackErr := c.queryGraphQL(ctx, repoQueryFallback, map[string]interface{}{"login": owner}, &fallbackResp)
-		if fallbackErr != nil {
-			return nil, nil, nil, nil, fmt.Errorf("failed to fetch repositories: %w (fallback error: %v)", err, fallbackErr)
+
+		if !useFallback {
+			var repoResp struct {
+				RepositoryOwner struct {
+					Repositories struct {
+						PageInfo pageInfo   `json:"pageInfo"`
+						Nodes    []repoNode `json:"nodes"`
+					} `json:"repositories"`
+				} `json:"repositoryOwner"`
+			}
+			err := c.queryGraphQL(ctx, repoQueryWithAlerts, vars, &repoResp)
+			if err != nil {
+				if len(allNodes) == 0 {
+					// Fallback to querying without vulnerabilityAlerts
+					useFallback = true
+					cursor = nil
+					continue
+				}
+				// If a subsequent page failed, break loop with already retrieved nodes
+				break
+			}
+			allNodes = append(allNodes, repoResp.RepositoryOwner.Repositories.Nodes...)
+			if !repoResp.RepositoryOwner.Repositories.PageInfo.HasNextPage || repoResp.RepositoryOwner.Repositories.PageInfo.EndCursor == nil {
+				break
+			}
+			cursor = repoResp.RepositoryOwner.Repositories.PageInfo.EndCursor
+		} else {
+			var fallbackResp struct {
+				RepositoryOwner struct {
+					Repositories struct {
+						PageInfo pageInfo   `json:"pageInfo"`
+						Nodes    []repoNode `json:"nodes"`
+					} `json:"repositories"`
+				} `json:"repositoryOwner"`
+			}
+			fallbackErr := c.queryGraphQL(ctx, repoQueryFallback, vars, &fallbackResp)
+			if fallbackErr != nil {
+				if len(allNodes) == 0 {
+					return nil, nil, nil, nil, fmt.Errorf("failed to fetch repositories: %w", fallbackErr)
+				}
+				break
+			}
+			allNodes = append(allNodes, fallbackResp.RepositoryOwner.Repositories.Nodes...)
+			if !fallbackResp.RepositoryOwner.Repositories.PageInfo.HasNextPage || fallbackResp.RepositoryOwner.Repositories.PageInfo.EndCursor == nil {
+				break
+			}
+			cursor = fallbackResp.RepositoryOwner.Repositories.PageInfo.EndCursor
 		}
-		repoResp = fallbackResp
 	}
 
 	var repos []Repository
 	var commitEvents []SquadEvent
 	securityMap := make(map[string]SecurityAlertSummary)
 
-	for _, node := range repoResp.RepositoryOwner.Repositories.Nodes {
+	for _, node := range allNodes {
 		desc := ""
 		if node.Description != nil {
 			desc = *node.Description
@@ -678,12 +727,16 @@ query($login: String!) {
 		}
 	}
 
-	// Query 2: Fetch open PRs across the organization/user using GitHub indexed search API
+	// Query 2: Fetch open PRs across the organization/user using GitHub indexed search API with pagination
 	// This evaluates in <300ms across thousands of repos without triggering backend timeouts
 	prSearchQuery := `
-query($searchQuery: String!) {
-  search(query: $searchQuery, type: ISSUE, first: 50) {
+query($searchQuery: String!, $cursor: String) {
+  search(query: $searchQuery, type: ISSUE, first: 100, after: $cursor) {
     issueCount
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
     nodes {
       ... on PullRequest {
         number
@@ -719,85 +772,106 @@ query($searchQuery: String!) {
   }
 }
 `
-	var prResp struct {
-		Search struct {
-			IssueCount int `json:"issueCount"`
-			Nodes      []struct {
-				Number     int    `json:"number"`
-				Title      string `json:"title"`
-				Repository struct {
-					Name string `json:"name"`
-				} `json:"repository"`
-				Author *struct {
-					Login string `json:"login"`
-				} `json:"author"`
-				CreatedAt      time.Time `json:"createdAt"`
-				UpdatedAt      time.Time `json:"updatedAt"`
-				IsDraft        bool      `json:"isDraft"`
-				ReviewDecision *string   `json:"reviewDecision"`
-				HeadRefName    string    `json:"headRefName"`
-				URL            string    `json:"url"`
-				Labels         struct {
-					Nodes []struct {
-						Name string `json:"name"`
-					} `json:"nodes"`
-				} `json:"labels"`
-				Comments struct {
-					TotalCount int `json:"totalCount"`
-				} `json:"comments"`
-				ReviewThreads struct {
-					TotalCount int `json:"totalCount"`
-					Nodes      []struct {
-						IsResolved bool `json:"isResolved"`
-					} `json:"nodes"`
-				} `json:"reviewThreads"`
+	type prSearchNode struct {
+		Number     int    `json:"number"`
+		Title      string `json:"title"`
+		Repository struct {
+			Name string `json:"name"`
+		} `json:"repository"`
+		Author *struct {
+			Login string `json:"login"`
+		} `json:"author"`
+		CreatedAt      time.Time `json:"createdAt"`
+		UpdatedAt      time.Time `json:"updatedAt"`
+		IsDraft        bool      `json:"isDraft"`
+		ReviewDecision *string   `json:"reviewDecision"`
+		HeadRefName    string    `json:"headRefName"`
+		URL            string    `json:"url"`
+		Labels         struct {
+			Nodes []struct {
+				Name string `json:"name"`
 			} `json:"nodes"`
-		} `json:"search"`
+		} `json:"labels"`
+		Comments struct {
+			TotalCount int `json:"totalCount"`
+		} `json:"comments"`
+		ReviewThreads struct {
+			TotalCount int `json:"totalCount"`
+			Nodes      []struct {
+				IsResolved bool `json:"isResolved"`
+			} `json:"nodes"`
+		} `json:"reviewThreads"`
 	}
 
 	searchString := fmt.Sprintf("is:pr is:open user:%s sort:updated-desc", owner)
 	var prs []PullRequest
+	var prCursor *string
 
-	if prErr := c.queryGraphQL(ctx, prSearchQuery, map[string]interface{}{"searchQuery": searchString}, &prResp); prErr == nil {
-		for _, p := range prResp.Search.Nodes {
-			if p.Number == 0 || p.Repository.Name == "" {
-				continue
-			}
-			author := "unknown"
-			if p.Author != nil {
-				author = p.Author.Login
-			}
-			reviewDecision := "NONE"
-			if p.ReviewDecision != nil {
-				reviewDecision = *p.ReviewDecision
-			}
-			var labels []string
-			for _, l := range p.Labels.Nodes {
-				labels = append(labels, l.Name)
-			}
+	for {
+		var prResp struct {
+			Search struct {
+				IssueCount int `json:"issueCount"`
+				PageInfo   struct {
+					HasNextPage bool    `json:"hasNextPage"`
+					EndCursor   *string `json:"endCursor"`
+				} `json:"pageInfo"`
+				Nodes []prSearchNode `json:"nodes"`
+			} `json:"search"`
+		}
 
-			unresolved := 0
-			for _, t := range p.ReviewThreads.Nodes {
-				if !t.IsResolved {
-					unresolved++
+		vars := map[string]interface{}{"searchQuery": searchString}
+		if prCursor != nil && *prCursor != "" {
+			vars["cursor"] = *prCursor
+		}
+
+		if prErr := c.queryGraphQL(ctx, prSearchQuery, vars, &prResp); prErr == nil {
+			for _, p := range prResp.Search.Nodes {
+				if p.Number == 0 || p.Repository.Name == "" {
+					continue
 				}
+				author := "unknown"
+				if p.Author != nil {
+					author = p.Author.Login
+				}
+				reviewDecision := "NONE"
+				if p.ReviewDecision != nil {
+					reviewDecision = *p.ReviewDecision
+				}
+				var labels []string
+				for _, l := range p.Labels.Nodes {
+					labels = append(labels, l.Name)
+				}
+
+				unresolved := 0
+				for _, t := range p.ReviewThreads.Nodes {
+					if !t.IsResolved {
+						unresolved++
+					}
+				}
+
+				prs = append(prs, PullRequest{
+					Number:             p.Number,
+					Repo:               p.Repository.Name,
+					Title:              p.Title,
+					Author:             author,
+					CreatedAt:          p.CreatedAt,
+					UpdatedAt:          p.UpdatedAt,
+					IsDraft:            p.IsDraft,
+					ReviewDecision:     reviewDecision,
+					HeadRefName:        p.HeadRefName,
+					URL:                p.URL,
+					Labels:             labels,
+					TotalComments:      p.Comments.TotalCount + p.ReviewThreads.TotalCount,
+					UnresolvedComments: unresolved,
+				})
 			}
 
-			prs = append(prs, PullRequest{
-				Number:             p.Number,
-				Repo:               p.Repository.Name,
-				Title:              p.Title,
-				Author:             author,
-				CreatedAt:          p.CreatedAt,
-				UpdatedAt:          p.UpdatedAt,
-				IsDraft:            p.IsDraft,
-				ReviewDecision:     reviewDecision,
-				HeadRefName:        p.HeadRefName,
-				URL:                p.URL,
-				Labels:             labels,
-				TotalComments:      p.Comments.TotalCount + p.ReviewThreads.TotalCount,
-				UnresolvedComments: unresolved,
-			})
+			if !prResp.Search.PageInfo.HasNextPage || prResp.Search.PageInfo.EndCursor == nil || len(prs) >= 500 {
+				break
+			}
+			prCursor = prResp.Search.PageInfo.EndCursor
+		} else {
+			break
 		}
 	}
 

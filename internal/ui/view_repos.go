@@ -107,8 +107,10 @@ func (m Model) getSelectedRepo() *github.Repository {
 }
 
 func (m Model) isTierCollapsed(tier storage.RepoTier) bool {
-	// Auto-expand all tiers when a search, label, or squad filter is active
-	if strings.TrimSpace(m.RepoFilter) != "" || strings.TrimSpace(m.RepoGroupFilter) != "" || m.SquadFilterActive {
+	// Auto-expand tiers when an active text search query ('/') or label filter ('#') is active
+	// so that matching repositories across all tiers are visible to the user.
+	// (Note: Squad ownership filter 'Shift-S' does NOT auto-expand; Dead and Hidden remain collapsed by default)
+	if strings.TrimSpace(m.RepoFilter) != "" || strings.TrimSpace(m.RepoGroupFilter) != "" {
 		return false
 	}
 	if m.CollapsedTiers == nil {
@@ -387,19 +389,65 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// 1. Key handling when cursor is on Tier Header
 	if currentItem.Kind == ItemTierHeader {
 		switch msg.String() {
-		case "enter", " ", "l", "right":
+		case "enter", " ", "c":
 			if m.CollapsedTiers == nil {
 				m.CollapsedTiers = make(map[storage.RepoTier]bool)
 			}
 			isCollapsed := m.isTierCollapsed(currentItem.Tier)
 			m.CollapsedTiers[currentItem.Tier] = !isCollapsed
-			return m, nil
-		case "h", "left":
+			newItems := m.getRepoTableItems()
+			if m.RepoCursor >= len(newItems) {
+				m.RepoCursor = len(newItems) - 1
+			}
+			action := "Expanded"
+			if !isCollapsed {
+				action = "Collapsed"
+			}
+			return m, func() tea.Msg {
+				return StatusToastMsg(fmt.Sprintf("%s %s tier", action, storage.TierName(currentItem.Tier)))
+			}
+		case "h", "left", "[":
 			if m.CollapsedTiers == nil {
 				m.CollapsedTiers = make(map[storage.RepoTier]bool)
 			}
 			m.CollapsedTiers[currentItem.Tier] = true
-			return m, nil
+			newItems := m.getRepoTableItems()
+			if m.RepoCursor >= len(newItems) {
+				m.RepoCursor = len(newItems) - 1
+			}
+			return m, func() tea.Msg {
+				return StatusToastMsg(fmt.Sprintf("Collapsed %s tier", storage.TierName(currentItem.Tier)))
+			}
+		case "l", "right", "]":
+			if m.CollapsedTiers == nil {
+				m.CollapsedTiers = make(map[storage.RepoTier]bool)
+			}
+			m.CollapsedTiers[currentItem.Tier] = false
+			return m, func() tea.Msg {
+				return StatusToastMsg(fmt.Sprintf("Expanded %s tier", storage.TierName(currentItem.Tier)))
+			}
+		case "C":
+			// Collapse all tiers
+			if m.CollapsedTiers == nil {
+				m.CollapsedTiers = make(map[storage.RepoTier]bool)
+			}
+			for _, t := range []storage.RepoTier{storage.TierHot, storage.TierWarm, storage.TierCold, storage.TierDead, storage.TierHidden} {
+				m.CollapsedTiers[t] = true
+			}
+			newItems := m.getRepoTableItems()
+			if m.RepoCursor >= len(newItems) {
+				m.RepoCursor = len(newItems) - 1
+			}
+			return m, func() tea.Msg { return StatusToastMsg("Collapsed all repository tiers") }
+		case "E":
+			// Expand all tiers
+			if m.CollapsedTiers == nil {
+				m.CollapsedTiers = make(map[storage.RepoTier]bool)
+			}
+			for _, t := range []storage.RepoTier{storage.TierHot, storage.TierWarm, storage.TierCold, storage.TierDead, storage.TierHidden} {
+				m.CollapsedTiers[t] = false
+			}
+			return m, func() tea.Msg { return StatusToastMsg("Expanded all repository tiers") }
 		default:
 			return m, nil
 		}
@@ -409,6 +457,38 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	repo := *currentItem.Repo
 
 	switch msg.String() {
+	case "left":
+		// Jump cursor to parent tier header
+		items := m.getRepoTableItems()
+		for idx, it := range items {
+			if it.Kind == ItemTierHeader && it.Tier == currentItem.Tier {
+				m.RepoCursor = idx
+				break
+			}
+		}
+		return m, nil
+	case "C":
+		// Collapse all tiers
+		if m.CollapsedTiers == nil {
+			m.CollapsedTiers = make(map[storage.RepoTier]bool)
+		}
+		for _, t := range []storage.RepoTier{storage.TierHot, storage.TierWarm, storage.TierCold, storage.TierDead, storage.TierHidden} {
+			m.CollapsedTiers[t] = true
+		}
+		newItems := m.getRepoTableItems()
+		if m.RepoCursor >= len(newItems) {
+			m.RepoCursor = len(newItems) - 1
+		}
+		return m, func() tea.Msg { return StatusToastMsg("Collapsed all repository tiers") }
+	case "E":
+		// Expand all tiers
+		if m.CollapsedTiers == nil {
+			m.CollapsedTiers = make(map[storage.RepoTier]bool)
+		}
+		for _, t := range []storage.RepoTier{storage.TierHot, storage.TierWarm, storage.TierCold, storage.TierDead, storage.TierHidden} {
+			m.CollapsedTiers[t] = false
+		}
+		return m, func() tea.Msg { return StatusToastMsg("Expanded all repository tiers") }
 	case "h":
 		// Hide or unhide repository
 		isCurrentlyHidden := m.isRepoHidden(repo.Name)
@@ -474,7 +554,7 @@ func (m Model) handleReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			)
 		}
 		return m.startCloneWithAction(repo, RepoActionSession)
-	case "e", "E":
+	case "e":
 		// 'e' editor: open editor in a new window in the tmux session for that repo
 		m = m.recordRepoInteraction(repo.Name)
 		m = m.focusRepoCursor(repo.Name)
@@ -755,6 +835,8 @@ func (m Model) renderReposView() string {
 			headerText := fmt.Sprintf("%s %s %s (%d %s)", arrow, tierIcon, tierName, item.ChildCount, unit)
 			if !item.Expanded {
 				headerText += "  ── [Space to expand]"
+			} else {
+				headerText += "  ── [Space to collapse]"
 			}
 
 			// Add trailing rule line

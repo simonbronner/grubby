@@ -428,7 +428,11 @@ Global Navigation:
   [q] / [Ctrl+C]      Quit
 
 Repositories Tab (1):
-  [j/k] or [↑/↓]      Select repository
+  [j/k] or [↑/↓]      Select repository or tier header
+  [Space / Enter]     Toggle collapse / expand tier (on tier header)
+  [h / Left]          Collapse tier (or jump to parent tier header)
+  [l / Right]         Expand tier (on tier header)
+  [C] / [E]           Collapse all tiers / Expand all tiers
   [p]                 View PRs for repository (switches to Tab 2 filtered by repo)
   [/]                 Filter repositories by name or label
   [#]                 Filter repositories by label
@@ -437,7 +441,7 @@ Repositories Tab (1):
   [e]                 Open editor in new window in tmux session (auto-clones if needed)
   [t]                 Open shell / new window in tmux session (auto-clones if needed)
   [Esc]               Clear active filter and sorting
-  [Enter]             Open repo in dedicated browser
+  [Enter]             Open repo in dedicated browser (on repository row)
   [o]                 Open GitHub Web Tabs Submenu (with [y] Yank URL leader)
   [O]                 Assign / unassign repository ownership to active squad
   [S]                 Filter repositories owned by active squad (toggle)

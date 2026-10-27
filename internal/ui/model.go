@@ -1324,6 +1324,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.RepoTiers = m.DB.GetAllRepoTiers()
 			m.RepoInteractions = m.DB.GetAllRepoInteractions()
 		}
+		if m.RepoTiers == nil {
+			m.RepoTiers = make(map[string]storage.RepoTier)
+		}
+		if m.CollapsedTiers == nil {
+			m.CollapsedTiers = map[storage.RepoTier]bool{storage.TierDead: true, storage.TierHidden: true}
+		}
+
+		// Compute tiers in-memory for any repos not present in database cache
+		repoPRs := make(map[string][]github.PullRequest)
+		for _, pr := range m.PRs {
+			norm := strings.ToLower(github.NormalizeRepoName(pr.Repo))
+			repoPRs[norm] = append(repoPRs[norm], pr)
+		}
+		repoEvents := make(map[string][]github.SquadEvent)
+		for _, ev := range m.SquadEvents {
+			norm := strings.ToLower(github.NormalizeRepoName(ev.Repo))
+			repoEvents[norm] = append(repoEvents[norm], ev)
+		}
+		for _, r := range m.Repos {
+			norm := strings.ToLower(github.NormalizeRepoName(r.Name))
+			if _, exists := m.RepoTiers[norm]; !exists {
+				m.RepoTiers[norm] = storage.CalculateRepoTier(r, repoPRs[norm], repoEvents[norm])
+			}
+		}
+
 		if m.GHClient != nil {
 			m.RequestsMade = m.GHClient.RequestsMade()
 			m.RequestsSaved = m.GHClient.RequestsSaved()
@@ -2047,10 +2072,18 @@ func (m Model) renderFooter() string {
 	var help string
 	switch m.ActiveTab {
 	case TabRepos:
-		if m.RepoFilter != "" || m.RepoGroupFilter != "" || m.RepoSortVulnerabilities || m.SquadFilterActive {
-			help = "[p] PRs  [/] Filter  [#] Labels  [S] Squad Filter  [v] Sort Vulns  [s] Session  [e] Editor  [t] Shell  [Esc] Clear  [Enter] Web  [o] Submenu  [O] Claim  [l] Labels  [c] Clone  [?] Help"
+		items := m.getRepoTableItems()
+		isTierHeader := false
+		if len(items) > 0 && m.RepoCursor >= 0 && m.RepoCursor < len(items) {
+			isTierHeader = items[m.RepoCursor].Kind == ItemTierHeader
+		}
+
+		if isTierHeader {
+			help = "[Space/Enter] Toggle Tier  [Left/h] Collapse  [Right/l] Expand  [C] Collapse All  [E] Expand All  [j/k] Navigate  [?] Help"
+		} else if m.RepoFilter != "" || m.RepoGroupFilter != "" || m.RepoSortVulnerabilities || m.SquadFilterActive {
+			help = "[p] PRs  [/] Filter  [#] Labels  [S] Squad Filter  [v] Sort Vulns  [s] Session  [e] Editor  [t] Shell  [Left] Tier  [Esc] Clear  [Enter] Web  [o] Submenu  [O] Claim  [l] Labels  [c] Clone  [?] Help"
 		} else {
-			help = "[p] PRs  [/] Filter  [#] Labels  [S] Squad Filter  [v] Sort Vulns  [s] Session  [e] Editor  [t] Shell  [Enter] Web  [o] Submenu  [O] Claim  [l] Labels  [c] Clone  [u] Sync  [?] Help"
+			help = "[p] PRs  [/] Filter  [#] Labels  [S] Squad Filter  [v] Sort Vulns  [s] Session  [e] Editor  [t] Shell  [Left] Tier  [Enter] Web  [o] Submenu  [O] Claim  [l] Labels  [c] Clone  [u] Sync  [?] Help"
 		}
 	case TabPRs:
 		if m.PRFilter != "" {
@@ -2105,8 +2138,10 @@ func (m Model) renderFooter() string {
 		user = m.CurrentOrg
 	}
 	watchedSquad := "None"
-	if s := m.Config.GetActiveSquad(); s != nil {
-		watchedSquad = s.DisplayName
+	if m.Config != nil {
+		if s := m.Config.GetActiveSquad(); s != nil {
+			watchedSquad = s.DisplayName
+		}
 	}
 	identityText := fmt.Sprintf("%s @ %s in %s", user, m.CurrentOrg, watchedSquad)
 	rightFooter := lipgloss.NewStyle().Foreground(lipgloss.Color("#7A7A8C")).Render(identityText)
