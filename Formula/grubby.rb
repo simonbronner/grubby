@@ -7,20 +7,20 @@ class Grubby < Formula
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/simonbronner/grubby/releases/download/v18/grubby_v18_darwin_arm64.tar.gz"
-      sha256 "5e3c76d3b0cb3937647051b42f020647829007ee3d763623fed099a71366beb5"
+      sha256 "0b1943d9efbac0d6ef9544379a7562bc2f647383115d0d5ad7c9b88427bc6629"
     else
       url "https://github.com/simonbronner/grubby/releases/download/v18/grubby_v18_darwin_amd64.tar.gz"
-      sha256 "0877e6d3334f283879354f53ef55ba6348c116c7e1b7a53ab2aaef4cd3d0f9c3"
+      sha256 "151cbe256dedffda3654772d0c2fa82c7c70ca3ed4a65734bdff577cba101c4d"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
       url "https://github.com/simonbronner/grubby/releases/download/v18/grubby_v18_linux_arm64.tar.gz"
-      sha256 "5ce9f67cad5a6c687cd37e8b11199845b81f10fdd378a8b8007a175c56afec7a"
+      sha256 "b2680f51c04d97da54afa35a1329694a1356f67957196a1735918407ce0ea535"
     else
       url "https://github.com/simonbronner/grubby/releases/download/v18/grubby_v18_linux_amd64.tar.gz"
-      sha256 "8d7b959d00d4a6f4724521033a2b0e7604e1000c2b8511e21586d52d96d3e00d"
+      sha256 "d907ecd6f28e604bc88e7e0e745133b453b0a35ed268b4dc9fc27f17131469de"
     end
   end
 
