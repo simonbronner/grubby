@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"grubby/internal/config"
@@ -14,6 +15,13 @@ import (
 var (
 	nonAlphaNumRegex = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 	multiDashRegex   = regexp.MustCompile(`-+`)
+
+	hasTmuxOnce  sync.Once
+	hasTmuxCache bool
+
+	tmuxSessionsMu    sync.RWMutex
+	cachedTmuxMap     map[string]TmuxSessionInfo
+	cachedTmuxExpires time.Time
 )
 
 // SanitizeTmuxSessionName converts a repository name into a clean, valid tmux session name.
@@ -30,8 +38,18 @@ func SanitizeTmuxSessionName(repoName string) string {
 
 // HasTmux returns true if the tmux executable is present in PATH.
 func HasTmux() bool {
-	_, err := exec.LookPath("tmux")
-	return err == nil
+	hasTmuxOnce.Do(func() {
+		_, err := exec.LookPath("tmux")
+		hasTmuxCache = (err == nil)
+	})
+	return hasTmuxCache
+}
+
+// InvalidateTmuxCache forces the next GetTmuxSessions call to re-query tmux.
+func InvalidateTmuxCache() {
+	tmuxSessionsMu.Lock()
+	cachedTmuxExpires = time.Time{}
+	tmuxSessionsMu.Unlock()
 }
 
 // TmuxSessionExists returns true if a tmux session with the given name currently exists.
@@ -55,34 +73,66 @@ type TmuxSessionInfo struct {
 }
 
 // GetTmuxSessions returns a map of sessionName -> TmuxSessionInfo with window counts and activity timestamps.
+// Uses a 5-second TTL in-memory cache to avoid spawning expensive subprocesses on rapid UI ticks.
 func GetTmuxSessions() map[string]TmuxSessionInfo {
-	sessions := make(map[string]TmuxSessionInfo)
 	if !HasTmux() {
-		return sessions
+		return make(map[string]TmuxSessionInfo)
 	}
+
+	tmuxSessionsMu.RLock()
+	if cachedTmuxMap != nil && time.Now().Before(cachedTmuxExpires) {
+		res := make(map[string]TmuxSessionInfo, len(cachedTmuxMap))
+		for k, v := range cachedTmuxMap {
+			res[k] = v
+		}
+		tmuxSessionsMu.RUnlock()
+		return res
+	}
+	tmuxSessionsMu.RUnlock()
+
+	tmuxSessionsMu.Lock()
+	defer tmuxSessionsMu.Unlock()
+
+	// Double check after acquiring write lock
+	if cachedTmuxMap != nil && time.Now().Before(cachedTmuxExpires) {
+		res := make(map[string]TmuxSessionInfo, len(cachedTmuxMap))
+		for k, v := range cachedTmuxMap {
+			res[k] = v
+		}
+		return res
+	}
+
+	sessions := make(map[string]TmuxSessionInfo)
 	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}:#{session_windows}:#{session_activity}").Output()
-	if err != nil {
-		return sessions
-	}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		parts := strings.SplitN(line, ":", 3)
-		if len(parts) >= 2 {
-			var count int
-			_, _ = fmt.Sscanf(parts[1], "%d", &count)
-			var actTime time.Time
-			if len(parts) == 3 {
-				var unixSec int64
-				if _, err := fmt.Sscanf(parts[2], "%d", &unixSec); err == nil && unixSec > 0 {
-					actTime = time.Unix(unixSec, 0)
+	if err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			parts := strings.SplitN(line, ":", 3)
+			if len(parts) >= 2 {
+				var count int
+				_, _ = fmt.Sscanf(parts[1], "%d", &count)
+				var actTime time.Time
+				if len(parts) == 3 {
+					var unixSec int64
+					if _, err := fmt.Sscanf(parts[2], "%d", &unixSec); err == nil && unixSec > 0 {
+						actTime = time.Unix(unixSec, 0)
+					}
 				}
-			}
-			sessions[parts[0]] = TmuxSessionInfo{
-				Windows:      count,
-				LastActivity: actTime,
+				sessions[strings.ToLower(parts[0])] = TmuxSessionInfo{
+					Windows:      count,
+					LastActivity: actTime,
+				}
 			}
 		}
 	}
-	return sessions
+
+	cachedTmuxMap = sessions
+	cachedTmuxExpires = time.Now().Add(5 * time.Second)
+
+	res := make(map[string]TmuxSessionInfo, len(sessions))
+	for k, v := range sessions {
+		res[k] = v
+	}
+	return res
 }
 
 // FindTmuxSession finds a session by repo name or sanitized tmux session name.
@@ -270,6 +320,7 @@ func GoToRepoSession(repoName, repoDir string) (string, error) {
 		if err := cmd.Run(); err != nil {
 			return "", fmt.Errorf("failed to create tmux session: %w", err)
 		}
+		InvalidateTmuxCache()
 	}
 
 	// Connect client in Grubby iTerm window

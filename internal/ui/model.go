@@ -186,7 +186,7 @@ type ProfilesLoadedMsg struct {
 type AutoRefreshTickMsg time.Time
 
 func autoRefreshTickCmd() tea.Cmd {
-	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
 		return AutoRefreshTickMsg(t)
 	})
 }
@@ -1120,6 +1120,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
+		if !m.Loading && m.SplashDismissed {
+			return m, nil
+		}
 		var cmd tea.Cmd
 		m.Spinner, cmd = m.Spinner.Update(msg)
 		if !m.SplashDismissed {
@@ -2361,12 +2364,21 @@ func (m Model) getRepoTier(repoName string) storage.RepoTier {
 		return storage.TierHidden
 	}
 	if m.RepoTiers != nil {
-		if t, ok := m.RepoTiers[strings.ToLower(repoName)]; ok && t != "" {
+		clean := strings.ToLower(repoName)
+		if t, ok := m.RepoTiers[clean]; ok && t != "" {
+			return t
+		}
+		norm := strings.ToLower(github.NormalizeRepoName(clean))
+		if t, ok := m.RepoTiers[norm]; ok && t != "" {
 			return t
 		}
 	}
 	if m.DB != nil {
-		return m.DB.GetRepoTier(repoName)
+		t := m.DB.GetRepoTier(repoName)
+		if m.RepoTiers != nil {
+			m.RepoTiers[strings.ToLower(repoName)] = t
+		}
+		return t
 	}
 	return storage.TierWarm
 }

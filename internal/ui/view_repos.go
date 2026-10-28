@@ -123,8 +123,13 @@ func (m Model) isTierCollapsed(tier storage.RepoTier) bool {
 	return collapsed
 }
 
-func (m Model) getRepoTableItems() []RepoTableItem {
-	repos := m.getDisplayRepos()
+func (m Model) getRepoTableItems(reposOpt ...[]github.Repository) []RepoTableItem {
+	var repos []github.Repository
+	if len(reposOpt) > 0 && reposOpt[0] != nil {
+		repos = reposOpt[0]
+	} else {
+		repos = m.getDisplayRepos()
+	}
 	if len(repos) == 0 {
 		return nil
 	}
@@ -226,23 +231,42 @@ func (m Model) getDisplayRepos() []github.Repository {
 	}
 
 	if m.RepoSortVulnerabilities {
-		sort.SliceStable(result, func(i, j int) bool {
-			secA := m.SecuritySummaries[result[i].Name]
-			secB := m.SecuritySummaries[result[j].Name]
+		type vulnSortKey struct {
+			total     int
+			critical  int
+			high      int
+			medium    int
+			lowerName string
+		}
+		keys := make(map[string]vulnSortKey, len(result))
+		for _, r := range result {
+			sec := m.SecuritySummaries[r.Name]
+			keys[r.Name] = vulnSortKey{
+				total:     sec.Total,
+				critical:  sec.Critical,
+				high:      sec.High,
+				medium:    sec.Medium,
+				lowerName: strings.ToLower(r.Name),
+			}
+		}
 
-			if secA.Total != secB.Total {
-				return secA.Total > secB.Total
+		sort.SliceStable(result, func(i, j int) bool {
+			kA := keys[result[i].Name]
+			kB := keys[result[j].Name]
+
+			if kA.total != kB.total {
+				return kA.total > kB.total
 			}
-			if secA.Critical != secB.Critical {
-				return secA.Critical > secB.Critical
+			if kA.critical != kB.critical {
+				return kA.critical > kB.critical
 			}
-			if secA.High != secB.High {
-				return secA.High > secB.High
+			if kA.high != kB.high {
+				return kA.high > kB.high
 			}
-			if secA.Medium != secB.Medium {
-				return secA.Medium > secB.Medium
+			if kA.medium != kB.medium {
+				return kA.medium > kB.medium
 			}
-			return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
+			return kA.lowerName < kB.lowerName
 		})
 	} else {
 		tmuxSessions := m.TmuxSessions
@@ -250,38 +274,50 @@ func (m Model) getDisplayRepos() []github.Repository {
 			tmuxSessions = GetTmuxSessions()
 		}
 
+		type repoSortKey struct {
+			tierPriority int
+			lastAct      time.Time
+			lastUpdated  time.Time
+			lowerName    string
+		}
+		keys := make(map[string]repoSortKey, len(result))
+		for _, r := range result {
+			keys[r.Name] = repoSortKey{
+				tierPriority: storage.TierPriority(m.getRepoTier(r.Name)),
+				lastAct:      m.getRepoLastInteractedTime(r.Name, tmuxSessions),
+				lastUpdated:  r.LastUpdated(),
+				lowerName:    strings.ToLower(r.Name),
+			}
+		}
+
 		sort.SliceStable(result, func(i, j int) bool {
+			kA := keys[result[i].Name]
+			kB := keys[result[j].Name]
+
 			// 0. Group by Tier priority (Hot=0, Warm=1, Cold=2, Dead=3)
-			tierA := storage.TierPriority(m.getRepoTier(result[i].Name))
-			tierB := storage.TierPriority(m.getRepoTier(result[j].Name))
-			if tierA != tierB {
-				return tierA < tierB
+			if kA.tierPriority != kB.tierPriority {
+				return kA.tierPriority < kB.tierPriority
 			}
 
-			actA := m.getRepoLastInteractedTime(result[i].Name, tmuxSessions)
-			actB := m.getRepoLastInteractedTime(result[j].Name, tmuxSessions)
-
-			hasActA := !actA.IsZero()
-			hasActB := !actB.IsZero()
+			hasActA := !kA.lastAct.IsZero()
+			hasActB := !kB.lastAct.IsZero()
 
 			// 1. Repositories opened / interacted with come first, sorted by last interaction descending
 			if hasActA && hasActB {
-				if !actA.Equal(actB) {
-					return actA.After(actB)
+				if !kA.lastAct.Equal(kB.lastAct) {
+					return kA.lastAct.After(kB.lastAct)
 				}
 			} else if hasActA != hasActB {
 				return hasActA
 			}
 
 			// 2. Then by last updated / pushed descending
-			updA := result[i].LastUpdated()
-			updB := result[j].LastUpdated()
-			if !updA.Equal(updB) {
-				return updA.After(updB)
+			if !kA.lastUpdated.Equal(kB.lastUpdated) {
+				return kA.lastUpdated.After(kB.lastUpdated)
 			}
 
 			// 3. Alphabetical tiebreaker
-			return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
+			return kA.lowerName < kB.lowerName
 		})
 	}
 
@@ -718,8 +754,8 @@ func (m Model) startCloneWithAction(repo github.Repository, postAction RepoActio
 }
 
 func (m Model) renderReposView() string {
-	items := m.getRepoTableItems()
 	repos := m.getDisplayRepos()
+	items := m.getRepoTableItems(repos)
 
 	if m.Loading && len(m.Repos) == 0 {
 		return fmt.Sprintf("\n  %s Fetching repositories from GitHub...\n", m.Spinner.View())
@@ -817,6 +853,19 @@ func (m Model) renderReposView() string {
 		totalW = 80
 	}
 
+	prCountByRepo := make(map[string]int, len(m.PRs))
+	for _, pr := range m.PRs {
+		prCountByRepo[strings.ToLower(github.NormalizeRepoName(pr.Repo))]++
+	}
+
+	taskCountByRepo := make(map[string]int, len(m.PersonalTasks)+len(m.SquadTasks))
+	for _, t := range m.PersonalTasks {
+		taskCountByRepo[strings.ToLower(github.NormalizeRepoName(t.RepoName))]++
+	}
+	for _, t := range m.SquadTasks {
+		taskCountByRepo[strings.ToLower(github.NormalizeRepoName(t.RepoName))]++
+	}
+
 	for i := start; i < end; i++ {
 		item := items[i]
 
@@ -881,26 +930,9 @@ func (m Model) renderReposView() string {
 		st := m.GitStatuses[r.Name]
 		isDead := item.Tier == storage.TierDead || item.Tier == storage.TierHidden
 
-		// 1. Calculate open PR count for this repository
-		prCount := 0
-		for _, pr := range m.PRs {
-			if strings.EqualFold(pr.Repo, r.Name) {
-				prCount++
-			}
-		}
-
-		// 2. Calculate task/issue count for this repository
-		taskCount := 0
-		for _, t := range m.PersonalTasks {
-			if strings.EqualFold(t.RepoName, r.Name) {
-				taskCount++
-			}
-		}
-		for _, t := range m.SquadTasks {
-			if strings.EqualFold(t.RepoName, r.Name) {
-				taskCount++
-			}
-		}
+		rNorm := strings.ToLower(github.NormalizeRepoName(r.Name))
+		prCount := prCountByRepo[rNorm]
+		taskCount := taskCountByRepo[rNorm]
 
 		// Name & Labels formatting
 		repoDisplayName := r.Name
