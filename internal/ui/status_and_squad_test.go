@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"grubby/internal/config"
 	"grubby/internal/github"
+	"grubby/internal/storage"
 )
 
 func createTestModelWithSquadAndStatus() Model {
@@ -337,3 +338,128 @@ func TestGitHubStatusLoadedMsg_DegradationAndRestoration(t *testing.T) {
 		t.Errorf("expected recovery notification title 'Actions Operational', got %s", m.Notifications[0].Title)
 	}
 }
+
+func TestSelectSquadModal_ListsAvailableSquadsFromConfigAndDB(t *testing.T) {
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	defer db.Close()
+
+	// Seed DB with discovered squads
+	err = db.SaveSquads([]github.SquadDefinition{
+		{Name: "platform", DisplayName: "Platform Team", Members: []string{"alice", "bob"}},
+		{Name: "security", DisplayName: "Security Team", Members: []string{"charlie"}},
+	})
+	if err != nil {
+		t.Fatalf("failed to save squads in db: %v", err)
+	}
+
+	cfg := &config.Config{
+		ActiveSquad: "backend",
+		Squads: []config.SquadConfig{
+			{Name: "backend", DisplayName: "Backend Team", Members: []string{"dev1"}},
+		},
+	}
+
+	m := Model{
+		Config:          cfg,
+		DB:              db,
+		ActiveModal:     ModalSelectSquad,
+		ModalCursor:     0,
+		SplashDismissed: true,
+	}
+
+	available := m.getAvailableSquads()
+	if len(available) != 3 {
+		t.Fatalf("expected 3 squads (1 config + 2 db), got %d", len(available))
+	}
+
+	// Verify render shows all available squads
+	rendered := m.renderSelectSquadModal()
+	if !strings.Contains(rendered, "Backend Team (Active)") {
+		t.Errorf("expected rendered modal to show active squad, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Platform Team") {
+		t.Errorf("expected rendered modal to show Platform Team, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Security Team") {
+		t.Errorf("expected rendered modal to show Security Team, got:\n%s", rendered)
+	}
+
+	// Move cursor down to Platform Team
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = res.(Model)
+	if m.ModalCursor != 1 {
+		t.Errorf("expected cursor 1, got %d", m.ModalCursor)
+	}
+
+	// Press Enter to select Platform Team
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = res.(Model)
+
+	if m.ActiveModal != ModalNone {
+		t.Errorf("expected modal to close, got %v", m.ActiveModal)
+	}
+	if m.Config.ActiveSquad != "platform" {
+		t.Errorf("expected active squad to switch to platform, got: %s", m.Config.ActiveSquad)
+	}
+	// Verify it was added to Config.Squads as well
+	found := false
+	for _, s := range m.Config.Squads {
+		if s.Name == "platform" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected platform squad to be added to Config.Squads")
+	}
+}
+
+func TestDataLoadedMsg_SyncsSquads(t *testing.T) {
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	defer db.Close()
+
+	cfg := &config.Config{
+		ActiveSquad: "core",
+		Squads: []config.SquadConfig{
+			{Name: "core", DisplayName: "Core", Members: []string{"simon"}},
+		},
+	}
+
+	m := Model{
+		Config: cfg,
+		DB:     db,
+	}
+
+	msg := DataLoadedMsg{
+		Squads: []github.SquadDefinition{
+			{Name: "sre", DisplayName: "Site Reliability", Members: []string{"ops1", "ops2"}},
+		},
+	}
+
+	res, _ := m.Update(msg)
+	m = res.(Model)
+
+	// Check Config.Squads
+	if len(m.Config.Squads) != 2 {
+		t.Fatalf("expected 2 squads in config, got %d", len(m.Config.Squads))
+	}
+	if m.Config.Squads[1].Name != "sre" {
+		t.Errorf("expected sre squad in config, got %s", m.Config.Squads[1].Name)
+	}
+
+	// Check DB.GetSquads
+	dbSquads, err := db.GetSquads()
+	if err != nil {
+		t.Fatalf("failed to get squads from db: %v", err)
+	}
+	if len(dbSquads) != 1 || dbSquads[0].Name != "sre" {
+		t.Errorf("unexpected squads in db: %+v", dbSquads)
+	}
+}
+

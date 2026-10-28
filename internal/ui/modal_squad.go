@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"grubby/internal/config"
 	"grubby/internal/github"
 )
 
@@ -105,6 +106,62 @@ func (m Model) renderModalOverlay(baseView string) string {
 	)
 }
 
+func (m Model) getAvailableSquads() []config.SquadConfig {
+	var squads []config.SquadConfig
+	seen := make(map[string]int)
+
+	if m.Config != nil {
+		for _, s := range m.Config.Squads {
+			lower := strings.ToLower(s.Name)
+			if _, exists := seen[lower]; !exists {
+				seen[lower] = len(squads)
+				squads = append(squads, s)
+			}
+		}
+	}
+
+	if m.DB != nil {
+		if dbSquads, err := m.DB.GetSquads(); err == nil {
+			for _, ds := range dbSquads {
+				lower := strings.ToLower(ds.Name)
+				if idx, exists := seen[lower]; exists {
+					// Merge missing members & repos
+					memMap := make(map[string]bool)
+					for _, mem := range squads[idx].Members {
+						memMap[strings.ToLower(mem)] = true
+					}
+					for _, mem := range ds.Members {
+						if !memMap[strings.ToLower(mem)] {
+							memMap[strings.ToLower(mem)] = true
+							squads[idx].Members = append(squads[idx].Members, mem)
+						}
+					}
+					repoMap := make(map[string]bool)
+					for _, r := range squads[idx].Repos {
+						repoMap[strings.ToLower(r)] = true
+					}
+					for _, r := range ds.Repos {
+						if !repoMap[strings.ToLower(r)] {
+							repoMap[strings.ToLower(r)] = true
+							squads[idx].Repos = append(squads[idx].Repos, r)
+						}
+					}
+				} else {
+					seen[lower] = len(squads)
+					squads = append(squads, config.SquadConfig{
+						Name:        ds.Name,
+						DisplayName: ds.DisplayName,
+						Members:     ds.Members,
+						Repos:       ds.Repos,
+					})
+				}
+			}
+		}
+	}
+
+	return squads
+}
+
 func (m Model) renderSelectSquadModal() string {
 	title := ModalTitleStyle.Render("Switch Watched Squad")
 
@@ -112,19 +169,39 @@ func (m Model) renderSelectSquadModal() string {
 	lines = append(lines, title)
 	lines = append(lines, "Use [↑/↓] or [j/k] to choose, [Enter] to select, [m] to manage squad, [+] or [n] to create new squad, [Esc] to exit.\n")
 
-	squads := m.Config.Squads
+	squads := m.getAvailableSquads()
 	if len(squads) == 0 {
 		lines = append(lines, "  No squads defined yet. Press [+] or [n] to create one!")
 	}
 
-	for i, s := range squads {
+	activeSquad := ""
+	if m.Config != nil {
+		activeSquad = m.Config.ActiveSquad
+	}
+
+	maxVisible := 12
+	start := 0
+	if m.ModalCursor >= maxVisible {
+		start = m.ModalCursor - maxVisible + 1
+	}
+	end := start + maxVisible
+	if end > len(squads) {
+		end = len(squads)
+	}
+
+	if start > 0 {
+		lines = append(lines, lipgloss.NewStyle().Foreground(MutedColor).Render(fmt.Sprintf("  ↑ %d more squads above...", start)))
+	}
+
+	for i := start; i < end; i++ {
+		s := squads[i]
 		cursor := "  "
 		if i == m.ModalCursor {
 			cursor = "▶ "
 		}
 
 		watched := ""
-		if strings.EqualFold(s.Name, m.Config.ActiveSquad) {
+		if strings.EqualFold(s.Name, activeSquad) {
 			watched = " (Active)"
 		}
 
@@ -136,11 +213,15 @@ func (m Model) renderSelectSquadModal() string {
 		}
 	}
 
+	if end < len(squads) {
+		lines = append(lines, lipgloss.NewStyle().Foreground(MutedColor).Render(fmt.Sprintf("  ↓ %d more squads below...", len(squads)-end)))
+	}
+
 	return ModalBoxStyle.Render(strings.Join(lines, "\n"))
 }
 
 func (m Model) handleSelectSquadModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	squads := m.Config.Squads
+	squads := m.getAvailableSquads()
 	switch msg.String() {
 	case "esc":
 		m.ActiveModal = ModalNone
@@ -169,7 +250,13 @@ func (m Model) handleSelectSquadModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if len(squads) > 0 && m.ModalCursor < len(squads) {
 			selected := squads[m.ModalCursor]
-			_ = m.Config.SetActiveSquad(selected.Name)
+			if m.Config != nil {
+				_ = m.Config.CreateSquad(selected.Name, selected.DisplayName, selected.Members)
+				if len(selected.Repos) > 0 {
+					_ = m.Config.SetSquadRepos(selected.Name, selected.Repos)
+				}
+				_ = m.Config.SetActiveSquad(selected.Name)
+			}
 			m.ActiveModal = ModalNone
 
 			// Filter cached squad tasks immediately for instant UI response
@@ -185,7 +272,7 @@ func (m Model) handleSelectSquadModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Trigger refresh of squad activity and squad tasks
 			return m, tea.Batch(
 				func() tea.Msg {
-					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 					defer cancel()
 					events, _ := m.GHClient.FetchSquadActivity(ctx, selected.Members, nil)
 					return DataLoadedMsg{

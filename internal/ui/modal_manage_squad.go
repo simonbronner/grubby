@@ -21,19 +21,26 @@ const (
 
 func (m Model) getManagedSquad() (string, []string, bool) {
 	name := m.ManagedSquadName
+	available := m.getAvailableSquads()
 	if name == "" {
-		if active := m.Config.GetActiveSquad(); active != nil {
-			name = active.Name
-		} else if len(m.Config.Squads) > 0 {
-			name = m.Config.Squads[0].Name
+		if m.Config != nil {
+			if active := m.Config.GetActiveSquad(); active != nil {
+				name = active.Name
+			}
+		}
+		if name == "" && len(available) > 0 {
+			name = available[0].Name
 		}
 	}
 	if name == "" {
 		return "", nil, false
 	}
-	for _, s := range m.Config.Squads {
+	for _, s := range available {
 		if strings.EqualFold(s.Name, name) {
-			isActive := strings.EqualFold(m.Config.ActiveSquad, s.Name)
+			isActive := false
+			if m.Config != nil {
+				isActive = strings.EqualFold(m.Config.ActiveSquad, s.Name)
+			}
 			return s.Name, s.Members, isActive
 		}
 	}

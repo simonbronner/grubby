@@ -423,11 +423,19 @@ func (c *Client) queryGraphQL(ctx context.Context, query string, variables map[s
 		return err
 	}
 
+	hasData := len(gqlResp.Data) > 0 && !bytes.Equal(bytes.TrimSpace(gqlResp.Data), []byte("null"))
+	if hasData {
+		if err := json.Unmarshal(gqlResp.Data, target); err != nil {
+			return err
+		}
+		return nil
+	}
+
 	if len(gqlResp.Errors) > 0 {
 		return fmt.Errorf("graphql error: %s", gqlResp.Errors[0].Message)
 	}
 
-	return json.Unmarshal(gqlResp.Data, target)
+	return nil
 }
 
 // FetchRepositoriesAndPRs fetches repos, open PRs, commit events, and vulnerability summaries for an owner (org or user).
@@ -728,10 +736,10 @@ query($login: String!, $cursor: String) {
 	}
 
 	// Query 2: Fetch open PRs across the organization/user using GitHub indexed search API with pagination
-	// This evaluates in <300ms across thousands of repos without triggering backend timeouts
+	// Using first: 50 keeps node complexity safe (<1500 nodes) and avoids enterprise timeouts
 	prSearchQuery := `
 query($searchQuery: String!, $cursor: String) {
-  search(query: $searchQuery, type: ISSUE, first: 100, after: $cursor) {
+  search(query: $searchQuery, type: ISSUE, first: 50, after: $cursor) {
     issueCount
     pageInfo {
       hasNextPage
@@ -803,75 +811,83 @@ query($searchQuery: String!, $cursor: String) {
 		} `json:"reviewThreads"`
 	}
 
-	searchString := fmt.Sprintf("is:pr is:open user:%s sort:updated-desc", owner)
+	searchQueries := []string{
+		fmt.Sprintf("is:pr is:open org:%s sort:updated-desc", owner),
+		fmt.Sprintf("is:pr is:open user:%s sort:updated-desc", owner),
+	}
 	var prs []PullRequest
-	var prCursor *string
 
-	for {
-		var prResp struct {
-			Search struct {
-				IssueCount int `json:"issueCount"`
-				PageInfo   struct {
-					HasNextPage bool    `json:"hasNextPage"`
-					EndCursor   *string `json:"endCursor"`
-				} `json:"pageInfo"`
-				Nodes []prSearchNode `json:"nodes"`
-			} `json:"search"`
+	for _, searchString := range searchQueries {
+		if len(prs) > 0 {
+			break
 		}
-
-		vars := map[string]interface{}{"searchQuery": searchString}
-		if prCursor != nil && *prCursor != "" {
-			vars["cursor"] = *prCursor
-		}
-
-		if prErr := c.queryGraphQL(ctx, prSearchQuery, vars, &prResp); prErr == nil {
-			for _, p := range prResp.Search.Nodes {
-				if p.Number == 0 || p.Repository.Name == "" {
-					continue
-				}
-				author := "unknown"
-				if p.Author != nil {
-					author = p.Author.Login
-				}
-				reviewDecision := "NONE"
-				if p.ReviewDecision != nil {
-					reviewDecision = *p.ReviewDecision
-				}
-				var labels []string
-				for _, l := range p.Labels.Nodes {
-					labels = append(labels, l.Name)
-				}
-
-				unresolved := 0
-				for _, t := range p.ReviewThreads.Nodes {
-					if !t.IsResolved {
-						unresolved++
-					}
-				}
-
-				prs = append(prs, PullRequest{
-					Number:             p.Number,
-					Repo:               p.Repository.Name,
-					Title:              p.Title,
-					Author:             author,
-					CreatedAt:          p.CreatedAt,
-					UpdatedAt:          p.UpdatedAt,
-					IsDraft:            p.IsDraft,
-					ReviewDecision:     reviewDecision,
-					HeadRefName:        p.HeadRefName,
-					URL:                p.URL,
-					Labels:             labels,
-					TotalComments:      p.Comments.TotalCount + p.ReviewThreads.TotalCount,
-					UnresolvedComments: unresolved,
-				})
+		var prCursor *string
+		for {
+			var prResp struct {
+				Search struct {
+					IssueCount int `json:"issueCount"`
+					PageInfo   struct {
+						HasNextPage bool    `json:"hasNextPage"`
+						EndCursor   *string `json:"endCursor"`
+					} `json:"pageInfo"`
+					Nodes []prSearchNode `json:"nodes"`
+				} `json:"search"`
 			}
 
-			if !prResp.Search.PageInfo.HasNextPage || prResp.Search.PageInfo.EndCursor == nil || len(prs) >= 500 {
+			vars := map[string]interface{}{"searchQuery": searchString}
+			if prCursor != nil && *prCursor != "" {
+				vars["cursor"] = *prCursor
+			}
+
+			if prErr := c.queryGraphQL(ctx, prSearchQuery, vars, &prResp); prErr == nil {
+				for _, p := range prResp.Search.Nodes {
+					if p.Number == 0 || p.Repository.Name == "" {
+						continue
+					}
+					author := "unknown"
+					if p.Author != nil {
+						author = p.Author.Login
+					}
+					reviewDecision := "NONE"
+					if p.ReviewDecision != nil {
+						reviewDecision = *p.ReviewDecision
+					}
+					var labels []string
+					for _, l := range p.Labels.Nodes {
+						labels = append(labels, l.Name)
+					}
+
+					unresolved := 0
+					for _, t := range p.ReviewThreads.Nodes {
+						if !t.IsResolved {
+							unresolved++
+						}
+					}
+
+					prs = append(prs, PullRequest{
+						Number:             p.Number,
+						Repo:               p.Repository.Name,
+						Title:              p.Title,
+						Author:             author,
+						CreatedAt:          p.CreatedAt,
+						UpdatedAt:          p.UpdatedAt,
+						IsDraft:            p.IsDraft,
+						ReviewDecision:     reviewDecision,
+						HeadRefName:        p.HeadRefName,
+						URL:                p.URL,
+						Labels:             labels,
+						TotalComments:      p.Comments.TotalCount + p.ReviewThreads.TotalCount,
+						UnresolvedComments: unresolved,
+					})
+				}
+
+				if !prResp.Search.PageInfo.HasNextPage || prResp.Search.PageInfo.EndCursor == nil || len(prs) >= 500 {
+					break
+				}
+				prCursor = prResp.Search.PageInfo.EndCursor
+			} else {
 				break
 			}
-			prCursor = prResp.Search.PageInfo.EndCursor
-		} else {
-			break
 		}
 	}
 
@@ -1173,6 +1189,127 @@ query($login: String!) {
 	}
 
 	return nil, fmt.Errorf("no members found for org %s", org)
+}
+
+// FetchOrgTeams queries GitHub organization teams and members to populate available squads.
+func (c *Client) FetchOrgTeams(ctx context.Context, org string) ([]SquadDefinition, error) {
+	if org == "" {
+		return nil, nil
+	}
+
+	query := `
+query($login: String!) {
+  organization(login: $login) {
+    teams(first: 100) {
+      nodes {
+        slug
+        name
+        description
+        members(first: 100) {
+          nodes {
+            login
+          }
+        }
+      }
+    }
+  }
+}
+`
+	var resp struct {
+		Organization *struct {
+			Teams struct {
+				Nodes []struct {
+					Slug        string  `json:"slug"`
+					Name        string  `json:"name"`
+					Description *string `json:"description"`
+					Members     struct {
+						Nodes []struct {
+							Login string `json:"login"`
+						} `json:"nodes"`
+					} `json:"members"`
+				} `json:"nodes"`
+			} `json:"teams"`
+		} `json:"organization"`
+	}
+
+	err := c.queryGraphQL(ctx, query, map[string]interface{}{"login": org}, &resp)
+	if err == nil && resp.Organization != nil && len(resp.Organization.Teams.Nodes) > 0 {
+		var squads []SquadDefinition
+		for _, t := range resp.Organization.Teams.Nodes {
+			if strings.TrimSpace(t.Slug) == "" {
+				continue
+			}
+			desc := ""
+			if t.Description != nil {
+				desc = *t.Description
+			}
+			disp := t.Name
+			if disp == "" {
+				disp = t.Slug
+			}
+			var members []string
+			for _, m := range t.Members.Nodes {
+				clean := strings.ToLower(strings.TrimSpace(m.Login))
+				if clean != "" {
+					members = append(members, clean)
+				}
+			}
+			squads = append(squads, SquadDefinition{
+				Name:        t.Slug,
+				DisplayName: disp,
+				Description: desc,
+				Members:     members,
+			})
+		}
+		return squads, nil
+	}
+
+	// Fallback to REST API /orgs/{org}/teams
+	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("https://api.github.com/orgs/%s/teams?per_page=100", org), nil)
+	if err != nil {
+		return nil, nil
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	httpResp, err := c.do(req)
+	if err != nil {
+		return nil, nil
+	}
+	defer httpResp.Body.Close()
+	c.updateRateLimits(httpResp)
+
+	if httpResp.StatusCode == http.StatusOK {
+		var raw []struct {
+			Slug        string  `json:"slug"`
+			Name        string  `json:"name"`
+			Description *string `json:"description"`
+		}
+		if err := json.NewDecoder(httpResp.Body).Decode(&raw); err == nil && len(raw) > 0 {
+			var squads []SquadDefinition
+			for _, r := range raw {
+				if r.Slug == "" {
+					continue
+				}
+				desc := ""
+				if r.Description != nil {
+					desc = *r.Description
+				}
+				disp := r.Name
+				if disp == "" {
+					disp = r.Slug
+				}
+				squads = append(squads, SquadDefinition{
+					Name:        r.Slug,
+					DisplayName: disp,
+					Description: desc,
+				})
+			}
+			return squads, nil
+		}
+	}
+
+	return nil, nil
 }
 
 // FetchUserProfile retrieves detailed profile information (id, name, avatarUrl) for a user.

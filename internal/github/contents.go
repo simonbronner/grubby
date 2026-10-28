@@ -337,28 +337,37 @@ func (c *Client) FetchSquadRepoLabels(ctx context.Context, owner, squadTasksRepo
 	if owner == "" || squadTasksRepo == "" {
 		return nil, nil
 	}
-	contentBytes, _, err := c.GetFileContent(ctx, owner, squadTasksRepo, ".grubby/repo-labels.json")
-	if err != nil {
-		if errors.Is(err, ErrFileNotFound) {
-			return &SquadRepoLabelsFile{
-				Version:  1,
-				Labels:   make(map[string]LabelInfo),
-				Mappings: make(map[string][]string),
-			}, nil
+
+	reposToTry := []string{squadTasksRepo}
+	if squadTasksRepo == "grubby-tasks" {
+		reposToTry = append(reposToTry, "tasks", ".github")
+	} else if squadTasksRepo == "tasks" {
+		reposToTry = append(reposToTry, "grubby-tasks", ".github")
+	}
+
+	for _, r := range reposToTry {
+		for _, p := range []string{".grubby/repo-labels.json", "repo-labels.json"} {
+			contentBytes, _, err := c.GetFileContent(ctx, owner, r, p)
+			if err == nil {
+				var fileData SquadRepoLabelsFile
+				if err := json.Unmarshal(contentBytes, &fileData); err == nil {
+					if fileData.Labels == nil {
+						fileData.Labels = make(map[string]LabelInfo)
+					}
+					if fileData.Mappings == nil {
+						fileData.Mappings = make(map[string][]string)
+					}
+					return &fileData, nil
+				}
+			}
 		}
-		return nil, err
 	}
-	var fileData SquadRepoLabelsFile
-	if err := json.Unmarshal(contentBytes, &fileData); err != nil {
-		return nil, err
-	}
-	if fileData.Labels == nil {
-		fileData.Labels = make(map[string]LabelInfo)
-	}
-	if fileData.Mappings == nil {
-		fileData.Mappings = make(map[string][]string)
-	}
-	return &fileData, nil
+
+	return &SquadRepoLabelsFile{
+		Version:  1,
+		Labels:   make(map[string]LabelInfo),
+		Mappings: make(map[string][]string),
+	}, nil
 }
 
 
@@ -368,28 +377,38 @@ func (c *Client) FetchSquadsFile(ctx context.Context, owner, repo string) (*Squa
 		return nil, "", nil
 	}
 
-	contentBytes, sha, err := c.GetFileContent(ctx, owner, repo, "squads.json")
-	if err != nil && errors.Is(err, ErrFileNotFound) {
-		// Fallback to .grubby/squads.json
-		contentBytes, sha, err = c.GetFileContent(ctx, owner, repo, ".grubby/squads.json")
+	reposToTry := []string{repo}
+	if repo == "grubby-tasks" {
+		reposToTry = append(reposToTry, "tasks", ".github")
+	} else if repo == "tasks" {
+		reposToTry = append(reposToTry, "grubby-tasks", ".github")
 	}
 
-	if err != nil {
-		if errors.Is(err, ErrFileNotFound) {
-			return &SquadsFile{
-				Version: 1,
-				Squads:  nil,
-			}, "", ErrFileNotFound
+	pathsToTry := []string{"squads.json", ".grubby/squads.json"}
+
+	var lastErr error
+	for _, r := range reposToTry {
+		for _, p := range pathsToTry {
+			contentBytes, sha, err := c.GetFileContent(ctx, owner, r, p)
+			if err == nil {
+				var fileData SquadsFile
+				if err := json.Unmarshal(contentBytes, &fileData); err != nil {
+					return nil, "", fmt.Errorf("failed to parse squads.json: %w", err)
+				}
+				return &fileData, sha, nil
+			}
+			lastErr = err
 		}
-		return nil, "", err
 	}
 
-	var fileData SquadsFile
-	if err := json.Unmarshal(contentBytes, &fileData); err != nil {
-		return nil, "", fmt.Errorf("failed to parse squads.json: %w", err)
+	if lastErr != nil && errors.Is(lastErr, ErrFileNotFound) {
+		return &SquadsFile{
+			Version: 1,
+			Squads:  nil,
+		}, "", ErrFileNotFound
 	}
 
-	return &fileData, sha, nil
+	return nil, "", lastErr
 }
 
 // SaveSquadsFile persists squad structures in squads.json with Compare-And-Swap (CAS) conflict resolution.
@@ -401,16 +420,32 @@ func (c *Client) SaveSquadsFile(ctx context.Context, owner, repo, updatedBy stri
 	const maxRetries = 3
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
+		targetRepo := repo
 		targetPath := "squads.json"
-		contentBytes, sha, err := c.GetFileContent(ctx, owner, repo, targetPath)
+		contentBytes, sha, err := c.GetFileContent(ctx, owner, targetRepo, targetPath)
 		if err != nil && errors.Is(err, ErrFileNotFound) {
 			// Check if .grubby/squads.json already exists
-			gbBytes, gbSha, gbErr := c.GetFileContent(ctx, owner, repo, ".grubby/squads.json")
+			gbBytes, gbSha, gbErr := c.GetFileContent(ctx, owner, targetRepo, ".grubby/squads.json")
 			if gbErr == nil {
 				targetPath = ".grubby/squads.json"
 				contentBytes = gbBytes
 				sha = gbSha
 				err = nil
+			} else if repo == "grubby-tasks" {
+				// Fallback to tasks repo if grubby-tasks is not found
+				if tBytes, tSha, tErr := c.GetFileContent(ctx, owner, "tasks", "squads.json"); tErr == nil {
+					targetRepo = "tasks"
+					targetPath = "squads.json"
+					contentBytes = tBytes
+					sha = tSha
+					err = nil
+				} else if gtBytes, gtSha, gtErr := c.GetFileContent(ctx, owner, "tasks", ".grubby/squads.json"); gtErr == nil {
+					targetRepo = "tasks"
+					targetPath = ".grubby/squads.json"
+					contentBytes = gtBytes
+					sha = gtSha
+					err = nil
+				}
 			}
 		}
 
@@ -468,7 +503,7 @@ func (c *Client) SaveSquadsFile(ctx context.Context, owner, repo, updatedBy stri
 		}
 
 		msg := "chore(grubby): update squad definitions [skip ci]"
-		_, err = c.PutFileContent(ctx, owner, repo, targetPath, newBytes, sha, msg)
+		_, err = c.PutFileContent(ctx, owner, targetRepo, targetPath, newBytes, sha, msg)
 		if err == nil {
 			return nil
 		}

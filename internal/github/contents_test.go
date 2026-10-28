@@ -1,12 +1,15 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -318,5 +321,118 @@ func TestSaveSquadsFile_CASAndNormalization(t *testing.T) {
 		t.Errorf("expected UpdatedBy simonb, got: %s", savedFile.UpdatedBy)
 	}
 }
+
+func TestFetchSquadsFile_FallbackToTasksRepo(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// If requesting grubby-tasks, return 404
+		if strings.Contains(r.URL.Path, "grubby-tasks") {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message": "Not Found"}`))
+			return
+		}
+
+		// If requesting tasks/squads.json, return squads file
+		if strings.Contains(r.URL.Path, "tasks") && strings.Contains(r.URL.Path, "squads.json") {
+			fileData := SquadsFile{
+				Version: 1,
+				Squads: []SquadDefinition{
+					{Name: "platform", DisplayName: "Platform Squad", Members: []string{"dev1", "dev2"}},
+				},
+			}
+			b, _ := json.Marshal(fileData)
+			encoded := base64.StdEncoding.EncodeToString(b)
+			resp := GitHubFileContentResponse{
+				SHA:     "tasks-sha",
+				Content: encoded,
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &Client{
+		httpClient: server.Client(),
+		apiBaseURL: server.URL,
+	}
+
+	// Should fallback from grubby-tasks to tasks repo and find platform squad
+	file, sha, err := client.FetchSquadsFile(context.Background(), "my-corp", "grubby-tasks")
+	if err != nil {
+		t.Fatalf("expected FetchSquadsFile to fallback and succeed, got: %v", err)
+	}
+	if sha != "tasks-sha" {
+		t.Errorf("expected sha tasks-sha, got %s", sha)
+	}
+	if len(file.Squads) != 1 || file.Squads[0].Name != "platform" {
+		t.Errorf("unexpected squads: %+v", file.Squads)
+	}
+}
+
+func TestFetchOrgTeams(t *testing.T) {
+	respJSON := `{
+		"data": {
+			"organization": {
+				"teams": {
+					"nodes": [
+						{
+							"slug": "backend-eng",
+							"name": "Backend Engineering",
+							"description": "Backend services team",
+							"members": {
+								"nodes": [
+									{"login": "alice"},
+									{"login": "bob"}
+								]
+							}
+						},
+						{
+							"slug": "frontend-eng",
+							"name": "Frontend Engineering",
+							"description": "Frontend UI team",
+							"members": {
+								"nodes": [
+									{"login": "charlie"}
+								]
+							}
+						}
+					]
+				}
+			}
+		}
+	}`
+
+	mock := mockRoundTripper(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader([]byte(respJSON))),
+			Request:    req,
+		}, nil
+	})
+
+	client := &Client{
+		token: "mock-token",
+		httpClient: &http.Client{
+			Transport: mock,
+		},
+	}
+
+	teams, err := client.FetchOrgTeams(context.Background(), "my-corp")
+	if err != nil {
+		t.Fatalf("expected FetchOrgTeams to succeed, got: %v", err)
+	}
+	if len(teams) != 2 {
+		t.Fatalf("expected 2 teams, got: %d", len(teams))
+	}
+	if teams[0].Name != "backend-eng" || teams[0].DisplayName != "Backend Engineering" || len(teams[0].Members) != 2 {
+		t.Errorf("unexpected team 0: %+v", teams[0])
+	}
+	if teams[1].Name != "frontend-eng" || teams[1].DisplayName != "Frontend Engineering" || len(teams[1].Members) != 1 {
+		t.Errorf("unexpected team 1: %+v", teams[1])
+	}
+}
+
 
 

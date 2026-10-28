@@ -104,6 +104,7 @@ type DataLoadedMsg struct {
 	Security          map[string]github.SecurityAlertSummary
 	Notifications     []github.Notification
 	OrgMembers        []github.OrgMember
+	Squads            []github.SquadDefinition
 	RateLimit         github.RateLimitInfo
 	AutoClosedCount   int
 	Err               error
@@ -577,7 +578,7 @@ func (m Model) fetchGitHubStatusCmd() tea.Cmd {
 
 func (m Model) loadDataCmd() tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
 		authUser, _ := m.GHClient.GetAuthenticatedUser(ctx)
@@ -658,16 +659,54 @@ func (m Model) loadDataCmd() tea.Cmd {
 		}
 		centralOwner, centralRepo := m.Config.GetCentralTasksRepo(orgTarget)
 
-		// 1. Synchronize squads.json from central repo
+		// 1. Synchronize squads from central repo (squads.json) and organization teams
+		var loadedSquads []github.SquadDefinition
+		seenSquads := make(map[string]int)
+
 		if squadsFile, _, err := m.GHClient.FetchSquadsFile(ctx, centralOwner, centralRepo); err == nil && squadsFile != nil && len(squadsFile.Squads) > 0 {
 			for _, s := range squadsFile.Squads {
+				lower := strings.ToLower(s.Name)
+				if idx, exists := seenSquads[lower]; !exists {
+					seenSquads[lower] = len(loadedSquads)
+					loadedSquads = append(loadedSquads, s)
+				} else {
+					loadedSquads[idx].Members = append(loadedSquads[idx].Members, s.Members...)
+					loadedSquads[idx].Repos = append(loadedSquads[idx].Repos, s.Repos...)
+				}
+			}
+		}
+
+		// Also discover organization teams as available squads
+		if orgTeams, err := m.GHClient.FetchOrgTeams(ctx, m.CurrentOrg); err == nil && len(orgTeams) > 0 {
+			for _, t := range orgTeams {
+				lower := strings.ToLower(t.Name)
+				if idx, exists := seenSquads[lower]; !exists {
+					seenSquads[lower] = len(loadedSquads)
+					loadedSquads = append(loadedSquads, t)
+				} else {
+					memSet := make(map[string]bool)
+					for _, m := range loadedSquads[idx].Members {
+						memSet[strings.ToLower(m)] = true
+					}
+					for _, tm := range t.Members {
+						if !memSet[strings.ToLower(tm)] {
+							memSet[strings.ToLower(tm)] = true
+							loadedSquads[idx].Members = append(loadedSquads[idx].Members, tm)
+						}
+					}
+				}
+			}
+		}
+
+		if len(loadedSquads) > 0 {
+			for _, s := range loadedSquads {
 				_ = m.Config.CreateSquad(s.Name, s.DisplayName, s.Members)
 				if len(s.Repos) > 0 {
 					_ = m.Config.SetSquadRepos(s.Name, s.Repos)
 				}
 			}
 			if m.DB != nil {
-				_ = m.DB.SaveSquads(squadsFile.Squads)
+				_ = m.DB.SaveSquads(loadedSquads)
 			}
 		}
 
@@ -733,6 +772,7 @@ func (m Model) loadDataCmd() tea.Cmd {
 			Security:          secAlerts,
 			Notifications:     notifs,
 			OrgMembers:        orgMembers,
+			Squads:            loadedSquads,
 			RateLimit:         m.GHClient.RateLimit(),
 		}
 	}
@@ -1319,6 +1359,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.RateLimit = msg.RateLimit
 		if msg.AuthUser != "" {
 			m.AuthUser = msg.AuthUser
+		}
+		if len(msg.Squads) > 0 {
+			if m.Config != nil {
+				for _, s := range msg.Squads {
+					_ = m.Config.CreateSquad(s.Name, s.DisplayName, s.Members)
+					if len(s.Repos) > 0 {
+						_ = m.Config.SetSquadRepos(s.Name, s.Repos)
+					}
+				}
+			}
+			if m.DB != nil {
+				_ = m.DB.SaveSquads(msg.Squads)
+			}
 		}
 		if m.DB != nil {
 			m.RepoTiers = m.DB.GetAllRepoTiers()
