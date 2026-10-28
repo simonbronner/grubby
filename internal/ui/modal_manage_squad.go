@@ -443,6 +443,7 @@ func (m Model) handleManageSquadModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) reloadSquadActivityCmd() tea.Cmd {
+	allCommits := m.AllCommitEvents
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -451,14 +452,10 @@ func (m Model) reloadSquadActivityCmd() tea.Cmd {
 		if squad != nil {
 			members = squad.Members
 		}
-		events, _ := m.GHClient.FetchSquadActivity(ctx, members, nil)
-		return DataLoadedMsg{
-			Repos:       m.Repos,
-			PRs:         m.PRs,
-			SquadEvents: events,
-			OrgMembers:  m.OrgMembers,
-			Security:    m.SecuritySummaries,
-			RateLimit:   m.GHClient.RateLimit(),
+		events, err := m.GHClient.FetchSquadActivity(ctx, members, allCommits)
+		return SquadActivityLoadedMsg{
+			Events: events,
+			Err:    err,
 		}
 	}
 }

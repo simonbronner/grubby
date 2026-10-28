@@ -259,7 +259,7 @@ func (m Model) handleSelectSquadModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.ActiveModal = ModalNone
 
-			// Filter cached squad tasks immediately for instant UI response
+			// 1. Filter cached squad tasks immediately for instant UI response
 			if m.DB != nil {
 				if sTasks, err := m.DB.GetTasks(true, "open"); err == nil {
 					m.SquadTasks = github.FilterTasksForSquad(sTasks, selected.Name)
@@ -269,19 +269,36 @@ func (m Model) handleSelectSquadModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 
+			// 2. Immediately filter commit events for the new squad members for 0ms dashboard update
+			if len(m.AllCommitEvents) > 0 {
+				memberSet := make(map[string]bool)
+				for _, mem := range selected.Members {
+					memberSet[strings.ToLower(strings.TrimSpace(mem))] = true
+				}
+				var immediateEvents []github.SquadEvent
+				for _, ce := range m.AllCommitEvents {
+					if memberSet[strings.ToLower(ce.Actor)] {
+						immediateEvents = append(immediateEvents, ce)
+					}
+				}
+				for _, ev := range m.SquadEvents {
+					if memberSet[strings.ToLower(ev.Actor)] && !strings.Contains(strings.ToLower(ev.Action), "commit") {
+						immediateEvents = append(immediateEvents, ev)
+					}
+				}
+				m.SquadEvents = immediateEvents
+			}
+
 			// Trigger refresh of squad activity and squad tasks
+			allCommits := m.AllCommitEvents
 			return m, tea.Batch(
 				func() tea.Msg {
 					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 					defer cancel()
-					events, _ := m.GHClient.FetchSquadActivity(ctx, selected.Members, nil)
-					return DataLoadedMsg{
-						Repos:       m.Repos,
-						PRs:         m.PRs,
-						SquadEvents: events,
-						OrgMembers:  m.OrgMembers,
-						Security:    m.SecuritySummaries,
-						RateLimit:   m.GHClient.RateLimit(),
+					events, err := m.GHClient.FetchSquadActivity(ctx, selected.Members, allCommits)
+					return SquadActivityLoadedMsg{
+						Events: events,
+						Err:    err,
 					}
 				},
 				m.loadTasksCmd(),
@@ -470,6 +487,7 @@ func (m Model) handleAddMemberModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.ModalInput.Blur()
 
 			// Refresh squad activity and sync squads.json
+			allCommits := m.AllCommitEvents
 			return m, tea.Batch(
 				func() tea.Msg {
 					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -479,13 +497,10 @@ func (m Model) handleAddMemberModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					if squad != nil {
 						members = squad.Members
 					}
-					events, _ := m.GHClient.FetchSquadActivity(ctx, members, nil)
-					return DataLoadedMsg{
-						Repos:       m.Repos,
-						PRs:         m.PRs,
-						SquadEvents: events,
-						Security:    m.SecuritySummaries,
-						RateLimit:   m.GHClient.RateLimit(),
+					events, err := m.GHClient.FetchSquadActivity(ctx, members, allCommits)
+					return SquadActivityLoadedMsg{
+						Events: events,
+						Err:    err,
 					}
 				},
 				m.syncSquadsFileCmd(),

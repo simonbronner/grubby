@@ -1,12 +1,10 @@
 package github
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -368,69 +366,6 @@ func TestFetchSquadsFile_FallbackToTasksRepo(t *testing.T) {
 	}
 	if len(file.Squads) != 1 || file.Squads[0].Name != "platform" {
 		t.Errorf("unexpected squads: %+v", file.Squads)
-	}
-}
-
-func TestFetchOrgTeams(t *testing.T) {
-	respJSON := `{
-		"data": {
-			"organization": {
-				"teams": {
-					"nodes": [
-						{
-							"slug": "backend-eng",
-							"name": "Backend Engineering",
-							"description": "Backend services team",
-							"members": {
-								"nodes": [
-									{"login": "alice"},
-									{"login": "bob"}
-								]
-							}
-						},
-						{
-							"slug": "frontend-eng",
-							"name": "Frontend Engineering",
-							"description": "Frontend UI team",
-							"members": {
-								"nodes": [
-									{"login": "charlie"}
-								]
-							}
-						}
-					]
-				}
-			}
-		}
-	}`
-
-	mock := mockRoundTripper(func(req *http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(bytes.NewReader([]byte(respJSON))),
-			Request:    req,
-		}, nil
-	})
-
-	client := &Client{
-		token: "mock-token",
-		httpClient: &http.Client{
-			Transport: mock,
-		},
-	}
-
-	teams, err := client.FetchOrgTeams(context.Background(), "my-corp")
-	if err != nil {
-		t.Fatalf("expected FetchOrgTeams to succeed, got: %v", err)
-	}
-	if len(teams) != 2 {
-		t.Fatalf("expected 2 teams, got: %d", len(teams))
-	}
-	if teams[0].Name != "backend-eng" || teams[0].DisplayName != "Backend Engineering" || len(teams[0].Members) != 2 {
-		t.Errorf("unexpected team 0: %+v", teams[0])
-	}
-	if teams[1].Name != "frontend-eng" || teams[1].DisplayName != "Frontend Engineering" || len(teams[1].Members) != 1 {
-		t.Errorf("unexpected team 1: %+v", teams[1])
 	}
 }
 

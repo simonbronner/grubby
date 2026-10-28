@@ -92,11 +92,17 @@ type SingleRepoLoadedMsg struct {
 	Err      error
 }
 
+type SquadActivityLoadedMsg struct {
+	Events []github.SquadEvent
+	Err    error
+}
+
 type DataLoadedMsg struct {
 	AuthUser          string
 	Repos             []github.Repository
 	PRs               []github.PullRequest
 	SquadEvents       []github.SquadEvent
+	AllCommitEvents   []github.SquadEvent
 	PersonalTasks     []github.Task
 	PersonalDoneTasks []github.Task
 	SquadTasks        []github.Task
@@ -204,6 +210,7 @@ type Model struct {
 	Repos               []github.Repository
 	PRs                 []github.PullRequest
 	SquadEvents         []github.SquadEvent
+	AllCommitEvents     []github.SquadEvent
 	SecuritySummaries   map[string]github.SecurityAlertSummary
 	Notifications       []github.Notification
 	OrgMembers          []github.OrgMember
@@ -510,8 +517,15 @@ func InitialModel(cfg *config.Config, gh *github.Client, gitMgr *git.WorkspaceMa
 			if sDone, err := db.GetTasks(true, "closed"); err == nil {
 				m.SquadDoneTasks = github.FilterTasksForSquad(sDone, cfg.ActiveSquad)
 			}
-			if events, err := db.GetSquadEvents(100); err == nil {
+			if events, err := db.GetSquadEvents(500); err == nil {
 				m.SquadEvents = events
+				var commits []github.SquadEvent
+				for _, e := range events {
+					if strings.Contains(strings.ToLower(e.Action), "commit") {
+						commits = append(commits, e)
+					}
+				}
+				m.AllCommitEvents = commits
 			}
 			if members, err := db.GetOrgMembers(); err == nil {
 				m.OrgMembers = members
@@ -659,7 +673,7 @@ func (m Model) loadDataCmd() tea.Cmd {
 		}
 		centralOwner, centralRepo := m.Config.GetCentralTasksRepo(orgTarget)
 
-		// 1. Synchronize squads from central repo (squads.json) and organization teams
+		// 1. Synchronize squads from central repo (squads.json)
 		var loadedSquads []github.SquadDefinition
 		seenSquads := make(map[string]int)
 
@@ -672,28 +686,6 @@ func (m Model) loadDataCmd() tea.Cmd {
 				} else {
 					loadedSquads[idx].Members = append(loadedSquads[idx].Members, s.Members...)
 					loadedSquads[idx].Repos = append(loadedSquads[idx].Repos, s.Repos...)
-				}
-			}
-		}
-
-		// Also discover organization teams as available squads
-		if orgTeams, err := m.GHClient.FetchOrgTeams(ctx, m.CurrentOrg); err == nil && len(orgTeams) > 0 {
-			for _, t := range orgTeams {
-				lower := strings.ToLower(t.Name)
-				if idx, exists := seenSquads[lower]; !exists {
-					seenSquads[lower] = len(loadedSquads)
-					loadedSquads = append(loadedSquads, t)
-				} else {
-					memSet := make(map[string]bool)
-					for _, m := range loadedSquads[idx].Members {
-						memSet[strings.ToLower(m)] = true
-					}
-					for _, tm := range t.Members {
-						if !memSet[strings.ToLower(tm)] {
-							memSet[strings.ToLower(tm)] = true
-							loadedSquads[idx].Members = append(loadedSquads[idx].Members, tm)
-						}
-					}
 				}
 			}
 		}
@@ -773,6 +765,7 @@ func (m Model) loadDataCmd() tea.Cmd {
 			Notifications:     notifs,
 			OrgMembers:        orgMembers,
 			Squads:            loadedSquads,
+			AllCommitEvents:   commitEvents,
 			RateLimit:         m.GHClient.RateLimit(),
 		}
 	}
@@ -1337,6 +1330,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return m, nil
 
+	case SquadActivityLoadedMsg:
+		if msg.Err == nil && msg.Events != nil {
+			m.SquadEvents = msg.Events
+			if m.DB != nil {
+				_ = m.DB.SaveSquadEvents(msg.Events)
+			}
+		}
+		return m, nil
+
 	case DataLoadedMsg:
 		m.Loading = false
 		m.InitialDataLoaded = true
@@ -1346,19 +1348,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.StatusMsgTimer = time.Now().Add(5 * time.Second)
 			return m, nil
 		}
-		m.Repos = msg.Repos
-		m.PRs = msg.PRs
-		m.SquadEvents = msg.SquadEvents
-		m.PersonalTasks = msg.PersonalTasks
-		m.PersonalDoneTasks = msg.PersonalDoneTasks
-		m.SquadTasks = msg.SquadTasks
-		m.SquadDoneTasks = msg.SquadDoneTasks
+		if msg.Repos != nil {
+			m.Repos = msg.Repos
+		}
+		if msg.PRs != nil {
+			m.PRs = msg.PRs
+		}
+		if msg.SquadEvents != nil {
+			m.SquadEvents = msg.SquadEvents
+		}
+		if msg.AllCommitEvents != nil {
+			m.AllCommitEvents = msg.AllCommitEvents
+		}
+		if msg.PersonalTasks != nil {
+			m.PersonalTasks = msg.PersonalTasks
+		}
+		if msg.PersonalDoneTasks != nil {
+			m.PersonalDoneTasks = msg.PersonalDoneTasks
+		}
+		if msg.SquadTasks != nil {
+			m.SquadTasks = msg.SquadTasks
+		}
+		if msg.SquadDoneTasks != nil {
+			m.SquadDoneTasks = msg.SquadDoneTasks
+		}
 		if msg.AutoClosedCount > 0 {
 			m.StatusMsg = fmt.Sprintf("✓ Auto-closed %d review task(s) for merged/closed PR(s)", msg.AutoClosedCount)
 			m.StatusMsgTimer = time.Now().Add(5 * time.Second)
 		}
-		m.SecuritySummaries = msg.Security
-		m.OrgMembers = msg.OrgMembers
+		if msg.Security != nil {
+			m.SecuritySummaries = msg.Security
+		}
+		if msg.OrgMembers != nil {
+			m.OrgMembers = msg.OrgMembers
+		}
 		m.RateLimit = msg.RateLimit
 		if msg.AuthUser != "" {
 			m.AuthUser = msg.AuthUser

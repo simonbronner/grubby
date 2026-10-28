@@ -463,3 +463,86 @@ func TestDataLoadedMsg_SyncsSquads(t *testing.T) {
 	}
 }
 
+func TestSelectSquadModal_RetainsCommitHistoryAndTasksInstantaneously(t *testing.T) {
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	defer db.Close()
+
+	// Seed DB with tasks for squad "platform"
+	_ = db.SaveTasks([]github.Task{
+		{
+			ID:        1001,
+			Title:     "Platform Task",
+			State:     "open",
+			Labels:    []string{"squad:platform"},
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		},
+	}, true, "synced")
+
+	cfg := &config.Config{
+		ActiveSquad: "core",
+		Squads: []config.SquadConfig{
+			{Name: "core", DisplayName: "Core", Members: []string{"alice"}},
+			{Name: "platform", DisplayName: "Platform", Members: []string{"bob"}},
+		},
+	}
+
+	commitEvents := []github.SquadEvent{
+		{Actor: "alice", Action: "committed 2 commits to main"},
+		{Actor: "bob", Action: "committed 5 commits to dev"},
+	}
+
+	m := Model{
+		Config:          cfg,
+		DB:              db,
+		AllCommitEvents: commitEvents,
+		ActiveModal:     ModalSelectSquad,
+		ModalCursor:     1, // Select "platform"
+		SplashDismissed: true,
+	}
+
+	// Hit enter to switch squad
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = res.(Model)
+
+	// Verify squad switched
+	if m.Config.ActiveSquad != "platform" {
+		t.Fatalf("expected active squad to switch to platform, got: %s", m.Config.ActiveSquad)
+	}
+
+	// Verify commit events are immediately filtered for bob (0ms UI latency)
+	if len(m.SquadEvents) != 1 || m.SquadEvents[0].Actor != "bob" {
+		t.Fatalf("expected 1 commit event for bob immediately, got: %+v", m.SquadEvents)
+	}
+
+	// Verify squad tasks are immediately populated from cache
+	if len(m.SquadTasks) != 1 || m.SquadTasks[0].Title != "Platform Task" {
+		t.Fatalf("expected 1 squad task immediately, got: %+v", m.SquadTasks)
+	}
+
+	// Verify receiving a partial DataLoadedMsg (with nil SquadTasks) does NOT wipe tasks
+	res, _ = m.Update(DataLoadedMsg{
+		AuthUser: "test-user",
+	})
+	m = res.(Model)
+	if len(m.SquadTasks) != 1 {
+		t.Fatalf("expected squad tasks preserved after partial DataLoadedMsg, got %d", len(m.SquadTasks))
+	}
+
+	// Verify receiving SquadActivityLoadedMsg updates SquadEvents safely
+	res, _ = m.Update(SquadActivityLoadedMsg{
+		Events: []github.SquadEvent{
+			{Actor: "bob", Action: "committed 5 commits to dev"},
+			{Actor: "bob", Action: "opened pull request #12"},
+		},
+	})
+	m = res.(Model)
+	if len(m.SquadEvents) != 2 {
+		t.Fatalf("expected 2 squad events after SquadActivityLoadedMsg, got %d", len(m.SquadEvents))
+	}
+}
+
+
